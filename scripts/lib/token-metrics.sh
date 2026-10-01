@@ -6,7 +6,7 @@ set -euo pipefail
 # Provides cost visibility for the pr-review and dev-lead agents.
 # ET formula (GitHub's framework): ET = m × (1.0×I + 0.1×C + 4.0×O)
 #   I = input tokens, C = cache-read tokens, O = output tokens
-#   m = model cost multiplier (relative to claude-haiku-4-5 = 1.0)
+#   m = model cost multiplier (relative to the haiku 4.5 baseline = 1.0)
 #
 # Usage:
 #   source scripts/lib/token-metrics.sh
@@ -28,7 +28,7 @@ if [ -f "$(dirname "${BASH_SOURCE[0]}")/model-pricing.sh" ]; then
 fi
 
 # model_multiplier_for <model_name>
-# Returns a float cost multiplier relative to claude-haiku-4-5 = 1.0, derived from
+# Returns a float cost multiplier relative to the haiku 4.5 baseline = 1.0, derived from
 # model-pricing.tsv at today's rate. Prints 1.0 for unknown models (safe default).
 model_multiplier_for() {
   local model="$1"

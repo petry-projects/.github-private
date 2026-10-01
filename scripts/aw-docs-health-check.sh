@@ -13,6 +13,10 @@
 
 set -euo pipefail
 
+# Model family → current id resolver (#1979): name a family, never pin a version.
+# shellcheck source=scripts/lib/engine-models.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/engine-models.sh"
+
 ORG="${ORG:-petry-projects}"
 STALE_DAYS="${STALE_DAYS:-90}"
 REPORT_REPO="${REPORT_REPO:-${ORG}/.github-private}"
@@ -139,7 +143,7 @@ done < <(printf '%b' "$stale_entries" | sort -t$'\t' -k3 -rn)
 REPORT_FILE="${REPORT_FILE:-docs_health_report.md}"
 
 echo "Invoking Claude for stale-docs analysis..."
-if ! claude --print --model claude-sonnet-4-6 --no-session-persistence \
+if ! claude --print --model "$(ai_model_for_family sonnet)" --no-session-persistence \
      > "$REPORT_FILE" <<PROMPT
 You are the Docs Health Check for the GitHub org \`${ORG}\`.
 
