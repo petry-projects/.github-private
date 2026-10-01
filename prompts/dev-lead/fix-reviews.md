@@ -140,7 +140,7 @@ done
 
 - `<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->` … `<!-- end of … rate limited … -->` — the **code review** was throttled ("Review limit reached", "You've used all free OSS reviews…"). This block speaks **only for itself**. It does **not** mean the comment carries no findings.
 - `<!-- architecture_review_start -->` … `<!-- architecture_review_end -->` — the **Security Architecture Review**. It is **not** throttled with the code review and can carry real findings while the rate-limit block is showing. Every **Retained concerns** item, every severity-labelled item (`**Medium · security · …**`, `High`, `Critical`, …), and every **Hardening Proposals** item is a finding.
-- `Actionable comments posted: N` (N > 0), **Outside diff range comments**, and **Nitpick comments** — review findings that may exist only in this comment, never as review threads.
+- `Actionable comments posted: N` (N > 0), **Outside diff range comments** (any count but 0), and **Nitpick comments** (any count but 0) — review findings that may exist only in this comment, never as review threads.
 
 Address **each** finding, then post **one** reply that lists every finding and what you did about it. End it with one marker: `fixed` with the verifying `sha=` if you changed code for any of them (say how the rest were handled), otherwise `answered`, `invalid` or `out-of-scope` with the reason. **`informational` is allowed only when every finding-bearing section is empty or says "no issues"**. The harness refuses an `informational` disposition on a body that carries a finding-bearing section, so the comment would stay open.
 

@@ -263,12 +263,22 @@ maintainer_gate_merge_edit_times() {
       printf '%s' "$snapshot"
       return 0
     fi
-    page=$(gh api graphql -f query="$_gql" -f url="$pr_url" "${cursor_args[@]}" 2>/dev/null) || {
+    page=$(gh api graphql -f query="$_gql" -f url="$pr_url" ${cursor_args[@]+"${cursor_args[@]}"} 2>/dev/null) || {
       log_warn "could not fetch comment edit times — edited comments will fail closed"
       printf '%s' "$snapshot"
       return 0
     }
-    nodes=$(printf '%s' "$page" | jq -c '.data.resource.comments.nodes // empty' 2>/dev/null) || nodes=""
+    # Reject GraphQL errors and incomplete nodes: a missing lastEditedAt must stay
+    # unknown (fail closed), never read as "never edited".
+    nodes=$(printf '%s' "$page" | jq -ce '
+      if ((.errors // []) | length) > 0 then error("GraphQL errors")
+      elif ((.data.resource.comments.nodes // []) | type) != "array"
+           or any(.data.resource.comments.nodes[]?;
+                  (type != "object") or (has("id") | not) or (has("lastEditedAt") | not))
+      then error("incomplete comment edit data")
+      else .data.resource.comments.nodes // empty
+      end
+    ' 2>/dev/null) || nodes=""
     if [[ -z "$nodes" ]]; then
       log_warn "comment edit-time lookup returned no data — edited comments will fail closed"
       printf '%s' "$snapshot"
@@ -336,8 +346,8 @@ maintainer_gate_reopen_candidates() {
 #   minimized (re-opened by the harness); covered by a dev-lead disposition; and
 #   edited strictly after its latest covering disposition. Those are the comments
 #   a fresh dev-lead pass must re-disposition.
-#   Comments covered only by a maintainer-resolve reply are excluded: a human
-#   dispositioned those, and the sweep must not hand them to dev-lead.
+#   Comments covered only by a maintainer-resolve reply are included too: an edit
+#   after that reply re-blocks the gate, so a fresh pass must re-disposition them.
 #   Unreadable input echoes nothing and returns 1, so a caller never dispatches on
 #   a guess. Pure apart from reading the registry.
 maintainer_gate_stale_dispositions() {
@@ -362,7 +372,7 @@ maintainer_gate_stale_dispositions() {
         | (.id // "") as $cid
         | select($cid != "")
         | latest_cover($all; $cid) as $cov
-        | select($cov != null and $cov.kind != "maintainer-resolve")
+        | select($cov != null)
         | select($e > $cov.createdAt)
         | {id: $cid, lastEditedAt: $e} ]
   ' 2>/dev/null

@@ -186,6 +186,16 @@ get_advisory_bot_states() {
     log_warn "gh pr view failed: $gh_output"
     return 2  # API error — distinct from "no bots yet" (1) so caller can fail-fast
   }
+  # gh pr view omits lastEditedAt; merge it in by node id so in-place edits (the
+  # CodeRabbit summary) are ordered by edit time (#2008). Best effort: on failure
+  # the snapshot is unchanged and ordering falls back to createdAt.
+  if ! declare -f maintainer_gate_merge_edit_times >/dev/null 2>&1; then
+    # shellcheck source=scripts/lib/maintainer-comment-gate.sh
+    source "$(dirname "${BASH_SOURCE[0]}")/maintainer-comment-gate.sh" 2>/dev/null || true
+  fi
+  if declare -f maintainer_gate_merge_edit_times >/dev/null 2>&1; then
+    gh_output=$(maintainer_gate_merge_edit_times "$PR_URL" "$gh_output" 2>/dev/null) || true
+  fi
 
   echo "$gh_output" | jq -c --argjson bots "$bot_array" --arg markers "$RATE_LIMIT_MARKERS" \
     --arg cubic "$ADVISORY_CUBIC_LOGIN" --arg cubicre "$ADVISORY_CUBIC_RATE_LIMIT_RE" "$_ADVISORY_RL_SCOPE_JQ"'

@@ -132,10 +132,12 @@ minimized with classifier `RESOLVED`. In practice:
   - the harness unminimizes such a comment, so it is visibly open;
   - it refuses an `informational` disposition on a finding-bearing body;
   - it re-verifies a fresh disposition posted after an edit;
-  - the `dev-lead-retry.sh` sweep re-dispatches a fix-reviews pass when no
-    successful pass has run since the edit. That dedup means CodeRabbit's progress
-    edits cost one run, not one per edit. dev-lead only fires on created
-    comments, and the caller stub's `on:` is standards-owned.
+  - the `dev-lead-retry.sh` sweep re-dispatches a fix-reviews pass only for edits
+    newer than a covering disposition (including a `maintainer-resolve` reply),
+    when no successful pass has followed the edit and no other retry was
+    dispatched in the same sweep. Deduplication batches CodeRabbit's progress
+    edits between successful passes. dev-lead only fires on created comments,
+    and the caller stub's `on:` is standards-owned.
 - If you only want to *chat* (e.g. "LGTM") without requesting a change, leave an
   **approving review** rather than a plain comment — a review is not an issue comment,
   and it also positively signals "no changes needed".
@@ -153,8 +155,10 @@ So:
 - A **malformed / unparseable** PR snapshot → **fails the PR** (return 2 → exit 1),
   reported with a distinct verdict reason so an undeterminable gate state can never
   recur disguised as a legitimate hold (#1813 AC8), so a scheduled run retries rather
-  than approving blind. The gate makes **no** `gh`/network calls — it reuses the
+  than approving blind. The verdict itself makes **no** `gh`/network calls — it reuses the
   snapshot the caller already fetched — so there is no push-time lookup left to fail.
+  The one best-effort network call is the edit-time lookup
+  (`maintainer_gate_merge_edit_times`); its failure fails closed (below).
 - A `RESOLVED` registered-bot comment whose **edit time cannot be read** (#2008)
   also fails closed (return 2). Examples: an edited comment whose `lastEditedAt`
   lookup failed, or a malformed timestamp. The gate cannot tell whether it

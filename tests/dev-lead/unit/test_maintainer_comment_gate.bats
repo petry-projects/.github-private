@@ -553,7 +553,10 @@ SHIM
 }
 
 @test "Wiring(#2008): review-one-pr.sh merges comment edit times before the gate" {
-  grep -q 'maintainer_gate_merge_edit_times' "$SCRIPT_DIR/review-one-pr.sh"
+  local merge_line gate_line
+  merge_line=$(grep -n 'maintainer_gate_merge_edit_times' "$SCRIPT_DIR/review-one-pr.sh" | head -1 | cut -d: -f1)
+  gate_line=$(grep -n 'check_maintainer_comments' "$SCRIPT_DIR/review-one-pr.sh" | head -1 | cut -d: -f1)
+  [ -n "$merge_line" ] && [ "$merge_line" -lt "$gate_line" ]
 }
 
 # ────────────────────────────────────────────────────────────────────

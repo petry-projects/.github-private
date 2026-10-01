@@ -725,7 +725,9 @@ _detect_cr() {
 }
 
 @test "detect_advisory_rate_limit(#2008): PR #2000's body (throttled code review + security finding) is NOT 'no CodeRabbit evidence'" {
-  _detect_cr "$(cat "$SCRIPT_DIR/../tests/fixtures/coderabbit/pr2000-ratelimited-with-security-finding.md")"
+  local fixture="$SCRIPT_DIR/../tests/fixtures/coderabbit/pr2000-ratelimited-with-security-finding.md"
+  [ -s "$fixture" ]
+  _detect_cr "$(cat "$fixture")"
   [ "$status" -eq 1 ]
 }
 

@@ -4985,5 +4985,5 @@ _resolved_bot_comment() {
 }
 
 @test "resolve_dispositioned_comments(#2008): the comment query fetches lastEditedAt" {
-  grep -q 'lastEditedAt' "$FIX_REVIEWS_SCRIPT"
+  grep -q 'createdAt lastEditedAt }' "$FIX_REVIEWS_SCRIPT"
 }
