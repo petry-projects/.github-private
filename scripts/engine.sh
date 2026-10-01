@@ -1457,7 +1457,7 @@ run_triage() {
         # In token-logging mode the invoke ran inside a `| tee` pipeline SUBSHELL,
         # so _CLAUDE/_GEMINI_CHAIN_MODEL_USED were set there and never reached this
         # shell. Falling back to ENGINE_TRIAGE_MODEL here mis-attributes a PINNED
-        # chain (e.g. the model-ab A/B's claude-opus-5-5 / -4-8 arms, which set
+        # chain (e.g. the model-ab A/B's claude-opus-5-5 / -4-8 arms, which set  # model-pin-ok: example of A/B test's specific pinned versions (#1950, #1952)
         # CLAUDE_TRIAGE_MODEL_CHAIN) to the tier default — corrupting the per-model
         # cost record. Record the HEAD of the pinned chain instead: the model that
         # ran absent a fallback (for a single-id pin that IS the model used). #1952.

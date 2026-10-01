@@ -6,7 +6,7 @@ name: Model A/B (non-regression)
 # AC-3 liveness, AC-4 effort probe) were "recorded as requiring a live CI run",
 # but no workflow in this repo runs scripts/evals/model-ab.sh (skill-eval-report.yml
 # runs run-eval.sh for ONE skill at a fixed model). So the epic's non-regression
-# metric — `model-ab.sh claude-opus-5-5 claude-opus-4-8` exits 0 — had no execution
+# metric — `model-ab.sh claude-opus-5-5 claude-opus-4-8` exits 0 — had no execution  # model-pin-ok: A/B test non-regression metric for #1950, #1978, #1979
 # path. This workflow gives it one.
 #
 # workflow_dispatch ONLY (no schedule, no pull_request): every run spends tokens
@@ -30,12 +30,12 @@ on:
       candidate:
         description: "Candidate (new) model id to score against the incumbent"
         required: false
-        default: "claude-opus-5-5"
+        default: "claude-opus-5-5"  # model-pin-ok: A/B test requires specific model versions for non-regression check (#1950, #1978, #1979)
         type: string
       incumbent:
         description: "Incumbent (current) model id — the non-regression baseline"
         required: false
-        default: "claude-opus-4-8"
+        default: "claude-opus-4-8"  # model-pin-ok: A/B test requires specific model versions for non-regression check (#1950, #1978, #1979)
         type: string
       sets:
         description: "Space-separated held-out sets; each must have evals/<set>/holdout (frozen sets only)"
