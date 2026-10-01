@@ -358,6 +358,21 @@ Earlier this run reported: You have reached your Codex usage limits for code rev
   [ "$status" -eq 0 ]
 }
 
+@test "AC1(#1995): Qodo trial-ended notice with its HTML marker prefix clears → 0" {
+  _run_check "$(_notice_json qodo-code-review "<!-- qodo:billing-blocked --> Qodo reviews are paused because your trial has ended.")"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC2(#1995): a Qodo review that mentions the trial notice mid-body still blocks → 1" {
+  _run_check "$(_notice_json qodo-code-review "The handling of the case where Qodo reviews are paused because your trial has ended is too lenient.")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC2(#1995): a CodeRabbit review that mentions the limit notice mid-body still blocks → 1" {
+  _run_check "$(_notice_json coderabbitai "The error handling is broken. Review limit reached — you have used up your prepaid credits feature needs better UX.")"
+  [ "$status" -eq 1 ]
+}
+
 @test "AC1(#1995): Qodo monthly-usage-limit notice clears → 0" {
   _run_check "$(_notice_json qodo-code-review "Qodo Merge has reached your monthly usage limit for pull-request reviews on this repository. Reviews will resume when the limit resets.")"
   [ "$status" -eq 0 ]

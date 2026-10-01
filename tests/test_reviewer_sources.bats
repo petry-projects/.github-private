@@ -223,6 +223,9 @@ _body_matches_pattern() {
   # Review prose reusing the notice's leading literal must not clear.
   run _body_matches_pattern "$pat" "Review limit reached handling is too broad — this code path should be narrower."
   [ "$status" -eq 1 ]
+  # Anchored to the body start: prose that only mentions the notice text mid-body must not clear.
+  run _body_matches_pattern "$pat" "The error handling is broken. Review limit reached — you have used up your prepaid credits feature needs better UX."
+  [ "$status" -eq 1 ]
 }
 
 @test "info-status: qodo-code-review matches its trial-ended notice, not a review (#1995)" {
@@ -238,6 +241,17 @@ _body_matches_pattern() {
   [ "$status" -eq 1 ]
   # Review prose reusing the notice's leading literal must not clear.
   run _body_matches_pattern "$pat" "Qodo reviews are paused because the health check failed — lean on monitoring instead."
+  [ "$status" -eq 1 ]
+  # The real trial notice is prefixed with Qodo's HTML marker comment and must still clear.
+  run _body_matches_pattern "$pat" "<!-- qodo:billing-blocked --> Qodo reviews are paused because your trial has ended."
+  [ "$status" -eq 0 ]
+  # Anchored to the body start: prose that only mentions either notice mid-body must not clear.
+  run _body_matches_pattern "$pat" "The handling of the case where Qodo reviews are paused because your trial has ended is too lenient."
+  [ "$status" -eq 1 ]
+  run _body_matches_pattern "$pat" "When Qodo Merge has reached your monthly usage limit for pull-request reviews, the fallback logic is broken."
+  [ "$status" -eq 1 ]
+  # End-anchored trial sentence: a body that opens with it and goes on to a finding must not clear.
+  run _body_matches_pattern "$pat" "Qodo reviews are paused because your trial has ended is the wrong message here — fix the copy."
   [ "$status" -eq 1 ]
 }
 
