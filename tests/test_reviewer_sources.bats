@@ -157,17 +157,68 @@ TSV
 @test "info-status: a source without an info-status pattern is not listed" {
   local patterns
   patterns="$(reviewer_sources_info_status_patterns)"
-  # These seven sources carry "-" in the info_status_pattern column, so none may
+  # These sources carry "-" in the info_status_pattern column, so none may
   # appear — enumerate every one (mirroring the check-run negative test) so giving
   # any unlisted source a non-"-" pattern must fail this test rather than pass
-  # silently and weaken the gate's fail-closed guarantee.
+  # silently and weaken the gate's fail-closed guarantee. codeant-ai and
+  # graphite-app are finding-producing reviewers and must stay out (#1995).
   [[ "$patterns" != *"copilot-pull-request-reviewer"* ]]
   [[ "$patterns" != *"gemini-code-assist"* ]]
-  [[ "$patterns" != *"chatgpt-codex-connector"* ]]
-  [[ "$patterns" != *"coderabbitai"* ]]
-  [[ "$patterns" != *"qodo-code-review"* ]]
   [[ "$patterns" != *"codeant-ai"* ]]
   [[ "$patterns" != *"graphite-app"* ]]
+  [[ "$patterns" != *"cubic-dev-ai"* ]]
+}
+
+# ── Generalized info-status patterns for service notices (issue #1995) ────────
+#
+# #1918 added info_status_pattern for sonarqubecloud only. Every other reviewer
+# that posts a service notice carrying NO finding (a usage-limit / trial-ended /
+# "review limit reached" message) was still undispositionable and stranded the
+# approval gate. #1995 declares tightly-anchored patterns for those notices.
+#
+# Each pattern must (AC #3) MATCH the real notice body and NOT match a real review
+# body from the same bot. _info_pattern_for reads the stored pattern; the gate
+# applies it via jq test() (case-sensitive), so these tests do the same.
+
+_info_pattern_for() {
+  reviewer_sources_info_status_patterns | awk -F'\t' -v l="$1" '$1==l{print $2}'
+}
+
+# _body_matches_pattern <pattern> <body> — 0 iff <body> matches <pattern> under
+# the exact jq test() semantics the maintainer-comment gate uses.
+_body_matches_pattern() {
+  jq -ne --arg p "$1" --arg b "$2" '$b | test($p)' >/dev/null
+}
+
+@test "info-status: chatgpt-codex-connector matches its Codex usage-limit notice, not a review (#1995)" {
+  local pat
+  pat="$(_info_pattern_for chatgpt-codex-connector)"
+  [ -n "$pat" ]
+  run _body_matches_pattern "$pat" "You have reached your Codex usage limits for code reviews. You can see your limits in the Codex usage dashboard."
+  [ "$status" -eq 0 ]
+  # A real Codex review body that merely discusses a limit must NOT be swallowed.
+  run _body_matches_pattern "$pat" "The cubic free trial ended handling is too broad — this code path should be narrower."
+  [ "$status" -ne 0 ]
+}
+
+@test "info-status: coderabbitai matches its review-limit notice, not a review (#1995)" {
+  local pat
+  pat="$(_info_pattern_for coderabbitai)"
+  [ -n "$pat" ]
+  run _body_matches_pattern "$pat" "Review limit reached — you have used up your prepaid credits."
+  [ "$status" -eq 0 ]
+  run _body_matches_pattern "$pat" "Consider guarding against a nil pointer before dereferencing \`cfg\` here."
+  [ "$status" -ne 0 ]
+}
+
+@test "info-status: qodo-code-review matches its trial-ended notice, not a review (#1995)" {
+  local pat
+  pat="$(_info_pattern_for qodo-code-review)"
+  [ -n "$pat" ]
+  run _body_matches_pattern "$pat" "Qodo reviews are paused because your trial has ended."
+  [ "$status" -eq 0 ]
+  run _body_matches_pattern "$pat" "Suggestion: extract this block into a helper to reduce duplication."
+  [ "$status" -ne 0 ]
 }
 
 @test "info-status: helper propagates a missing-manifest failure" {
