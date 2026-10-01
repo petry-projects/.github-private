@@ -384,6 +384,18 @@ committed blob SHA, and fails on any **DRIFTED** file, reusing the ALIGNED/DRIFT
 model from `scripts/fleet_stub_drift.sh` (pure logic + bats: `tests/template_stub_drift.bats`). It is a
 PR-triggered check on the existing Lint workflow — **no new cron/scheduled workload**.
 
+- **Reference rows — `agent-ingress.yml` (#1729, AC #12):** `.github/workflows/agent-ingress.yml` is
+  enrolled in the drift manifest for **post-collapse byte-identity coverage**, but
+  `seed-repo-template.sh` deliberately never seeds it (it lives in the `--emit-workflow`-only
+  `REFERENCE_MANIFEST`, reachable for hashing but never written into the seeded set). Until the ADR-0007
+  pilot repo collapse lands, the template has no such file, so it reports MISSING every run. A MISSING
+  **reference row** therefore prints a distinct **non-actionable `::notice::`** — never the generic
+  "re-seed via `seed-repo-template.sh`" remedy, which can never clear it and, if followed, would hand-copy
+  a live executing ingress into every new repo ahead of the pilot. The reference set lives in
+  `TEMPLATE_DRIFT_REFERENCE` in `scripts/template_stub_drift.sh`; when the pilot collapse lands, the
+  template is seeded in the **same change** that retires the per-role stubs it replaces and the row stops
+  being a reference row.
+
 - **Allowlist exception — `ci.yml`:** `.github/workflows/ci.yml` is the **one** shipped stub that
   intentionally carries real per-stack build/test steps and is customized per consumer (see the template's
   `BOOTSTRAP.md` "Customize `ci.yml` for your stack" step). A byte-identity guard would false-positive on the
