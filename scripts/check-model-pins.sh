@@ -31,11 +31,13 @@ SCAN_DIRS=(.github scripts prompts agents personas)
 PATTERN='claude-((opus|sonnet|haiku|fable)-[0-9]|[0-9]+(-[0-9]+)?-(opus|sonnet|haiku|fable))'
 
 # Allow-listed paths (relative to ROOT). These files legitimately name concrete
-# ids: the resolver defines the family→id mapping, the price table records rates.
+# ids: the resolver defines the family→id mapping, the price table records rates,
+# and the generated workflow lock files are auto-compiled and not manually pinned.
 is_allowed() {
   case "$1" in
     scripts/lib/engine-models.sh)  return 0 ;;
     scripts/lib/model-pricing.tsv) return 0 ;;
+    .github/workflows/*.lock.yml)  return 0 ;;
   esac
   return 1
 }
