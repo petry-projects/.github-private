@@ -159,6 +159,27 @@ mrc_is_registered_bot() {
   [[ "$search" == *$'\n'"$norm"$'\n'* ]]
 }
 
+# mrc_bot_body_matches <author_login> <comment_body> <patterns_tsv>
+#   0 iff <comment_body> matches the info_status_pattern that <patterns_tsv>
+#   ("login<TAB>pattern" lines, as reviewer_sources_info_status_patterns emits)
+#   declares for <author_login> ("[bot]" suffix stripped). The match is the same
+#   case-sensitive jq test() the maintainer-comment gate applies (#1918). This is
+#   what keeps the bot path a NOTICE-only escape hatch: a registered bot that also
+#   produces findings (Codex, CodeRabbit, Qodo, #1995) is authorized only for the
+#   comment body its pattern recognizes, never for a finding it posts. An empty
+#   author or body, a login with no pattern, or a jq error fails closed. Pure
+#   apart from jq.
+mrc_bot_body_matches() {
+  local author="${1:-}" body="${2:-}" patterns="${3:-}" norm pattern result
+  [[ -n "$author" && -n "$body" && -n "$patterns" ]] || return 1
+  norm="$(mrc_normalize_login "$author")"
+  [[ -n "$norm" ]] || return 1
+  pattern="$(printf '%s\n' "$patterns" | awk -F'\t' -v l="$norm" '$1==l {print $2; exit}')"
+  [[ -n "$pattern" ]] || return 1
+  result="$(jq -nr --arg b "$body" --arg p "$pattern" '($b | test($p))' 2>/dev/null)" || return 1
+  [[ "$result" == "true" ]]
+}
+
 # mrc_reason_ok <reason>
 #   0 iff <reason> is non-empty after trimming whitespace. The bot-comment path
 #   REQUIRES a reason (posted as a reply before minimizing, #1918 AC #3) so the
@@ -348,7 +369,7 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
   # viewer, in one GraphQL round-trip. Fail closed if either login is unreadable.
   # `url` is the authoritative source for the repo + PR number when posting the
   # bot-path reply (it is a /pull/…#issuecomment-… URL for a PR comment).
-  _q='query($id:ID!){viewer{login} node(id:$id){... on IssueComment{author{__typename login} isMinimized minimizedReason url}}}'
+  _q='query($id:ID!){viewer{login} node(id:$id){... on IssueComment{author{__typename login} body isMinimized minimizedReason url}}}'
   set +e
   _snap=$(gh api graphql -f query="$_q" -f id="$_node" 2>/dev/null)
   _status=$?
@@ -378,6 +399,7 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
   _is_min=$(printf '%s' "$_snap" | jq -r '.data.node.isMinimized // false | tostring' 2>/dev/null || echo "false")
   _min_reason=$(printf '%s' "$_snap" | jq -r '.data.node.minimizedReason // ""' 2>/dev/null || echo "")
   _url=$(printf '%s' "$_snap" | jq -r '.data.node.url // ""' 2>/dev/null || echo "")
+  _body=$(printf '%s' "$_snap" | jq -r '.data.node.body // ""' 2>/dev/null || echo "")
 
   # Authorize FIRST — before the idempotent early return — so a caller cannot pass
   # an already-RESOLVED comment they are not entitled to and receive success while
@@ -386,11 +408,14 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
   #     a bot-authored comment must always take the bot path (its mandatory --reason
   #     + audit reply), never the self path, even if gh is authenticated as that
   #     same bot (#1918 review: keep bot authors out of self-authorization).
-  #   • REGISTERED INFO-STATUS BOT (#1918): the author is a bot that declares an
-  #     info-status pattern in the reviewer-source registry — i.e. a clean-status
-  #     re-poster like SonarCloud, NOT a finding-producing reviewer (codeant-ai,
-  #     graphite-app). The maintainer (a confirmed viewer) is the human-in-the-loop
-  #     and MUST supply --reason, posted as a reply before the minimize.
+  #   • REGISTERED INFO-STATUS NOTICE (#1918, #1995): the author is a bot that
+  #     declares an info-status pattern in the reviewer-source registry AND this
+  #     comment's body matches that pattern — i.e. a no-finding service notice
+  #     (SonarCloud's clean status, Codex/CodeRabbit/Qodo usage-limit notices).
+  #     The body check matters because some registered bots also post findings:
+  #     the login alone must never authorize minimizing a finding. The maintainer
+  #     (a confirmed viewer) is the human-in-the-loop and MUST supply --reason,
+  #     posted as a reply before the minimize.
   # Another human's comment, or a finding-producing bot's, matches neither and is
   # refused — a finding still requires dev-lead's verified-fix flow or the author.
   _authz_kind=""
@@ -404,17 +429,20 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     # Fail closed if the registry cannot be read — never widen authorization on a
     # registry we could not consult.
     _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
-    _registered=""
+    _patterns=""
     if [[ -f "$_lib_dir/reviewer-sources.sh" ]]; then
-      _registered="$(
+      _patterns="$(
         REVIEWER_SOURCES_MANIFEST="$_lib_dir/reviewer-sources.tsv"
         export REVIEWER_SOURCES_MANIFEST
         # shellcheck source=lib/reviewer-sources.sh
         source "$_lib_dir/reviewer-sources.sh" 2>/dev/null \
-          && reviewer_sources_info_status_patterns 2>/dev/null | cut -f1
-      )" || _registered=""
+          && reviewer_sources_info_status_patterns 2>/dev/null
+      )" || _patterns=""
     fi
-    if [[ -n "$_viewer" && "$_author_type" == "Bot" ]] && mrc_is_registered_bot "$_author" "$_registered"; then
+    _registered="$(printf '%s\n' "$_patterns" | cut -f1)"
+    if [[ -n "$_viewer" && "$_author_type" == "Bot" ]] \
+       && mrc_is_registered_bot "$_author" "$_registered" \
+       && mrc_bot_body_matches "$_author" "$_body" "$_patterns"; then
       _authz_kind="bot"
     fi
   fi
@@ -423,6 +451,7 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     echo "[maintainer-resolve-comment] ERROR: refusing to resolve — this path minimizes only YOUR OWN comment or a REGISTERED REVIEWER BOT's comment." >&2
     echo "  authenticated as: '${_viewer:-<unreadable>}'; comment author: '${_author:-<unreadable>}'" >&2
     echo "  a finding authored by another person must be dispositioned by dev-lead (verified fix) or by its author." >&2
+    echo "  a registered bot's comment qualifies only when its body matches that bot's info_status_pattern (a no-finding notice)." >&2
     exit 3
   fi
 
