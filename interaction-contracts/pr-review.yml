@@ -14,6 +14,13 @@
 # path (workflow_run:[completed] scoped to the PR whose CI just went green), so it
 # is a textbook §2 Class-2 backstop, not a §6.3 leak.
 #
+# pr-review-delayed-retry.yml (#1994) is a Class-1 (workflow_dispatch-only) member
+# of this runtime: the sweep ARMS it when it defers a PR on an un-elapsed rate-limit
+# marker whose reset is near, and it fires a deterministic retry within minutes of
+# that reset instead of waiting for the best-effort cron. Its in-run sleep is an
+# armed delay, not a scheduled timer — it has no `on: schedule`, so it adds no timer
+# to this contract; it only re-dispatches through the same sweep path.
+#
 # #1408 narrowing: the SCHEDULED (cron) path now re-dispatches ONLY for genuinely
 # un-eventable cases — checks that either have no workflowName (GitHub-App /
 # cross-repo StatusContexts and CheckRuns; SonarCloud is the named example) or
@@ -30,6 +37,7 @@ kind: runtime
 workflows:
   - .github/workflows/pr-review-trigger.yml
   - .github/workflows/pr-review-sweep.yml
+  - .github/workflows/pr-review-delayed-retry.yml
 interaction:
   triggers:
     events:
@@ -41,7 +49,7 @@ interaction:
     timers:
       - cron: "2,17,32,47 * * * *"
         role: backstop
-        justification: "pr-review-sweep.yml re-dispatches reviews for PRs that went green after a ci-pending/ci-failing skip; #1408 narrows the scheduled path to genuinely un-eventable checks only (GitHub-App/cross-repo checks like SonarCloud that emit no workflow_run), the guaranteed <=15-min latency bound for the residue the event fast path cannot cover"
+        justification: "pr-review-sweep.yml re-dispatches reviews for PRs that went green after a ci-pending/ci-failing skip; #1408 narrows the scheduled path to genuinely un-eventable checks only (GitHub-App/cross-repo checks like SonarCloud that emit no workflow_run). This cron is the EVENTUAL backstop, not a guaranteed <=15-min one — GitHub drops scheduled runs under load so the effective interval stretches to hours when busy (#1952); latency is bounded by the workflow_run fast path and, for a deferred rate-limited review, the armed pr-review-delayed-retry.yml (#1994), while the cron just ensures nothing is lost forever"
         stop_condition: "PR still open and its review still stale/needed, not human-gated, and at least one blocking check is un-eventable (missing a workflowName or using a workflowName outside the pr-review-sweep workflow_run allowlist) — eventable-only PRs are left to the fast path"
         event_fast_path: "workflow_run:[completed] scoped to the completing CI run's PR(s) — fully covers every eventable GitHub Actions check, leaving only un-eventable cases to the cron"
   emits:
@@ -49,8 +57,9 @@ interaction:
     - "review:changes-requested"
     - "comment:<!-- pr-review -->"
     - "workflow_dispatch:pr-review-trigger"
+    - "workflow_dispatch:pr-review-delayed-retry"
   idempotency_key: "pr_url + head_sha (the review marker makes a same-head re-review a fast no-op)"
-  concurrency_lane: "pr-review-pr-<pr_url> / pr-review-batch (pr-review.yml); pr-review-sweep-<branch|event_name> (pr-review-sweep.yml)"
+  concurrency_lane: "pr-review-pr-<pr_url> / pr-review-batch (pr-review.yml); pr-review-sweep-<branch|event_name> (pr-review-sweep.yml); pr-review-delayed-retry-<pr_url>-<head_sha> (pr-review-delayed-retry.yml)"
   stop_markers:
     - needs-human-review
     - pr-review:hands-off
