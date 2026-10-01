@@ -321,6 +321,19 @@ _notice_json() {
   [ "$status" -eq 1 ]
 }
 
+# #1993: the Codex pattern is case-sensitive (jq test()) and pinned to the
+# chatgpt-codex-connector login — a lower-cased variant, or the SAME notice text
+# from a different author, is not cleared.
+@test "#1993: a lower-cased Codex notice does not match (case-sensitive) → 1" {
+  _run_check "$(_notice_json chatgpt-codex-connector "you have reached your codex usage limits for code reviews.")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#1993: the Codex usage-limit text from a different author still blocks → 1" {
+  _run_check "$(_notice_json some-impersonator "You have reached your Codex usage limits for code reviews. You can see your limits in the Codex usage dashboard.")"
+  [ "$status" -eq 1 ]
+}
+
 @test "AC2(#1995): a Codex comment that only quotes the notice (not at body start) still blocks → 1" {
   _run_check "$(_notice_json chatgpt-codex-connector "## Codex Review — could not complete
 
