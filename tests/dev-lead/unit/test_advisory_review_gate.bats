@@ -488,8 +488,11 @@ MOCK_EOF
     echo \"NOTICE=\${#RATE_LIMIT_NOTICE_BOTS[@]}\"
   "
   # Must NOT exit the sourcing shell; must expose the built-in fallback sets.
+  # BOTS=5 is the post-#1997 advisory-wait set (gemini, sonarqubecloud, codeant-ai,
+  # graphite-app, cubic-dev-ai); copilot/codex/qodo were dropped. NOTICE stays 9 — the
+  # rate-limit notice superset is ALL registered sources, which #1997 did not change.
   [ "$status" -eq 0 ]
-  [[ "$output" == *"BOTS=8"* ]]
+  [[ "$output" == *"BOTS=5"* ]]
   [[ "$output" == *"NOTICE=9"* ]]
 }
 
@@ -535,8 +538,10 @@ MOCK_EOF
 }
 
 @test "Gate runtime: rate-limited bot is classified RATE_LIMITED in gate output" {
+  # codeant-ai (still in the advisory-wait set post-#1997) posts an out-of-quota notice;
+  # the gate must classify its latest submission RATE_LIMITED.
   local json
-  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"codeant-ai"},"body":"You have reached your usage limit for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
   local tmpdir
   tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
@@ -804,7 +809,12 @@ _events_dir() {
   [[ "$output" == *"OK"* ]]
 }
 
-@test "Gate runtime: a Qodo review is detected as an advisory bot submission (issue #1349)" {
+@test "Gate runtime: a Qodo review is NO LONGER treated as an advisory-gate submission (dropped from approval-wait set, #1997)" {
+  # #1997 dropped qodo-code-review from the advisory-wait set (advisory_gate=no): it
+  # produced no countable review across eight consecutive PRs. The gate filters by
+  # ADVISORY_BOTS, so a qodo review is no longer counted here — it must not appear in the
+  # gate's detected-bot output. (qodo remains dev-lead-trusted and on the scorecard; it
+  # leaves only the approval-wait set.)
   local json; json="$(cat "$(_events_dir)/advisory_qodo_reviewed.json")"
   local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
@@ -813,8 +823,7 @@ _events_dir() {
     check_advisory_reviews 'https://github.com/owner/repo/pull/123'
   "
   rm -rf "$tmpdir"
-  # If Qodo were unregistered it would be filtered out and never appear in output.
-  [[ "$output" == *"qodo-code-review"* ]]
+  [[ "$output" != *"qodo-code-review"* ]]
 }
 
 @test "Gate runtime: a CodeAnt review is detected as an advisory bot submission (issue #1349)" {
@@ -829,7 +838,10 @@ _events_dir() {
   [[ "$output" == *"codeant-ai"* ]]
 }
 
-@test "Gate runtime: a Qodo out-of-quota notice is classified RATE_LIMITED (issue #1349)" {
+@test "Gate runtime: a Qodo out-of-quota notice is ignored by the gate (dropped from approval-wait set, #1997)" {
+  # Mirror of the review case: with qodo dropped from the advisory-wait set (#1997) the
+  # gate no longer inspects qodo's submissions at all, so its rate-limit notice is neither
+  # counted nor classified here — qodo must not appear in the gate output.
   local json; json="$(cat "$(_events_dir)/advisory_qodo_rate_limited.json")"
   local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
@@ -838,8 +850,7 @@ _events_dir() {
     check_advisory_reviews 'https://github.com/owner/repo/pull/123'
   "
   rm -rf "$tmpdir"
-  [[ "$output" == *"RATE_LIMITED"* ]]
-  [[ "$output" == *"qodo-code-review"* ]]
+  [[ "$output" != *"qodo-code-review"* ]]
 }
 
 @test "Gate runtime: a CodeAnt out-of-quota notice is classified RATE_LIMITED (issue #1349)" {
@@ -1001,10 +1012,12 @@ _events_dir() {
 }
 
 @test "Gate runtime: another reviewer discussing cubic's trial is NOT RATE_LIMITED (author-scoped, issue #1903)" {
-  # A codex comment that merely mentions cubic's trial must classify COMMENTED, not
-  # RATE_LIMITED — otherwise codex would be dropped from the required set on a real
-  # finding (#1903 codex P2). The cubic clause only applies to cubic's own author.
-  local json='{"reviews":[],"comments":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2099-01-01T00:00:00Z","body":"The cubic free trial ended handling is too broad."}]}'
+  # A different advisory reviewer's comment that merely mentions cubic's trial must
+  # classify COMMENTED, not RATE_LIMITED — otherwise that reviewer would be dropped from
+  # the required set on a real finding (#1903 codex P2). The cubic clause only applies to
+  # cubic's own author. gemini-code-assist is used here because it remains in the
+  # advisory-wait set post-#1997 (codex, the original subject, was dropped).
+  local json='{"reviews":[],"comments":[{"author":{"login":"gemini-code-assist"},"createdAt":"2099-01-01T00:00:00Z","body":"The cubic free trial ended handling is too broad."}]}'
   local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
   run env PATH="$tmpdir:$PATH" bash -c "
@@ -1012,7 +1025,7 @@ _events_dir() {
     check_advisory_reviews 'https://github.com/owner/repo/pull/123'
   "
   rm -rf "$tmpdir"
-  [[ "$output" == *"chatgpt-codex-connector"* ]]
+  [[ "$output" == *"gemini-code-assist"* ]]
   [[ "$output" == *"COMMENTED"* ]]
   [[ "$output" != *"RATE_LIMITED"* ]]
 }
