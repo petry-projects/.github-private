@@ -875,6 +875,11 @@ resolve_addressed_bot_threads() {
 # is delegated to the pure cdv_*/acv_* verifiers so it fails closed on any ambiguity.
 resolve_dispositioned_comments() {
   local intent="$1"
+  # $2 = "failed" when called from a failed/timed-out pass. On that path a
+  # `fixed` disposition is never certified: the engine may have committed
+  # locally without the commit ever reaching the PR (commit_and_push did not
+  # run), so a local-HEAD check could clear the gate for an unpushed fix.
+  local pass_outcome="${2:-ok}"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
     echo "[dry-run] would resolve dispositioned PR issue comments on PR #${PR_NUMBER}"
     return 0
@@ -1018,6 +1023,10 @@ resolve_dispositioned_comments() {
     verified="false"
     case "$disposition" in
       fixed)
+        if [ "$pass_outcome" = "failed" ]; then
+          echo "::notice::skipping comment ${cid} — a \`fixed\` disposition is not certified on a failed pass (its commit may not have been pushed); leaving open (#1992)"
+          continue
+        fi
         # Bind the `fixed` evidence to THIS pass's commit — not merely any ancestor
         # already on the PR head. Without this, a prior pass's commit (or any
         # existing ancestor) satisfies the on-head + non-empty-diff check even when
@@ -2136,13 +2145,14 @@ case "$INTENT_TYPE" in
       # Don't orphan dispositions on a failed/timed-out pass (#1992). The engine
       # may have posted disposition replies and then errored or hit the writer-tier
       # timeout (exit 124) before commit_and_push ran. Each disposition is verified
-      # on its own terms, so running the resolver here is safe: a `fixed` fails
-      # closed because this pass did not advance the head, while an
-      # invalid/answered/informational/out-of-scope with evidence still clears.
+      # on its own terms, and the "failed" flag makes the resolver refuse every
+      # `fixed` disposition here (an engine-made local commit may never have been
+      # pushed), while an invalid/answered/informational/out-of-scope with
+      # evidence still clears.
       # (A hard action-budget SIGKILL that kills the process mid-step can't be
       # recovered in-process — but the next pass self-heals via the idempotent
       # posting + duplicate recovery above.)
-      resolve_dispositioned_comments "fix-reviews"
+      resolve_dispositioned_comments "fix-reviews" failed
     fi
     exit "$rc"
     ;;
@@ -2199,7 +2209,7 @@ case "$INTENT_TYPE" in
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
-      resolve_dispositioned_comments "fix-bot-comment"
+      resolve_dispositioned_comments "fix-bot-comment" failed
     fi
     exit "$rc"
     ;;
@@ -2301,7 +2311,7 @@ case "$INTENT_TYPE" in
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
-      resolve_dispositioned_comments "review-changes"
+      resolve_dispositioned_comments "review-changes" failed
     fi
     exit "$rc"
     ;;

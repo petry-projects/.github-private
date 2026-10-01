@@ -187,8 +187,11 @@ cdv_authorize() {
 #       the authorization gate (CWE-863): a disposition from any other author
 #       never counts and can never win, so an external commenter cannot smuggle a
 #       marker citing a candidate id past the resolver;
-#     - NOT already minimized (a superseded reply we minimized on a prior pass
-#       must stop counting, so the count truly converges to one);
+#     - explicitly NOT minimized (isMinimized == false; a missing or unreadable
+#       value fails closed, and a superseded reply we minimized on a prior pass
+#       stops counting, so the count truly converges to one);
+#     - carrying a well-formed ISO-8601 createdAt (an unreadable timestamp could
+#       otherwise win the "latest" comparison, so it fails closed);
 #     - parseable by cdv_parse_disposition AND citing id=<cid> (an unparseable or
 #       mis-targeted marker is ignored — fail closed, never guessed).
 #   Of those it selects the LATEST by createdAt, tie-broken by node id (lexical,
@@ -217,14 +220,15 @@ cdv_select_disposition() {
       (.[]? // empty) | objects
       | (.author?.login // "" | tostring) as $l
       | select($l == $botuser or $l == $botstripped)
-      | select(((.isMinimized // false) == true) | not)
-      | {id:(.id // ""), createdAt:(.createdAt // ""), body:(.body // "")} | @base64
+      | select(.isMinimized == false)
+      | select((.createdAt // "" | tostring) | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+      | {id:(.id // ""), createdAt:.createdAt, body:(.body // "")} | @base64
     ' 2>/dev/null || true)
 
   local auth_count=0 chosen_id="" chosen_created="" chosen_disp=""
   local superseded=()
   local rec rec_json rid rcreated rbody parsed pid newer
-  while IFS= read -r rec || [[ -n "$rec" ]]; do
+  while IFS= read -r rec; do
     [[ -z "$rec" ]] && continue
     rec_json=$(printf '%s' "$rec" | base64 -d 2>/dev/null || true)
     [[ -z "$rec_json" ]] && continue

@@ -294,6 +294,28 @@ ${marker}" \
   [ "$(echo "$output" | jq -r '.superseded[0]')" = "R_aaa" ]
 }
 
+@test "select: a reply with missing isMinimized is excluded (fails closed)" {
+  local c
+  c=$(jq -s '.' \
+    <(_mk_reply "R_ok" "2026-09-26T21:00:00Z" "invalid" "IC_X") \
+    <(_mk_reply "R_unk" "2026-09-26T22:00:00Z" "invalid" "IC_X" | jq 'del(.isMinimized)'))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "1" ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R_ok" ]
+}
+
+@test "select: a reply with a malformed createdAt cannot win as latest (fails closed)" {
+  local c
+  c=$(jq -s '.' \
+    <(_mk_reply "R_ok" "2026-09-26T21:00:00Z" "invalid" "IC_X") \
+    <(_mk_reply "R_bad" "zzzz-not-a-time" "invalid" "IC_X"))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "1" ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R_ok" ]
+}
+
 @test "select: matches BOT_USER given with [bot] suffix (graphql-stripped login)" {
   local c; c=$(jq -s '.' <(_mk_reply "R1" "2026-09-26T21:00:00Z" "invalid" "IC_X"))
   _select "IC_X" "donpetry-bot[bot]" "$c"

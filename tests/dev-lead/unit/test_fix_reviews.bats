@@ -4691,7 +4691,8 @@ _setup_disposition_pass() {
   export MINLOG="$BATS_TEST_TMPDIR/minimize.log"
   : > "$MINLOG"
 
-  DISP_REPO="$(mktemp -d)"
+  DISP_REPO="$BATS_TEST_TMPDIR/disp_repo"
+  mkdir -p "$DISP_REPO"
   git -C "$DISP_REPO" init -q
   echo "initial" > "$DISP_REPO/file.txt"
   git -C "$DISP_REPO" add .
@@ -4778,7 +4779,7 @@ _orig_comment() {
   run bash "$FIX_REVIEWS_SCRIPT" 2>&1
 
   # Engine failed → non-zero exit, yet the resolver ran on the failure path (AC3).
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   # The one authorized disposition resolves the comment (idempotent convergence).
   grep -Eq 'classifier:RESOLVED.*id=IC_ORIG' "$MINLOG"
   # Nothing is superseded when only one disposition exists → no OUTDATED call.
@@ -4796,7 +4797,7 @@ _orig_comment() {
 
   run bash "$FIX_REVIEWS_SCRIPT" 2>&1
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   # The original comment is minimized exactly once, RESOLVED.
   grep -Eq 'classifier:RESOLVED.*id=IC_ORIG' "$MINLOG"
   [ "$(grep -c 'classifier:RESOLVED' "$MINLOG")" -eq 1 ]
@@ -4825,11 +4826,28 @@ _orig_comment() {
 
   run bash "$FIX_REVIEWS_SCRIPT" 2>&1
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   grep -Eq 'classifier:RESOLVED.*id=IC_ORIG' "$MINLOG"
   grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
   grep -Eq 'classifier:OUTDATED.*id=R2' "$MINLOG"
   ! grep -Eq 'id=R3' "$MINLOG"
+}
+
+@test "resolve_dispositioned_comments: a \`fixed\` disposition is never certified on a FAILED pass (#1992)" {
+  # The engine may have committed locally without the commit reaching the PR,
+  # so on the failure path a `fixed` disposition must not resolve the comment.
+  local fixed nodes
+  fixed=$(jq -nc '{id:"R1", author:{login:"donpetry-bot", __typename:"User"},
+    body:"Fixed the null path.\n<!-- dev-lead:comment-disposition id=IC_ORIG disposition=fixed sha=c03ecdaea49cb873ca29ac0ca905c2d92ecbd3ce -->",
+    isMinimized:false, minimizedReason:null, createdAt:"2026-09-26T21:44:49Z"}')
+  nodes=$(jq -sc '.' <(_orig_comment) <(echo "$fixed"))
+  _setup_disposition_pass "$nodes"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  ! grep -q 'minimizeComment' "$MINLOG"
+  [[ "$output" == *"not certified on a failed pass"* ]]
 }
 
 @test "resolve_dispositioned_comments: a non-BOT_USER disposition cannot resolve the comment (CWE-863)" {
@@ -4842,7 +4860,7 @@ _orig_comment() {
 
   run bash "$FIX_REVIEWS_SCRIPT" 2>&1
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   # No authorized disposition from BOT_USER → the comment is left open, nothing
   # minimized (the attacker's forged marker never counts).
   [ ! -s "$MINLOG" ]

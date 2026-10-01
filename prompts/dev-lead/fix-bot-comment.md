@@ -139,22 +139,25 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
      || { echo "node $node_id is authored by '$author', not '$actor' — not dispositioning" >&2; exit 1; }
    [ "$min" != "true" ] || { echo "node $node_id is already minimized RESOLVED — nothing to do"; exit 0; }
    # Idempotency (#1992): skip if a non-minimized reply you authored already
-   # disposition-cites this node id. bot_user is your account; only your own
+   # carries a well-formed non-`fixed` disposition marker for this node id (the
+   # same shape the harness parser accepts, so a quoted or malformed marker never
+   # suppresses the reply). The newest 100 comments are checked, which is where
+   # an earlier pass's reply lives. An unreadable check fails closed (no post). bot_user is your account; only your own
    # disposition counts (a reply from any other author must NOT suppress this —
    # CWE-863). The leading `id=<node_id>` is matched with a trailing delimiter so
    # IC_abc never matches IC_abcdef.
-   bot_user="${BOT_USER:-don-petry}"
+   bot_user="${BOT_USER:-donpetry-bot}"
    existing=$(gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){
      repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
-       comments(first:100){ nodes{ author{login} body isMinimized } } } } }' \
+       comments(last:100){ nodes{ author{login} body isMinimized } } } } }' \
      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" \
      | jq --arg id "$node_id" --arg bot "$bot_user" '
        [ .data.repository.pullRequest.comments.nodes[]
-         | select((.isMinimized // false) | not)
+         | select(.isMinimized == false)
          | select((.author.login // "") == $bot or (.author.login // "") == ($bot + "[bot]"))
-         | select(.body | contains("dev-lead:comment-disposition") and contains("id=" + $id + " "))
-         | select(.body | contains("disposition=fixed") | not) ] | length' 2>/dev/null || echo 0)
-   [ "${existing:-0}" -eq 0 ] || { echo "node $node_id already has your disposition reply — not posting another (#1992)"; exit 0; }
+         | select(.body | test("<!-- dev-lead:comment-disposition id=" + $id + " disposition=(informational|invalid|answered|out-of-scope)( [^>]*)? -->")) ]
+       | length') || existing="unreadable"
+   [ "${existing:-unreadable}" = "0" ] || { echo "node $node_id already has your disposition reply, or that could not be checked — not posting another (#1992)"; exit 0; }
    # Post the disposition reply on the PR (the body is yours, never the notice text):
    #   gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "…<!-- dev-lead:comment-disposition id=$node_id disposition=informational -->"
    ```
