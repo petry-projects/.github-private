@@ -126,6 +126,12 @@ done
 **Skip** (do not disposition, never reply to):
 
 - any comment already `isMinimized: true` with `minimizedReason` = `RESOLVED` — it is done;
+- any comment that **already has a non-`fixed` disposition** — a non-minimized comment authored by our bot account carrying a parseable `<!-- dev-lead:comment-disposition id=<this comment's id> disposition=invalid|answered|informational|out-of-scope … -->` marker already exists in the list. You dispositioned it on an earlier pass; the harness simply has not minimized it yet (it resolves them after this step, and also after a failed pass). Posting a **second** disposition is the defect behind #1952/#1953. Leave it alone (#1992).
+  **Exception — an existing `disposition=fixed` that is still not minimized was never verified.** The harness only accepts a `fixed` sha produced by the pass that cites it, so an earlier pass's `fixed` reply cannot clear on its own (typically that pass timed out before pushing). Do **not** skip it: check whether the fix is actually on this branch.
+  - **Not on the branch:** redo it and post a fresh `fixed` disposition citing this pass's commit.
+  - **Already on the branch** (an earlier pass pushed it and died before the harness verified it): there is no commit from this pass to cite, and the harness rejects a `fixed` sha from an earlier pass. Post an `answered` disposition instead, naming the commit that already contains the fix as the evidence.
+
+  The harness keeps the latest authorized disposition and minimizes the older ones OUTDATED;
 - **our own** automation comments — those authored by our bot account or carrying one of our markers (`<!-- pr-review-agent … -->`, `<!-- persona:… -->`, `<!-- dev-lead … -->` including your own `<!-- dev-lead:comment-disposition … -->` replies, `<!-- dependency-advisory -->`). **Never answer your own disposition reply** — doing so would loop forever (#860 / #1813 AC7).
 
 For **every other** comment (bot or human alike — a bot conflict report or trial-ended notice is still a finding), research it, then post **exactly one** reply comment that states specifically what you found/did (never just "done"), ending with **one** disposition marker. Post the reply with `gh pr comment ${PR_NUMBER} --body "…"`; pass the `id` node id from the query above verbatim:
