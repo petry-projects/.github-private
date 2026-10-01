@@ -663,7 +663,10 @@ GHEOF
   rm -f "$record_file"
 }
 
-@test "retry: stubbed 137 in the retry loop → still retries (invoked twice), regression guard" {
+@test "retry: EARLY 137 (signal kill well under budget) in the retry loop → still retries (invoked twice), regression guard" {
+  # An instant 137 ran for ~0ms, far below TRIAGE_TIMEOUT_SEC, so it is a genuine
+  # transient signal kill (e.g. OOM), NOT a `timeout --kill-after` budget
+  # exhaustion — it stays retryable (contrast the at-budget case below, #1952).
   local record_file
   record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 137 "$record_file"
@@ -675,6 +678,36 @@ GHEOF
   [ "$status" -eq 137 ]
   # Signal kills stay transient: RETRY_MAX_ATTEMPTS=2 → one retry → two invocations.
   [ "$(wc -l < "$record_file")" -eq 2 ]
+  rm -f "$record_file"
+}
+
+@test "retry: 137 AFTER consuming the full budget (kill-after SIGKILL) → treated as timeout (124), invoked once" {
+  # A triage call wrapped by `timeout --kill-after` that ignores SIGTERM is
+  # SIGKILLed at budget+grace and exits 137 — but it already spent its whole
+  # budget, so re-running at the same budget would only repeat it (#1028). This is
+  # the kill-after escalation cubic flagged: run_triage distinguishes it from the
+  # early signal kill above by the latency it measured and does NOT retry it
+  # (#1952 cubic P1). Simulate with a stub that traps SIGTERM and outlives a 1s
+  # budget + 1s grace, forcing `timeout` to force-kill it.
+  local record_file
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
+  cat > "$STUB_BIN_DIR/claude" <<STUBEOF
+#!/usr/bin/env bash
+echo "\$0" >> "${record_file}"
+trap '' TERM
+sleep 10
+STUBEOF
+  chmod +x "$STUB_BIN_DIR/claude"
+  export RETRY_BASE_DELAY_SEC=0   # no backoff sleep in tests
+  export TRIAGE_TIMEOUT_SEC=1 ENGINE_KILL_AFTER=1s
+  _source_engine "claude"
+
+  run run_triage "$TEST_PROMPT"
+
+  # kill-after SIGKILL → 137 reclassified to the non-retryable 124 timeout path.
+  [ "$status" -eq 124 ]
+  # Must be invoked exactly once — no same-budget retry of an exhausted call.
+  [ "$(wc -l < "$record_file")" -eq 1 ]
   rm -f "$record_file"
 }
 
