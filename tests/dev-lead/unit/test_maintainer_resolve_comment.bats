@@ -278,7 +278,7 @@ _mrc_minimized_reason() {
 # whose login happens to equal a registered bot login (e.g. a user account named
 # `sonarqubecloud`) must be refused like any other human — never minimized.
 # A SonarCloud clean-status body that matches its registered info_status_pattern.
-SONAR_PASS_JSON_BODY='**Quality Gate passed**\\n[0 New issues]\\n[0 Security Hotspots]'
+SONAR_PASS_JSON_BODY='**Quality Gate passed**\n[0 New issues]\n[0 Security Hotspots]'
 
 _mrc_fake_gh() {
   # $1 = author __typename, $2 = author login (default sonarqubecloud), $3 = the
@@ -335,7 +335,7 @@ SHIM
 }
 
 @test "#1995: a SonarCloud 'Quality Gate failed' comment is refused on the bot path" {
-  _mrc_fake_gh Bot sonarqubecloud '**Quality Gate failed**\\n[3 New issues]'
+  _mrc_fake_gh Bot sonarqubecloud '**Quality Gate failed**\n[3 New issues]'
   run bash "$MRC" "IC_kwDOfake1" --reason "status only"
   [ "$status" -eq 3 ]
   [ ! -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
