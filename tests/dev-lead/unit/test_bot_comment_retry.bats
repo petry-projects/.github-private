@@ -726,3 +726,15 @@ GHEOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::"*"777"* ]]
 }
+
+@test "sweep: a comment id outside the node-id alphabet is never spliced into a marker or filter" {
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot "IC_x' or true" coderabbitai 'Walkthrough')")"
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "0" ]
+  ! grep -q -- '--method POST' "$GH_LOG"
+  ! grep -q '/dispatches' "$GH_LOG"
+}

@@ -579,6 +579,12 @@ scan_pr_for_undispositioned_bot_comments() {
   cid=$(jq -r '.id' <<< "$pick")
   version=$(jq -r '.version' <<< "$pick")
   attempt=$(jq -r '.attempt' <<< "$pick")
+  # These are spliced into the marker body and the claim's --jq filter below.
+  if [[ ! "$cid" =~ ^[-A-Za-z0-9_+/=]+$ ]] || [[ ! "$attempt" =~ ^[0-9]+$ ]] \
+     || [[ ! "$version" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]]; then
+    echo "  [warn] bot-comment retry: unexpected comment id/version/attempt on PR ${pr_number} — not dispatching" >&2
+    echo "0"; return 0
+  fi
   now_iso="${NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   echo "  [retry] bot-comment ${cid} ($(jq -r '.login' <<< "$pick")) on PR ${pr_number}: undispositioned → fix-bot-comment attempt ${attempt}" >&2
 

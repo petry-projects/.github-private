@@ -1617,6 +1617,12 @@ expire_stale_terminal_markers() {
     return 0
   fi
   local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(applied|no-changes|failed)"
+  # A fix-bot-comment pass handles ONE comment, so it expires only that comment's
+  # terminal markers. Other comments' completed passes on the same SHA are what
+  # keeps the #2017 retry from re-dispatching them.
+  if [ "$intent" = "fix-bot-comment" ] && [[ "${COMMENT_NODE_ID:-}" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
+    pattern="${pattern} comment=${COMMENT_NODE_ID//+/\\+}( |-->)"
+  fi
   local stale_ids
   stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)

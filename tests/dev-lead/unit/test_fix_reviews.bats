@@ -4984,3 +4984,36 @@ _orig_comment() {
   [[ "$output" == *"intent=fix-bot-comment status=no-changes -->"* ]]
   [[ "$output" != *"comment=IC"* ]]
 }
+
+# _expire_with <intent> <comment_node_id>: run expire_stale_terminal_markers against
+# three terminal markers on the same SHA (two comments' fix-bot-comment passes and a
+# fix-reviews pass) and print the ids it deletes.
+_expire_with() {
+  run bash -c "
+    eval \"\$(sed -n '/^REVIEWS_MARKER_PREFIX=/p' '$FIX_REVIEWS_SCRIPT')\"
+    eval \"\$(sed -n '/^expire_stale_terminal_markers()/,/^}/p' '$FIX_REVIEWS_SCRIPT')\"
+    gh() {
+      case \"\$*\" in
+        *'-X DELETE'*) echo \"DELETED \${@: -1}\" | sed 's|.*/|DELETED |' ;;
+        *comments*) jq -cn '[
+          {id:1, body:\"<!-- dev-lead-fix-reviews pr=54 sha=abc intent=fix-bot-comment status=no-changes comment=IC_a+1 version=2026-10-01T23:40:00Z -->\"},
+          {id:2, body:\"<!-- dev-lead-fix-reviews pr=54 sha=abc intent=fix-bot-comment status=applied comment=IC_b -->\"},
+          {id:3, body:\"<!-- dev-lead-fix-reviews pr=54 sha=abc intent=fix-bot-comment status=no-changes comment=IC_a+12 -->\"}]' ;;
+      esac
+    }
+    export DEV_LEAD_DRY_RUN=false PR_NUMBER=54 HEAD_SHA=abc REPO=o/r COMMENT_NODE_ID='$2'
+    expire_stale_terminal_markers '$1'
+  "
+}
+
+@test "fix-reviews: a fix-bot-comment pass expires only its own comment's terminal markers (#2017)" {
+  _expire_with fix-bot-comment 'IC_a+1'
+  [ "$status" -eq 0 ]
+  [ "$(grep -x 'DELETED [0-9]*' <<< "$output" | tr '\n' ' ')" = "DELETED 1 " ]
+}
+
+@test "fix-reviews: without a comment id, fix-bot-comment expiry keeps the SHA-wide behaviour (#2017)" {
+  _expire_with fix-bot-comment ''
+  [ "$status" -eq 0 ]
+  [ "$(grep -x 'DELETED [0-9]*' <<< "$output" | tr '\n' ' ')" = "DELETED 1 DELETED 2 DELETED 3 " ]
+}
