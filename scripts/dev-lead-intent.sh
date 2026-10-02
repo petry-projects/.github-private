@@ -585,7 +585,11 @@ case "$EVENT_NAME" in
     comment_node_id=$(jq -r '.comment.node_id // empty' "$EVENT_PATH" 2>/dev/null || true)
     # The version of the body this event carries (#2017): fix-bot-comment stamps it
     # on its terminal marker so the bot-comment retry knows which edit was processed.
-    comment_version=$(jq -r '.comment.updated_at // .comment.created_at // empty' "$EVENT_PATH" 2>/dev/null || true)
+    # A new comment's version is exactly its created_at (GraphQL createdAt); an
+    # edited one's is updated_at (≈ lastEditedAt, matched within a small skew).
+    comment_version=$(jq -r 'if .action == "created" then (.comment.created_at // empty)
+                             else (.comment.updated_at // .comment.created_at // empty) end' \
+      "$EVENT_PATH" 2>/dev/null || true)
 
     # Rebase sentinel check (highest priority, before bot-skip)
     if echo "$comment_body" | grep -qF "<!-- auto-rebase-conflict:"; then

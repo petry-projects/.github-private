@@ -279,6 +279,20 @@ forged' 2026-10-01T23:30:00Z OWNER mallory)")"
   [ "$(_reason_for "$out" IC_cr)" = "retry-attempts-exhausted" ]
 }
 
+@test "bcr: an automation login with a [bot] suffix still matches a suffix-less GraphQL login" {
+  out="$(bcr_retry_decisions "$(jq -sc '.' <<< "$(_bot IC_cr coderabbitai 'Walkthrough')
+$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=1 at=2026-10-02T00:30:00Z -->' 2026-10-02T00:30:00Z MEMBER some-app)")" \
+    "$TRUSTED" "$INFO" "$NOW_EPOCH" "don-petry,some-app[bot]")"
+  [ "$(_reason_for "$out" IC_cr)" = "retry-pending" ]
+}
+
+@test "bcr: a pass stamped a second before the comment's lastEditedAt still covers that edit (skew)" {
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough v2' 2026-10-01T23:05:43Z 2026-10-01T23:20:01Z)" \
+    "$(_ours '<!-- dev-lead-fix-reviews pr=2009 sha=abc intent=fix-bot-comment status=no-changes comment=IC_cr version=2026-10-01T23:20:00Z -->' 2026-10-01T23:30:00Z)")"
+  [ "$(_reason_for "$out" IC_cr)" = "pass-completed" ]
+}
+
 # ── bcr_fetch_pr_comments: fails closed on a partial snapshot ────────────────
 
 @test "bcr_fetch_pr_comments: a GraphQL response carrying errors fails closed" {

@@ -60,6 +60,11 @@
 #                                   rate-limited end (default 2)
 #   BOT_COMMENT_RETRY_MAX_TOTAL     hard ceiling on retries per comment version,
 #                                   rate-limited ones included (default 6)
+#   BOT_COMMENT_RETRY_VERSION_SKEW_SEC  tolerance when matching a pass's stamped
+#                                   version to the comment's version (default 2):
+#                                   an edited comment's version comes from the
+#                                   webhook's updated_at, which can trail GraphQL's
+#                                   lastEditedAt by a second
 
 # The gate's agent-marker regex and info-status registry reader — one source of
 # truth for "which comments need a disposition" (#1813 / #1918). Source the gate
@@ -98,10 +103,12 @@ bcr_retry_decisions() {
   local pending="${BOT_COMMENT_RETRY_PENDING_SEC:-9000}"
   local max_attempts="${BOT_COMMENT_RETRY_MAX_ATTEMPTS:-2}"
   local max_total="${BOT_COMMENT_RETRY_MAX_TOTAL:-6}"
+  local skew="${BOT_COMMENT_RETRY_VERSION_SKEW_SEC:-2}"
   [[ "$min_age" =~ ^[0-9]+$ ]] || min_age=900
   [[ "$pending" =~ ^[0-9]+$ ]] || pending=9000
   [[ "$max_attempts" =~ ^[0-9]+$ ]] || max_attempts=2
   [[ "$max_total" =~ ^[0-9]+$ ]] || max_total=6
+  [[ "$skew" =~ ^[0-9]+$ ]] || skew=2
 
   printf '%s' "$comments" | jq -ce \
     --arg markers "$_MAINTAINER_GATE_AGENT_MARKERS" \
@@ -113,7 +120,8 @@ bcr_retry_decisions() {
     --argjson min_age "$min_age" \
     --argjson pending "$pending" \
     --argjson max_attempts "$max_attempts" \
-    --argjson max_total "$max_total" '
+    --argjson max_total "$max_total" \
+    --argjson skew "$skew" '
     def bare: if endswith("[bot]") then .[0:-5] else . end;
     def epoch: (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601);
     # A marker-supplied timestamp: its epoch, or null when absent/unparseable.
@@ -124,11 +132,12 @@ bcr_retry_decisions() {
 
     if type != "array" then error("comments must be an array") else . end
     | ($trusted | split(",") | map(gsub("^\\s+|\\s+$"; "") | bare) | map(select(length > 0))) as $tb
-    | ($automation | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $auto
+    # Logins compare without a `[bot]` suffix: GraphQL omits it where REST keeps it.
+    | ($automation | split(",") | map(gsub("^\\s+|\\s+$"; "") | bare) | map(select(length > 0))) as $auto
     # Our own automation: one of our acting logins AND a trusted association — a
     # marker from anyone else (outside commenter or another member) never counts.
     | [ .[] | objects
-        | select((.author?.login // "" | tostring) as $l | ($auto | index($l)) != null)
+        | select((.author?.login // "" | tostring | bare) as $l | ($auto | index($l)) != null)
         | select(((.authorAssociation // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)) != null)
         | (markers("dev-lead-fix-reviews") | map(select(attr("intent") == "fix-bot-comment"))) as $fr
         | {t: (.createdAt | epoch),
@@ -159,7 +168,7 @@ bcr_retry_decisions() {
         # back to "posted at/after this version".
         | ([ $notes[] | .t as $t | .pass[] | select(attr("comment") == $id)
              | (attr("version") | vepoch) as $pv
-             | select(if $pv != null then $pv >= $vt else $t >= $vt end) ] | length > 0) as $ran
+             | select(if $pv != null then ($pv + $skew) >= $vt else $t >= $vt end) ] | length > 0) as $ran
         # Retry markers match this version by VALUE (epoch), not by string, so a
         # timestamp format difference between fetches cannot hide a pending retry.
         | [ $notes[] | .t as $t | .retry[]

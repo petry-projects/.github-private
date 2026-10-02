@@ -587,9 +587,11 @@ scan_pr_for_undispositioned_bot_comments() {
     # bcr_retry_decisions counts — so a commenter pasting matching text cannot
     # make every scan back off.
     local marker_ids first_marker logins_jq
-    logins_jq=$(jq -cn --arg a "$automation" '$a | split(",")')
+    # Compared without a `[bot]` suffix, as bcr_retry_decisions does (REST keeps
+    # the suffix on an App login; GraphQL omits it).
+    logins_jq=$(jq -cn --arg a "$automation" '$a | split(",") | map(sub("\\[bot\\]$"; ""))')
     if ! marker_ids=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-      --jq '.[] | select((.user.login // "") as $l | '"${logins_jq}"' | index($l) != null)
+      --jq '.[] | select((.user.login // "" | sub("\\[bot\\]$"; "")) as $l | '"${logins_jq}"' | index($l) != null)
             | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
             | select((.body // "") | contains("dev-lead-bot-comment-retry id='"${cid}"' version='"${version}"' attempt='"${attempt}"' ")) | .id' \
       2>/dev/null); then
