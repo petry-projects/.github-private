@@ -167,16 +167,34 @@ mrc_is_registered_bot() {
 #   what keeps the bot path a NOTICE-only escape hatch: a registered bot that also
 #   produces findings (Codex, CodeRabbit, Qodo, #1995) is authorized only for the
 #   comment body its pattern recognizes, never for a finding it posts. An empty
-#   author or body, a login with no pattern, or a jq error fails closed. Pure
-#   apart from jq.
+#   author or body, a login with no pattern, or a jq error fails closed.
+#   #2008: a body carrying a FINDING-BEARING section is refused even when the
+#   pattern matches. CodeRabbit's summary can pair a rate-limit notice with a
+#   Security Architecture Review that reports real findings (PR #2000), and a
+#   notice must never clear the findings beside it. The section regex is the
+#   registry's reviewer_sources_finding_section_pattern. An unreadable registry
+#   refuses (fail closed). Pure apart from jq and reading the registry.
 mrc_bot_body_matches() {
-  local author="${1:-}" body="${2:-}" patterns="${3:-}" norm pattern result
+  local author="${1:-}" body="${2:-}" patterns="${3:-}" norm pattern result finding_re
   [[ -n "$author" && -n "$body" && -n "$patterns" ]] || return 1
   norm="$(mrc_normalize_login "$author")"
   [[ -n "$norm" ]] || return 1
   pattern="$(printf '%s\n' "$patterns" | awk -F'\t' -v l="$norm" '$1==l {print $2; exit}')"
   [[ -n "$pattern" ]] || return 1
-  result="$(jq -nr --arg b "$body" --arg p "$pattern" '($b | test($p))' 2>/dev/null)" || return 1
+  # Pin the repo-local registry (like main's pattern read), so an override cannot
+  # narrow the finding guard.
+  local lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+  finding_re="$(
+    REVIEWER_SOURCES_MANIFEST="$lib_dir/reviewer-sources.tsv"
+    export REVIEWER_SOURCES_MANIFEST
+    # shellcheck source=lib/reviewer-sources.sh
+    source "$lib_dir/reviewer-sources.sh" 2>/dev/null \
+      && reviewer_sources_finding_section_pattern 2>/dev/null
+  )" || return 1
+  [[ -n "$finding_re" ]] || return 1
+  result="$(jq -nr --arg b "$body" --arg p "$pattern" --arg f "$finding_re" \
+    '($b | test($p)) and (($b | test($f)) | not)' 2>/dev/null)" || return 1
   [[ "$result" == "true" ]]
 }
 

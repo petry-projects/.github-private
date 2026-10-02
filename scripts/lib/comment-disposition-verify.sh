@@ -273,6 +273,57 @@ cdv_select_disposition() {
     '{auth_count:$ac, chosen:{id:$cid2, createdAt:$cc, disposition:$disp}, superseded:$sup}' 2>/dev/null
 }
 
+# cdv_disposition_is_stale <comment_lastEditedAt> <disposition_createdAt>
+#   Edits re-open a dispositioned comment (#2008). CodeRabbit edits ONE summary
+#   comment in place, so a disposition made BEFORE the latest edit judged an older
+#   body. On PR #2000 a security finding was appended about an hour after the
+#   comment was dispositioned `informational` and minimized, and it was never
+#   addressed. This compares the comment's lastEditedAt with the createdAt of the
+#   disposition chosen by cdv_select_disposition.
+#     0 = stale: edited strictly AFTER the disposition, so a fresh one is needed
+#     1 = current: never edited ("" / "null"), or edited at/before the disposition
+#     2 = unreadable: a timestamp that is not ISO-8601 UTC (or an empty
+#         disposition time), so the caller fails closed
+#   Edit timestamps are second-granular. An edit in the same second as the
+#   disposition counts as seen, so a disposition is never re-opened by its own
+#   race. Pure.
+cdv_disposition_is_stale() {
+  local edited="${1:-}" disposed="${2:-}"
+  local iso='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+  [[ "$disposed" =~ $iso ]] || return 2
+  if [[ -z "$edited" || "$edited" == "null" ]]; then
+    return 1
+  fi
+  [[ "$edited" =~ $iso ]] || return 2
+  [[ "$edited" > "$disposed" ]] && return 0
+  return 1
+}
+
+# cdv_body_has_findings <comment_body>
+#   0 when <comment_body> carries a FINDING-BEARING section per the reviewer-source
+#   registry's reviewer_sources_finding_section_pattern (#2008), such as CodeRabbit's
+#   Security Architecture Review with retained concerns, even when the same comment
+#   also shows a rate-limit block. 1 when it carries none.
+#   An `informational` disposition never verifies against a body this returns 0
+#   for: a rate-limit notice covers only its own section, never the findings
+#   beside it.
+#   FAILS CLOSED: an unreadable registry or a jq error returns 0 ("has findings"),
+#   so an `informational` disposition can never be certified on a body we could not
+#   classify. Pure apart from reading the registry file.
+cdv_body_has_findings() {
+  local body="${1:-}" lib_dir pattern result
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  pattern="$(
+    # shellcheck source=reviewer-sources.sh
+    source "$lib_dir/reviewer-sources.sh" 2>/dev/null \
+      && reviewer_sources_finding_section_pattern 2>/dev/null
+  )" || return 0
+  [[ -n "$pattern" ]] || return 0
+  result="$(jq -nr --arg b "$body" --arg p "$pattern" '$b | test($p)' 2>/dev/null)" || return 0
+  [[ "$result" == "false" ]] && return 1
+  return 0
+}
+
 # cdv_reply_needs_response <bot_reply_body>
 #   Loop safety (#860 / AC7): a bot that replies AFTER our disposition is answered
 #   again ONLY if it raises a genuinely NEW finding — boilerplate/acknowledgements

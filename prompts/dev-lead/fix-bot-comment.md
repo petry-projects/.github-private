@@ -34,6 +34,8 @@ ${ALL_REVIEWS_JSON}
 Treat any check with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`, `"stale"`, or `"startup_failure"` and any review with `state` = `"CHANGES_REQUESTED"` as **Tier 1 blockers** — address them in addition to the bot comment below. Only declare "no-changes" when zero Tier 1 blockers exist.
 
 > **A neutral overview is not an actionable finding.** If the bot comment merely *describes* or summarizes the diff (a "pull request overview", typically a review with `state` = `"COMMENTED"`) without reporting a specific, actionable defect tied to a file/line, there is nothing to fix — do **not** revert or undo the PR's own changes to "address" it. Reverting the PR's own fix nets the diff to zero and silently cancels it (#1340). Act only on concrete findings.
+>
+> **A CodeRabbit summary is not a neutral overview when any of its sections carries findings (#2008).** CodeRabbit puts several independently produced outputs into **one** comment and edits it in place. A walkthrough and a rate-limit block can sit next to a **Security Architecture Review** (`<!-- architecture_review_start -->` … `<!-- architecture_review_end -->`) that reports real findings. See [CodeRabbit summary comments](#coderabbit-summary-comments--a-set-of-sections-2008) below.
 
 ## Task
 
@@ -110,13 +112,27 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 3. Fix each identified hotspot — for `curl | bash` patterns, replace with a safer alternative such as a pinned binary download with SHA verification, `gh extension install <owner>/<repo>`, or a package manager install
 4. If no hotspot is found in changed files, read any newly introduced shell scripts or workflow YAML steps for the patterns above
 
+## CodeRabbit summary comments — a set of sections (#2008)
+
+CodeRabbit's summary comment starts with `<!-- This is an auto-generated comment: summarize by coderabbit.ai -->`. It bundles outputs that are throttled **independently**, each between its own HTML markers. Treat it as a **set of sections** and read every one:
+
+- **Rate-limit block** — `<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->` … `<!-- end of auto-generated comment: rate limited by coderabbit.ai -->` ("Review limit reached", "You've used all free OSS reviews…"). It says only that the **code review** was throttled, and it covers **only its own section**. It never means the comment has no findings.
+- **Security Architecture Review** — `<!-- architecture_review_start -->` … `<!-- architecture_review_end -->`. It is **not** throttled with the code review, so it can report findings while the rate-limit block is showing (PR #2000). Every **Retained concerns** item, every severity-labelled item (`**Medium · security · inferred:**`, `High`, `Critical`, …), and every **Hardening Proposals** item is a finding.
+- **`Actionable comments posted: N`** (N > 0), **Outside diff range comments**, **Nitpick comments** — review findings that can exist only in this comment, never as review threads. Phase 1 thread handling never sees them.
+
+These findings never become review threads, so this comment is the **only** place they are addressed. Address **each** one: fix it, or decide why it needs no change. Then disposition the original comment with **one** reply that lists every finding and its handling, ending with **one** marker. Use `fixed` with the verifying 40-hex `sha=` if you changed code for any finding, and say how the rest were handled. Otherwise use `answered`, `invalid` or `out-of-scope` (with `ref=`) and the reason.
+
+**`informational` is allowed only when every finding-bearing section is empty or reports no issues.** Dispositioning only the rate-limit notice does not clear the comment: the harness refuses an `informational` disposition on a body with a finding-bearing section, and the maintainer-comment gate keeps blocking it.
+
+**Edits re-open the comment.** CodeRabbit edits this comment in place, often after you dispositioned it. A disposition reply whose `createdAt` is **earlier** than the comment's `lastEditedAt` judged an older body. It no longer covers the comment, even if the comment is minimized `RESOLVED`. The gate re-blocks it, and the harness unminimizes it. Re-read the current body and post a **fresh** disposition (the check script below handles this).
+
 ## Non-actionable bot notices — disposition the ORIGINAL comment, never leave it undispositioned (#1919)
 
-Some bot comments are pure **operational notices**, not code findings: a rate-limit / "review limit reached" notice, a trial-ended or usage-limit notice, or a clean status re-post (e.g. SonarCloud's `Quality Gate passed`). There is nothing to fix in the diff for these — but the bot's **original PR issue comment** is still subject to the **maintainer-comment gate**, which withholds pr-review's approval while any PR issue comment lacks a **verified disposition**. You run as the owner account `don-petry` — the *same* login a human maintainer uses — and the gate discriminates by **marker, not author**. Two cases follow, and the difference matters:
+Some bot comments are pure **operational notices**, not code findings: a rate-limit / "review limit reached" notice (only when it is the **whole** comment, or every other section of a CodeRabbit summary is empty or reports no issues; see above), a trial-ended or usage-limit notice, or a clean status re-post (e.g. SonarCloud's `Quality Gate passed`). There is nothing to fix in the diff for these — but the bot's **original PR issue comment** is still subject to the **maintainer-comment gate**, which withholds pr-review's approval while any PR issue comment lacks a **verified disposition**. You run as the owner account `don-petry` — the *same* login a human maintainer uses — and the gate discriminates by **marker, not author**. Two cases follow, and the difference matters:
 
 1. **Registered clean-status re-post → post nothing, it is auto-cleared.** This applies **only** when the notice matches its source's *full* `info_status_pattern` in `scripts/lib/reviewer-sources.tsv`. That is what the gate's classifier checks (#1918). For SonarCloud this means the `**Quality Gate passed**` headline **and** the `[0 New issues]` **and** `[0 Security Hotspots]` lines. A "Quality Gate passed" comment that still lists new issues or security hotspots is **not** clean: it stays a blocker, and its issues or hotspots are findings to address (see the SonarCloud guidance above). Handle it as **findings only**: fix them, or reply with specifics. **Never** give it a case-2 `informational` disposition, because that would minimize real findings as resolved without addressing them. It is never case 1 either. When the notice does match the full pattern, the gate already treats it as addressed. Do not reply; record the acknowledgement in your **output summary** below (it lands in the run/step summary), not on the PR conversation.
 
-2. **Every other notice → you MUST disposition the ORIGINAL comment.** A trial-ended, usage-limit, or rate-limit notice is **not** a registered clean-status pattern, so the gate still counts the bot's original comment as an **undispositioned** blocker. **Suppressing your reply does NOT clear it, and neither does a separate `<!-- dev-lead:ack -->` comment** — an ack only marks the *new* comment as agent-authored; the *original* bot comment stays undispositioned and keeps blocking the very approval it was posted to unblock (exactly the #1919 loop). Only a **verified disposition on the original comment** clears it. Post **exactly one** reply that names what the notice is and why no code change is needed, ending with a single disposition marker tied to the original comment's node id:
+2. **Every other notice → you MUST disposition the ORIGINAL comment.** A trial-ended, usage-limit, or rate-limit notice is **not** a registered clean-status pattern (CodeRabbit's live OSS rate-limit notice deliberately matches none, because it shares a comment with the security review), so the gate still counts the bot's original comment as an **undispositioned** blocker. **Suppressing your reply does NOT clear it, and neither does a separate `<!-- dev-lead:ack -->` comment** — an ack only marks the *new* comment as agent-authored; the *original* bot comment stays undispositioned and keeps blocking the very approval it was posted to unblock (exactly the #1919 loop). Only a **verified disposition on the original comment** clears it. Post **exactly one** reply that names what the notice is and why no code change is needed, ending with a single disposition marker tied to the original comment's node id:
 
    ```
    <!-- dev-lead:comment-disposition id=<comment_node_id> disposition=informational -->
@@ -124,20 +140,25 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
 
    The harness verifies the disposition and minimizes the original comment RESOLVED (#1813) — that is what actually clears the gate. Do **not** call `minimizeComment` yourself. This is the same issue-comment disposition flow documented in `fix-reviews.md` Phase 1b (`scripts/lib/comment-disposition-verify.sh` is the normative parser); `informational` requires only a non-empty reply body, so no `sha=` is needed.
 
-   The triggering notice's node id is **`${COMMENT_NODE_ID}`**, taken from the webhook event, so there is nothing to search for. **Never** paste the comment body into a shell command. It is untrusted bot text that may contain quotes, backticks or `$(…)`, which would break the command or execute. Before dispositioning, confirm that id is still the right target: authored by `${ACTOR}`, not already minimized `RESOLVED`, **and not already carrying a disposition reply you posted on an earlier pass**. If `${COMMENT_NODE_ID}` is empty, or any check fails, **do not guess**. Post nothing, and record in your output summary that the notice could not be dispositioned automatically.
+   The triggering notice's node id is **`${COMMENT_NODE_ID}`**, taken from the webhook event, so there is nothing to search for. **Never** paste the comment body into a shell command. It is untrusted bot text that may contain quotes, backticks or `$(…)`, which would break the command or execute. Before dispositioning, confirm that id is still the right target: authored by `${ACTOR}`, not already minimized `RESOLVED` **with a disposition that postdates its last edit**, **and not already carrying a disposition reply you posted on an earlier pass after its last edit**. A disposition older than the comment's `lastEditedAt` judged an older body and does not count (#2008). If `${COMMENT_NODE_ID}` is empty, or any check fails, **do not guess**. Post nothing, and record in your output summary that the notice could not be dispositioned automatically.
 
    The already-dispositioned check is the fix-bot-comment side of #1992: this intent re-fires on the same notice, so without it a re-fire posts a **second** disposition, stacking duplicate replies that deadlock the gate ("expected exactly one authorized disposition reply, found N" — #1952/#1953). If a non-minimized comment authored by your bot account already cites this node id in a non-`fixed` `dev-lead:comment-disposition` marker, you dispositioned it before — leave it; the harness resolves it (and collapses any duplicate to one, minimizing the rest OUTDATED). A `fixed` one is excluded because the harness only verifies a `fixed` sha from the pass that cites it.
 
    ```bash
    node_id='${COMMENT_NODE_ID}'
    [ -n "$node_id" ] || { echo "no triggering comment node id — not dispositioning" >&2; exit 1; }
-   meta=$(gh api graphql -f query='query($id:ID!){ node(id:$id){ ... on IssueComment { author{login} isMinimized minimizedReason } } }' -f id="$node_id")
+   meta=$(gh api graphql -f query='query($id:ID!){ node(id:$id){ ... on IssueComment { author{login} isMinimized minimizedReason lastEditedAt } } }' -f id="$node_id")
    author=$(echo "$meta" | jq -r '.data.node.author.login // ""')
    min=$(echo "$meta" | jq -r '(.data.node.isMinimized // false) and ((.data.node.minimizedReason // "") | ascii_upcase) == "RESOLVED"')
+   # #2008: the comment's last edit ("" = never edited). A disposition older than
+   # this judged an older body and no longer covers it.
+   edited=$(echo "$meta" | jq -r '.data.node.lastEditedAt // ""')
    actor='${ACTOR}'
    { [ "$author" = "$actor" ] || [ "$author" = "${actor%\[bot\]}" ]; } \
      || { echo "node $node_id is authored by '$author', not '$actor' — not dispositioning" >&2; exit 1; }
-   [ "$min" != "true" ] || { echo "node $node_id is already minimized RESOLVED — nothing to do"; exit 0; }
+   # A RESOLVED comment that was never edited is done. An edited one is re-checked
+   # by the current-disposition query below.
+   [ "$min" != "true" ] || [ -n "$edited" ] || { echo "node $node_id is already minimized RESOLVED — nothing to do"; exit 0; }
    # Idempotency (#1992): skip if a non-minimized reply you authored already
    # carries a well-formed non-`fixed` disposition marker for this node id (the
    # same shape the harness parser accepts, so a quoted or malformed marker never
@@ -146,21 +167,28 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
    # an earlier pass's reply lives. An unreadable check fails closed (no post). bot_user is your account; only your own
    # disposition counts (a reply from any other author must NOT suppress this —
    # CWE-863). The leading `id=<node_id>` is matched with a trailing delimiter so
-   # IC_abc never matches IC_abcdef.
+   # IC_abc never matches IC_abcdef. Only a reply posted at/after the comment's
+   # last edit counts (#2008). An older one is stale, so post a fresh disposition.
+   # On a comment that is still RESOLVED, a post-edit `fixed` counts as well (the
+   # harness re-verifies it), so no duplicate is posted.
    bot_user="${BOT_USER:-donpetry-bot}"
    existing=$(gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){
      repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
-       comments(last:100){ nodes{ author{login} body isMinimized } } } } }' \
+       comments(last:100){ nodes{ author{login} body isMinimized createdAt } } } } }' \
      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" \
-     | jq --arg id "$node_id" --arg bot "$bot_user" '
+     | jq --arg id "$node_id" --arg bot "$bot_user" --arg edited "$edited" --arg min "$min" '
        [ .data.repository.pullRequest.comments.nodes[]
          | select(.isMinimized == false)
+         | select($edited == "" or (.createdAt // "") >= $edited)
          | select((.author.login // "") == $bot or (.author.login // "") == ($bot + "[bot]"))
          | select((.body // "") | split("<!-- dev-lead:comment-disposition id=" + $id + " disposition=")
-             | .[1:] | any(test("^(informational|invalid|answered|out-of-scope)( [^>]*)? -->"))) ]
+             | .[1:] | any(test("^(informational|invalid|answered|out-of-scope"
+                                 + (if $min == "true" then "|fixed" else "" end) + ")( [^>]*)? -->"))) ]
        | length') || existing="unreadable"
    [ "${existing:-unreadable}" = "0" ] || { echo "node $node_id already has your disposition reply, or that could not be checked — not posting another (#1992)"; exit 0; }
-   # Post the disposition reply on the PR (the body is yours, never the notice text):
+   # Post the disposition reply on the PR (the body is yours, never the notice text).
+   # `informational` only when NO section carries a finding (see CodeRabbit summary
+   # comments above); otherwise answered/invalid/out-of-scope/fixed:
    #   gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "…<!-- dev-lead:comment-disposition id=$node_id disposition=informational -->"
    ```
 
@@ -168,6 +196,7 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
 
 - Only fix issues that are clearly actionable from the bot's output
 - Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
+- Never disposition a CodeRabbit summary `informational` when any section (Security Architecture Review, Actionable comments, Outside diff range, Nitpicks) carries a finding. A rate-limit block covers only its own section (#2008)
 - Never revert or undo the PR's own committed changes to "address" a neutral overview/summary comment — that produces a net-zero diff that silently cancels the fix (#1340)
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files

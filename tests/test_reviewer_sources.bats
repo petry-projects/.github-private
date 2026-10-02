@@ -212,7 +212,12 @@ _body_matches_pattern() {
   [ "$status" -eq 1 ]
 }
 
-@test "info-status: coderabbitai matches its review-limit notice, not a review (#1995)" {
+# #2008: the prepaid-credits form below is the ONLY CodeRabbit notice the row
+# matches, and it is NOT the notice CodeRabbit posts live. The live notice is the
+# OSS "You've used all free OSS reviews…" block, embedded inside the full summary
+# comment next to the (separately throttled) Security Architecture Review. It is
+# deliberately left unmatched (see the next test), so it never auto-clears.
+@test "info-status: coderabbitai matches only the standalone prepaid-credits notice, not a review (#1995, #2008)" {
   local pat
   pat="$(_info_pattern_for coderabbitai)"
   [ -n "$pat" ]
@@ -253,6 +258,66 @@ _body_matches_pattern() {
   # End-anchored trial sentence: a body that opens with it and goes on to a finding must not clear.
   run _body_matches_pattern "$pat" "Qodo reviews are paused because your trial has ended is the wrong message here — fix the copy."
   [ "$status" -eq 1 ]
+}
+
+@test "info-status: coderabbitai never matches its live summary (OSS rate-limit block + security finding, #2008)" {
+  local pat body
+  pat="$(_info_pattern_for coderabbitai)"
+  body="$(cat "$BATS_TEST_DIRNAME/fixtures/coderabbit/pr2000-ratelimited-with-security-finding.md")"
+  run _body_matches_pattern "$pat" "$body"
+  [ "$status" -eq 1 ]
+  # Nor the bare OSS notice sentence on its own — matching it would clear the
+  # whole summary, security section included (the #1995 "do not widen" rule).
+  run _body_matches_pattern "$pat" "You've used all free OSS reviews for now. Wait for the free limit to reset to keep reviewing this public repository."
+  [ "$status" -eq 1 ]
+}
+
+@test "registry(#2008): the coderabbitai rationale does not present the prepaid-credits form as the live notice" {
+  local row
+  row="$(awk -F'\t' '$1 == "coderabbitai" { print $7 }' "$REG_TSV")"
+  [ -n "$row" ]
+  echo "$row" | grep -q "OSS"
+  echo "$row" | grep -q "#2008"
+}
+
+# ── finding-bearing section pattern (#2008) ──────────────────────────────────
+
+_has_findings() {
+  # 0 when <body> carries a finding-bearing section per the registry's pattern.
+  local pat
+  pat="$(reviewer_sources_finding_section_pattern)"
+  [ "$(jq -nr --arg b "$1" --arg p "$pat" '$b | test($p)')" = "true" ]
+}
+
+@test "finding-section(#2008): PR #2000's security finding is finding-bearing" {
+  run _has_findings "$(cat "$BATS_TEST_DIRNAME/fixtures/coderabbit/pr2000-ratelimited-with-security-finding.md")"
+  [ "$status" -eq 0 ]
+}
+
+@test "finding-section(#2008): a clean CodeRabbit summary (Minimal security risk, no concerns) is not" {
+  run _has_findings "$(cat "$BATS_TEST_DIRNAME/fixtures/coderabbit/summary-clean.md")"
+  [ "$status" -eq 1 ]
+}
+
+@test "finding-section(#2008): actionable / outside-diff / nitpick counts are finding-bearing; zero counts are not" {
+  run _has_findings "**Actionable comments posted: 2**"
+  [ "$status" -eq 0 ]
+  run _has_findings "<summary>⚠️ Outside diff range comments (1)</summary>"
+  [ "$status" -eq 0 ]
+  run _has_findings "<summary>🧹 Nitpick comments (3)</summary>"
+  [ "$status" -eq 0 ]
+  run _has_findings "**Actionable comments posted: 0**"
+  [ "$status" -eq 1 ]
+  run _has_findings "No actionable comments were generated in the recent review. 🎉"
+  [ "$status" -eq 1 ]
+}
+
+@test "finding-section(#2008): a non-minimal security risk with no listed concerns still counts (fail closed)" {
+  run _has_findings $'<!-- architecture_review_start -->\n**Security architecture risk:** _🔴 High_ · up to `abc12`\n<!-- architecture_review_end -->'
+  [ "$status" -eq 0 ]
+  # An unterminated section (truncated body) carrying concerns still counts.
+  run _has_findings $'<!-- architecture_review_start -->\n**Retained concerns**\n- **Low · security · observed:** x'
+  [ "$status" -eq 0 ]
 }
 
 # Each pattern matches the bot's COMPLETE known notice body and is anchored at
