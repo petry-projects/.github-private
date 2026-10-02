@@ -60,9 +60,11 @@ export SOURCE_NOW="$NOW"
 
 # 1. Read + publish on the existing seam.
 envelope="$(usage_telemetry_fetch)"
+publish_failed="false"
 if ! usage_telemetry_publish_file "$envelope" "$workdir/telemetry.json" >/dev/null; then
   bp_log "could not publish the telemetry file — degraded record"
   : > "$workdir/telemetry.json" 2>/dev/null || true
+  publish_failed="true"
 fi
 export AGENT_TOKEN_BUDGET_TELEMETRY_FILE="$workdir/telemetry.json"
 
@@ -72,6 +74,7 @@ retry_after="$(jq -r '.retry_after // empty' <<<"$envelope" 2>/dev/null || print
 # 2. Evaluate the shipped public gates (or degrade when they are unavailable).
 s_pct="" w_pct="" s_reset="" w_reset="" reason_override=""
 s_dec="unavailable" g_dec="unavailable" g_enabled="false"
+[ "$publish_failed" = "true" ] && reason_override="telemetry-publish-failed"
 if [ -r "$PUBLIC_LIB" ] && [ -r "$AGENT_RATE_LIMITS_CONFIG" ]; then
   # shellcheck disable=SC1090
   source "$PUBLIC_LIB"
@@ -94,12 +97,13 @@ if [ -r "$PUBLIC_LIB" ] && [ -r "$AGENT_RATE_LIMITS_CONFIG" ]; then
       "$AGENT_RATE_LIMITS_CONFIG" > "$armed_cfg" 2>/dev/null; then
     g_dec="$(AGENT_RATE_LIMITS_CONFIG="$armed_cfg" bp_gate arl_token_weekly_glide_gate)"
   else
-    bp_log "could not arm a temp copy of the public config — glide evaluated as shipped"
-    g_dec="$(bp_gate arl_token_weekly_glide_gate)"
+    bp_log "could not arm a temp copy of the public config — degraded record"
+    g_dec="unavailable"
+    reason_override="${reason_override:-weekly-glide-arm-failed}"
   fi
 else
   bp_log "public library or config unavailable (${PUBLIC_LIB}, ${AGENT_RATE_LIMITS_CONFIG}) — degraded record"
-  reason_override="public-library-unavailable"
+  reason_override="${reason_override:-public-library-unavailable}"
 fi
 
 # 3. Build + append the record against the previous OK record (burn rate).

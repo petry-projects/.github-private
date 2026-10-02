@@ -360,10 +360,12 @@ _seed_degraded() {
 # AC #1 / #2 — workflow shape and the static no-write assertion
 # ---------------------------------------------------------------------------
 
-@test "workflow runs on schedule and workflow_dispatch with read-only permissions" {
+@test "workflow runs on schedule only (no workflow_dispatch) with read-only permissions" {
   [ -f "$WORKFLOW" ]
   grep -qE '^  schedule:' "$WORKFLOW"
-  grep -qE '^  workflow_dispatch:' "$WORKFLOW"
+  # Manual dispatch could run branch code holding the OAuth secret.
+  run grep -nE '^  workflow_dispatch:' "$WORKFLOW"
+  [ "$status" -eq 1 ]
   grep -qE '^[[:space:]]+- cron:' "$WORKFLOW"
   # Only read scopes are granted anywhere in the workflow. (`run !`, not a bare
   # `! grep`: errexit ignores a negated command, so a bare `!` asserts nothing.)
@@ -400,4 +402,18 @@ _seed_degraded() {
   [ "$status" -eq 0 ]
   run grep -nE 'gh[[:space:]]+variable[[:space:]]+(set|delete)' "$planted"
   [ "$status" -eq 0 ]
+}
+
+@test "bp_stale_hours: a leading-zero value is normalized to base 10" {
+  run bash -c 'source scripts/lib/budget-poller.sh; BUDGET_POLLER_STALE_HOURS=08 bp_stale_hours'
+  [ "$status" -eq 0 ]
+  [ "$output" = "8" ]
+}
+
+@test "bp_build_record: a malformed now does not abort, and unavailable gates read indeterminate" {
+  run bash -c 'source scripts/lib/budget-poller.sh
+    r="$(bp_build_record notanumber 200 "" 10 20 a b unavailable unavailable false "" "")" || exit 1
+    bp_decision_text "$r"'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"indeterminate"* ]]
 }
