@@ -1,0 +1,19 @@
+name: Agent Ingress
+# FIXTURE (ADR-0010) — cancel-in-progress is an explicit null, not a literal
+# boolean. The ingress guard must FAIL even though the expression is a pure
+# event predicate.
+on:
+  pull_request:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  pr-auto-review:
+    if: github.event_name == 'pull_request'
+    concurrency:
+      group: "pr-auto-review-${{ github.event.pull_request.number }}"
+      cancel-in-progress: null
+    uses: petry-projects/.github/.github/workflows/pr-auto-review-reusable.yml@pr-auto-review/v1-stable
+    permissions:
+      pull-requests: read
