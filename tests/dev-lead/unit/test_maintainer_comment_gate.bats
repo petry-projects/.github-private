@@ -112,14 +112,16 @@ _run_check() {
 }
 
 # AC9(a): pushedDate is irrelevant; every comment minimized RESOLVED → passes.
+# The comments carry gh pr view's includesCreatedEdit:false (never edited): since
+# #2008 a RESOLVED registered-bot comment whose edit state is unknown fails closed.
 @test "AC9a: all non-agent comments minimized RESOLVED → 0 (clear)" {
-  local json='{"comments":[{"author":{"login":"codeant-ai"},"body":"Review Status","createdAt":"2026-09-13T04:23:06Z","isMinimized":true,"minimizedReason":"resolved"},{"author":{"login":"qodo-code-review"},"body":"Trial ended.","createdAt":"2026-09-13T04:23:06Z","isMinimized":true,"minimizedReason":"resolved"}]}'
+  local json='{"comments":[{"author":{"login":"codeant-ai"},"body":"Review Status","createdAt":"2026-09-13T04:23:06Z","includesCreatedEdit":false,"isMinimized":true,"minimizedReason":"resolved"},{"author":{"login":"qodo-code-review"},"body":"Trial ended.","createdAt":"2026-09-13T04:23:06Z","includesCreatedEdit":false,"isMinimized":true,"minimizedReason":"resolved"}]}'
   _run_check "$json"
   [ "$status" -eq 0 ]
 }
 
 @test "Runtime: mix of resolved + one unresolved non-agent comment → 1 (block)" {
-  local json='{"comments":[{"author":{"login":"codeant-ai"},"body":"Status","createdAt":"2026-09-13T04:23:06Z","isMinimized":true,"minimizedReason":"resolved"},{"author":{"login":"a-maintainer"},"body":"Please fix this.","createdAt":"2026-09-13T05:00:00Z","isMinimized":false,"minimizedReason":""}]}'
+  local json='{"comments":[{"author":{"login":"codeant-ai"},"body":"Status","createdAt":"2026-09-13T04:23:06Z","includesCreatedEdit":false,"isMinimized":true,"minimizedReason":"resolved"},{"author":{"login":"a-maintainer"},"body":"Please fix this.","createdAt":"2026-09-13T05:00:00Z","isMinimized":false,"minimizedReason":""}]}'
   _run_check "$json"
   [ "$status" -eq 1 ]
 }
@@ -391,6 +393,181 @@ Earlier this run reported: You have reached your Codex usage limits for code rev
 @test "AC2(#1995): a real Qodo review body still blocks → 1" {
   _run_check "$(_notice_json qodo-code-review "Suggestion: extract this block into a helper to reduce duplication.")"
   [ "$status" -eq 1 ]
+}
+
+# ────────────────────────────────────────────────────────────────────
+# #2008 — CodeRabbit edits ONE summary comment in place, and it carries two
+# independently throttled outputs: the code review (which can show a rate-limit
+# block) and the Security Architecture Review (which is NOT throttled with it and
+# can carry real findings). Two holes followed:
+#   • an edit after the comment was dispositioned + minimized RESOLVED stayed
+#     cleared forever, whatever CodeRabbit appended (PR #2000, comment
+#     5938681830: dispositioned `informational` at 19:23Z, security finding added
+#     by an in-place edit ~20:35Z);
+#   • a rate-limit notice dispositioned the whole comment, findings included.
+# The gate now re-blocks a RESOLVED registered-bot comment whose lastEditedAt is
+# later than its latest covering disposition, refuses an `informational`
+# disposition on a finding-bearing body, never lets an info_status_pattern clear
+# a finding-bearing body, and fails closed when an edit time cannot be read.
+# ────────────────────────────────────────────────────────────────────
+
+CR_FIXTURES="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/../../fixtures/coderabbit"
+
+# _edit_json <author> <body> <minimized:true|false> <lastEditedAt|null|absent> [disp_json_array]
+#   One bot comment (id IC_cr) plus optional reply comments. "absent" omits the
+#   lastEditedAt key and sets includesCreatedEdit:true (an edited comment whose
+#   edit time the snapshot does not carry).
+_edit_json() {
+  local author="$1" body="$2" minimized="$3" edited="$4" replies="${5:-[]}"
+  jq -cn --arg a "$author" --arg b "$body" --argjson m "$minimized" \
+    --arg e "$edited" --argjson r "$replies" '
+    {reviews:[], comments:([
+      ({id:"IC_cr", author:{login:$a}, authorAssociation:"NONE", body:$b,
+        createdAt:"2026-10-01T19:12:40Z", isMinimized:$m,
+        minimizedReason:(if $m then "resolved" else "" end)}
+       + (if $e == "absent" then {includesCreatedEdit:true}
+          elif $e == "null" then {includesCreatedEdit:false, lastEditedAt:null}
+          else {includesCreatedEdit:true, lastEditedAt:$e} end))
+    ] + $r)}'
+}
+
+# _disp <created_at> <disposition> [author] [association] — a dev-lead disposition reply for IC_cr.
+_disp() {
+  jq -cn --arg c "$1" --arg d "$2" --arg a "${3:-don-petry}" --arg as "${4:-OWNER}" '
+    [{id:("IC_disp_" + $c), author:{login:$a}, authorAssociation:$as,
+      body:("Acknowledged — reviewed.\n<!-- dev-lead:comment-disposition id=IC_cr disposition=" + $d + " -->"),
+      createdAt:$c, isMinimized:false, minimizedReason:""}]'
+}
+
+@test "#2008 AC1: RESOLVED bot comment edited AFTER its disposition re-blocks → 1" {
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true "2026-10-01T20:35:00Z" "$(_disp 2026-10-01T19:23:54Z informational)")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC1: RESOLVED bot comment edited BEFORE its disposition stays cleared → 0" {
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true "2026-10-01T19:20:00Z" "$(_disp 2026-10-01T19:23:54Z informational)")"
+  [ "$status" -eq 0 ]
+}
+
+@test "#2008 AC1: a fresh disposition after the edit covers the current body → 0" {
+  local replies
+  replies=$(jq -cn --argjson a "$(_disp 2026-10-01T19:23:54Z informational)" --argjson b "$(_disp 2026-10-01T21:00:00Z answered)" '$a + $b')
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true "2026-10-01T20:35:00Z" "$replies")"
+  [ "$status" -eq 0 ]
+}
+
+@test "#2008 AC1: a never-edited RESOLVED bot comment needs no disposition reply → 0" {
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true null)"
+  [ "$status" -eq 0 ]
+}
+
+@test "#2008 AC1: an edited RESOLVED bot comment with NO covering disposition blocks → 1" {
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true "2026-10-01T20:35:00Z")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC1: edited RESOLVED bot comment whose edit time is unreadable fails closed → 2" {
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true absent "$(_disp 2026-10-01T19:23:54Z informational)")"
+  [ "$status" -eq 2 ]
+}
+
+@test "#2008 AC1: a malformed lastEditedAt fails closed → 2" {
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true "yesterday" "$(_disp 2026-10-01T19:23:54Z informational)")"
+  [ "$status" -eq 2 ]
+}
+
+@test "#2008 AC1: a disposition marker from an untrusted author does not cover an edit → 1" {
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true "2026-10-01T20:35:00Z" "$(_disp 2026-10-01T21:00:00Z informational drive-by NONE)")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC1: a maintainer-resolve reply pinning the id covers an earlier edit → 0" {
+  local replies='[{"id":"IC_mr","author":{"login":"don-petry"},"authorAssociation":"OWNER","body":"<!-- maintainer-resolve author=coderabbitai by=don-petry id=IC_cr -->\nnotice","createdAt":"2026-10-01T21:00:00Z","isMinimized":false,"minimizedReason":""}]'
+  _run_check "$(_edit_json coderabbitai "Walkthrough only." true "2026-10-01T20:35:00Z" "$replies")"
+  [ "$status" -eq 0 ]
+}
+
+@test "#2008 AC1: an edited RESOLVED HUMAN comment is out of scope (not a registered bot) → 0" {
+  _run_check "$(_edit_json a-maintainer "Please fix this." true "2026-10-01T20:35:00Z")"
+  [ "$status" -eq 0 ]
+}
+
+@test "#2008 AC3/AC5: PR #2000's real body (rate-limit block + security finding), undispositioned → 1" {
+  _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/pr2000-ratelimited-with-security-finding.md")" false "2026-10-01T21:15:56Z")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC3/AC5: dispositioning only the notice (informational) does NOT clear the #2000 body → 1" {
+  # Even with the disposition AFTER the last edit and the comment minimized
+  # RESOLVED, an `informational` disposition cannot cover a finding-bearing body.
+  _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/pr2000-ratelimited-with-security-finding.md")" true "2026-10-01T21:15:56Z" "$(_disp 2026-10-01T21:30:00Z informational)")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC2: the #2000 body with a real (answered) disposition after the edit clears → 0" {
+  _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/pr2000-ratelimited-with-security-finding.md")" true "2026-10-01T21:15:56Z" "$(_disp 2026-10-01T21:30:00Z answered)")"
+  [ "$status" -eq 0 ]
+}
+
+@test "#2008 AC3: a never-edited RESOLVED finding-bearing bot comment with NO disposition blocks → 1" {
+  _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/pr2000-ratelimited-with-security-finding.md")" true null)"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC3: a reply carrying both an informational and a maintainer-resolve marker cannot mask findings → 1" {
+  local replies='[{"id":"IC_both","author":{"login":"don-petry"},"authorAssociation":"OWNER","body":"<!-- dev-lead:comment-disposition id=IC_cr disposition=informational -->\n<!-- maintainer-resolve author=coderabbitai by=don-petry id=IC_cr -->","createdAt":"2026-10-01T21:30:00Z","isMinimized":false,"minimizedReason":""}]'
+  _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/pr2000-ratelimited-with-security-finding.md")" true "2026-10-01T21:15:56Z" "$replies")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC5: a clean CodeRabbit summary (no findings in any section) can be dispositioned informational → 0" {
+  _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/summary-clean.md")" true "2026-10-01T19:20:00Z" "$(_disp 2026-10-01T19:23:54Z informational)")"
+  [ "$status" -eq 0 ]
+}
+
+@test "#2008 AC3: the live OSS rate-limit notice is not an info-status match (summary still blocks) → 1" {
+  _run_check "$(_notice_json coderabbitai "$(cat "$CR_FIXTURES/pr2000-ratelimited-with-security-finding.md")")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC3: an info_status_pattern never clears a body carrying a finding-bearing section → 1" {
+  # The SonarCloud clean-pass pattern is not end-anchored; a body that matches it
+  # but also carries a Security Architecture Review with retained concerns must
+  # still block (the section guard is applied before any pattern can clear).
+  local body
+  body="$(_sonar_body 0 0)"$'\n<!-- architecture_review_start -->\n### Security Architecture Review\n**Retained concerns**\n- **Medium · security · inferred:** something real.\n<!-- architecture_review_end -->'
+  _run_check "$(_notice_json sonarqubecloud "$body")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008: maintainer_gate_merge_edit_times merges lastEditedAt by comment id" {
+  local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
+  cat > "$bin/gh" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s' '{"data":{"resource":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"IC_cr","lastEditedAt":"2026-10-01T20:35:00Z"},{"id":"IC_x","lastEditedAt":null}]}}}}'
+SHIM
+  chmod +x "$bin/gh"
+  run env PATH="$bin:$PATH" bash -c "source '$GATE'; maintainer_gate_merge_edit_times https://github.com/o/r/pull/1 \"\$1\"" _ \
+    '{"comments":[{"id":"IC_cr","body":"a"},{"id":"IC_x","body":"b"},{"id":"IC_y","body":"c"}]}'
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.comments[0].lastEditedAt')" = "2026-10-01T20:35:00Z" ]
+  [ "$(printf '%s' "$output" | jq -r '.comments[1] | has("lastEditedAt")')" = "true" ]
+  [ "$(printf '%s' "$output" | jq -r '.comments[2] | has("lastEditedAt")')" = "false" ]
+}
+
+@test "#2008: maintainer_gate_merge_edit_times leaves the snapshot unchanged on API failure (gate then fails closed)" {
+  local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$bin/gh"; chmod +x "$bin/gh"
+  run env PATH="$bin:$PATH" bash -c "source '$GATE'; maintainer_gate_merge_edit_times https://github.com/o/r/pull/1 \"\$1\" 2>/dev/null" _ '{"comments":[{"id":"IC_cr"}]}'
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c '.')" = '{"comments":[{"id":"IC_cr"}]}' ]
+}
+
+@test "Wiring(#2008): review-one-pr.sh merges comment edit times before the gate" {
+  local merge_line gate_line
+  merge_line=$(grep -n 'maintainer_gate_merge_edit_times' "$SCRIPT_DIR/review-one-pr.sh" | head -1 | cut -d: -f1)
+  gate_line=$(grep -n 'check_maintainer_comments' "$SCRIPT_DIR/review-one-pr.sh" | head -1 | cut -d: -f1)
+  [ -n "$merge_line" ] && [ "$merge_line" -lt "$gate_line" ]
 }
 
 # ────────────────────────────────────────────────────────────────────
