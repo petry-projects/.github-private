@@ -738,3 +738,9 @@ GHEOF
   ! grep -q -- '--method POST' "$GH_LOG"
   ! grep -q '/dispatches' "$GH_LOG"
 }
+
+@test "dev-lead-retry.sh can be sourced after the maintainer gate is already loaded (pr-review backstop path)" {
+  run bash -c "source '$SCRIPT_DIR/scripts/lib/maintainer-comment-gate.sh' && source '$RETRY_SCRIPT' && declare -F scan_pr_for_undispositioned_bot_comments stale_disposition_needs_dispatch"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *scan_pr_for_undispositioned_bot_comments* ]]
+}
