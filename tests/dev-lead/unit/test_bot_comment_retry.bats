@@ -293,6 +293,13 @@ $(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z a
   [ "$(_reason_for "$out" IC_cr)" = "pass-completed" ]
 }
 
+@test "bcr: a pass stamped with the comment's createdAt never covers an edit made seconds later" {
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough v2' 2026-10-01T23:05:43Z 2026-10-01T23:05:44Z)" \
+    "$(_ours '<!-- dev-lead-fix-reviews pr=2009 sha=abc intent=fix-bot-comment status=no-changes comment=IC_cr version=2026-10-01T23:05:43Z -->' 2026-10-01T23:30:00Z)")"
+  [ "$(_reason_for "$out" IC_cr)" != "pass-completed" ]
+}
+
 # ── bcr_fetch_pr_comments: fails closed on a partial snapshot ────────────────
 
 @test "bcr_fetch_pr_comments: a GraphQL response carrying errors fails closed" {
@@ -322,6 +329,7 @@ _setup_sweep() {
   export DRY_RUN="false"
   export NOW_ISO="2026-10-02T01:00:00Z"
   export GH_LOG="$MOCK_BIN/gh.log"
+  export BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC=0
   if [ -z "${PR_JSON:-}" ]; then
     export PR_JSON='{"state":"open","head":{"sha":"abc","ref":"dev-lead/issue-2008-x","repo":{"full_name":"petry-projects/.github-private"}},"user":{"login":"don-petry"},"labels":[]}'
   fi
@@ -543,13 +551,15 @@ GHEOF
 }
 
 @test "dispatch helpers report a failed dispatch, and only accepted ones are counted" {
+  # shellcheck source=/dev/null
+  source "$RETRY_SCRIPT"
   export DRY_RUN="false"
   gh() { return 1; }
   run dispatch_reviews_retry "petry-projects/.github-private" 2009 abc fix-reviews
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   lookup_check_run_details() { echo '{}'; }
   run dispatch_ci_retry "petry-projects/.github-private" 2009 abc "CI failure"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   # The rate-limit scan increments its count only inside `if dispatch_…; then`.
   ! grep -qE '^\s*dispatch_(ci|reviews)_retry ' "$RETRY_SCRIPT"
   grep -qE 'if dispatch_ci_retry ' "$RETRY_SCRIPT"
@@ -690,4 +700,29 @@ GHEOF
   run scan_repo "petry-projects/.github-private"
   [[ "$output" == *"CALLED"* ]]
   [[ "$output" == *"dispatched 1 PR retries"* ]]
+}
+
+@test "sweep: the claim waits BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC before re-listing markers" {
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+  _claim_gh "777"
+  export BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC=3
+  sleep() { echo "sleep $*" >> "$GH_LOG"; }
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "1" ]
+  # The wait comes after the marker POST and before the re-list.
+  order="$(grep -n -e '--method POST' -e '^sleep 3' -e 'comments?per_page' "$GH_LOG" | cut -d: -f2- | cut -c1-12)"
+  [ "$(printf '%s\n' "$order" | sed -n 2p)" = "sleep 3" ]
+}
+
+@test "withdraw_bot_comment_retry_marker: a failed delete is surfaced as a warning" {
+  # shellcheck source=/dev/null
+  source "$RETRY_SCRIPT"
+  gh() { return 1; }
+  run withdraw_bot_comment_retry_marker "petry-projects/.github-private" 777
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"*"777"* ]]
 }

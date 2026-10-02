@@ -39,6 +39,10 @@ set -euo pipefail
 #                         prevent cascading org-wide rate-limit hits
 #   DRY_RUN             — if "true", log what would be dispatched but don't send
 #   NOW_ISO             — override current time for testing (ISO-8601 UTC)
+#   BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC — seconds to wait after posting a
+#                         bot-comment retry marker before re-listing markers
+#                         to pick the earliest (default: 5), so a concurrent
+#                         scan's marker is visible to the listing
 #
 # Retryable intents: fix-reviews, review-changes, rebase
 #   These intents fetch all needed context (open threads, PR metadata) fresh
@@ -71,6 +75,8 @@ TARGET_ORG="${TARGET_ORG:-petry-projects}"
 DELEGATION_ORGS="${DELEGATION_ORGS:-}"
 DISPATCH_DELAY_SEC="${DISPATCH_DELAY_SEC:-30}"
 DRY_RUN="${DRY_RUN:-false}"
+BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC="${BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC:-5}"
+[[ "$BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC" =~ ^[0-9]+$ ]] || BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC=5
 
 CI_MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
@@ -407,6 +413,18 @@ scan_pr_for_rate_limits() {
   echo "$dispatched"
 }
 
+# withdraw_bot_comment_retry_marker <repo> <marker_id>
+# Deletes a retry marker this scan posted but did not dispatch over. Best effort:
+# a marker left behind reads as a pending retry and holds the comment for the
+# BOT_COMMENT_RETRY_PENDING_SEC window, so a failed delete surfaces as a warning.
+withdraw_bot_comment_retry_marker() {
+  local repo="$1" marker_id="$2"
+  [ -n "$marker_id" ] || return 0
+  if ! gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1; then
+    echo "  ::warning::bot-comment retry: could not withdraw retry marker ${marker_id} in ${repo} — it holds the comment as retry-pending until BOT_COMMENT_RETRY_PENDING_SEC passes" >&2
+  fi
+}
+
 # dispatch_bot_comment_retry <repo> <pr_number> <head_sha> <comment_node_id>
 # Re-dispatches a fix-bot-comment pass for ONE bot comment (#2017). Reuses the
 # dev-lead-reviews-retry type every caller stub already subscribes to, so no stub
@@ -586,17 +604,27 @@ scan_pr_for_undispositioned_bot_comments() {
     # our own automation posted with a trusted association — exactly the markers
     # bcr_retry_decisions counts — so a commenter pasting matching text cannot
     # make every scan back off.
+    #
+    # This is a best-effort claim, not a lock: the listing is eventually
+    # consistent, so the re-list waits BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC for a
+    # concurrent scan's marker to become visible. If two scans still each see only
+    # their own marker, both dispatch. The residual cost is bounded: the per-PR
+    # lane does not cancel in progress, the second pass re-checks the comment's
+    # disposition at run time, and both markers count toward the attempt limits.
     local marker_ids first_marker logins_jq
     # Compared without a `[bot]` suffix, as bcr_retry_decisions does (REST keeps
     # the suffix on an App login; GraphQL omits it).
     logins_jq=$(jq -cn --arg a "$automation" '$a | split(",") | map(sub("\\[bot\\]$"; ""))')
+    if [ "$BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC" -gt 0 ]; then
+      sleep "$BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC"
+    fi
     if ! marker_ids=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
       --jq '.[] | select((.user.login // "" | sub("\\[bot\\]$"; "")) as $l | '"${logins_jq}"' | index($l) != null)
             | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
             | select((.body // "") | contains("dev-lead-bot-comment-retry id='"${cid}"' version='"${version}"' attempt='"${attempt}"' ")) | .id' \
       2>/dev/null); then
       echo "  [warn] bot-comment retry: could not re-read retry markers on PR ${pr_number} — withdrawing and not dispatching (fail closed)" >&2
-      gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1 || true
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
       echo "0"; return 0
     fi
     first_marker=$(printf '%s\n' "$marker_ids" | grep -E '^[0-9]+$' | sort -n | head -n1 || true)
@@ -606,21 +634,19 @@ scan_pr_for_undispositioned_bot_comments() {
       # markers could never hold a retry pending or count an attempt — every scan
       # would dispatch again. Fail closed rather than dispatch without dedup.
       echo "  ::warning::bot-comment retry: the retry marker on PR ${pr_number} was posted by an identity the retry dedup does not trust (expected one of: ${automation}) — withdrawing and not dispatching" >&2
-      gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1 || true
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
       echo "0"; return 0
     fi
     if [ "$first_marker" != "$marker_id" ]; then
       echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent scan already recorded a retry" >&2
-      gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1 || true
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
       echo "0"; return 0
     fi
   fi
   if ! dispatch_bot_comment_retry "$repo" "$pr_number" "$head_sha" "$cid"; then
     # Nothing was dispatched, so withdraw the marker — left in place it would read
     # as a pending retry and block the next attempt for the whole pending window.
-    if [ -n "$marker_id" ]; then
-      gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1 || true
-    fi
+    withdraw_bot_comment_retry_marker "$repo" "$marker_id"
     echo "0"; return 0
   fi
   echo "1"

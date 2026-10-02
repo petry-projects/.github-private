@@ -64,7 +64,10 @@
 #                                   version to the comment's version (default 2):
 #                                   an edited comment's version comes from the
 #                                   webhook's updated_at, which can trail GraphQL's
-#                                   lastEditedAt by a second
+#                                   lastEditedAt by a second. A pass stamped with
+#                                   the comment's exact createdAt processed the
+#                                   creation, so the skew never lets it cover an
+#                                   edit made seconds later.
 
 # The gate's agent-marker regex and info-status registry reader — one source of
 # truth for "which comments need a disposition" (#1813 / #1918). Source the gate
@@ -163,12 +166,16 @@ bcr_retry_decisions() {
         | (.lastEditedAt // .createdAt) as $ver
         | ($ver | epoch) as $vt
         | ([ $notes[] | select(.t >= $vt) | .disp[] | select(attr("id") == $id) ] | length > 0) as $covered
+        | (.createdAt | vepoch) as $ct
         # A pass covers the version it PROCESSED (its version= stamp), so an edit
         # made while it ran stays open. A legacy marker without the stamp falls
-        # back to "posted at/after this version".
+        # back to "posted at/after this version". The skew absorbs only an
+        # edited-event stamp lag; a creation stamp must match exactly.
         | ([ $notes[] | .t as $t | .pass[] | select(attr("comment") == $id)
              | (attr("version") | vepoch) as $pv
-             | select(if $pv != null then ($pv + $skew) >= $vt else $t >= $vt end) ] | length > 0) as $ran
+             | select(if $pv == null then $t >= $vt
+                      elif $pv == $ct then $pv >= $vt
+                      else ($pv + $skew) >= $vt end) ] | length > 0) as $ran
         # Retry markers match this version by VALUE (epoch), not by string, so a
         # timestamp format difference between fetches cannot hide a pending retry.
         | [ $notes[] | .t as $t | .retry[]
