@@ -94,12 +94,24 @@ usage_telemetry_user_agent() {
 # value (seconds) from a curl `-D` header dump, or empty when absent/non-integer.
 # ---------------------------------------------------------------------------
 usage_telemetry_retry_after() {
-  local hdrfile="${1:-}" value
+  local hdrfile="${1:-}" now_epoch="${2:-}" value target
   [ -n "$hdrfile" ] && [ -f "$hdrfile" ] || return 0
   value="$(grep -i '^retry-after:' "$hdrfile" 2>/dev/null | head -n1 \
     | cut -d: -f2- | tr -d '[:space:]\r' || printf '')"
   if [[ "$value" =~ ^[0-9]+$ ]]; then
     printf '%s' "$value"
+    return 0
+  fi
+  # RFC 9110 also allows an HTTP-date; convert to delta seconds (GNU, then BSD date).
+  value="$(grep -i '^retry-after:' "$hdrfile" 2>/dev/null | head -n1 \
+    | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || printf '')"
+  [ -n "$value" ] || return 0
+  target="$(date -u -d "$value" +%s 2>/dev/null \
+    || date -u -j -f '%a, %d %b %Y %H:%M:%S GMT' "$value" +%s 2>/dev/null || printf '')"
+  [[ "$target" =~ ^[0-9]+$ ]] || return 0
+  [ -n "$now_epoch" ] || now_epoch="$(usage_telemetry_now)"
+  if [ "$target" -gt "$now_epoch" ]; then
+    printf '%s' "$((target - now_epoch))"
   fi
 }
 
@@ -149,16 +161,22 @@ usage_telemetry_fetch() {
 
   ua="$(usage_telemetry_user_agent)"
   curl_bin="${USAGE_TELEMETRY_CURL:-curl}"
-  hdrfile="$(mktemp "${TMPDIR:-/tmp}/usage-telemetry-hdr.XXXXXX")"
+  hdrfile="$(mktemp "${TMPDIR:-/tmp}/usage-telemetry-hdr.XXXXXX")" || {
+    usage_telemetry_log "failed to create temporary file for headers — status=0 (degraded; fail-safe allow)"
+    usage_telemetry_envelope 0 "" "$now" ""
+    return 0
+  }
 
   # Body (any internal newlines) plus a trailing status line on stdout; response
   # headers to $hdrfile. No `-o`, so the body rides stdout and `-w` appends the
   # status as the final line.
-  if ! raw="$("$curl_bin" -sS \
+  # The bearer token is fed via a stdin curl config (`-K -`), never argv, so it
+  # is not visible in process listings.
+  if ! raw="$(printf 'header = "Authorization: Bearer %s"\n' "$token" | "$curl_bin" -sS \
+      -K - \
       --max-time "${USAGE_TELEMETRY_TIMEOUT:-10}" \
       -D "$hdrfile" \
       -w $'\n%{http_code}' \
-      -H "Authorization: Bearer ${token}" \
       -H "anthropic-beta: ${USAGE_TELEMETRY_BETA}" \
       -H "User-Agent: ${ua}" \
       "$USAGE_TELEMETRY_ENDPOINT" 2>/dev/null)"; then
@@ -174,7 +192,7 @@ usage_telemetry_fetch() {
 
   retry_after=""
   if [ "$status" = "429" ]; then
-    retry_after="$(usage_telemetry_retry_after "$hdrfile")"
+    retry_after="$(usage_telemetry_retry_after "$hdrfile" "$now")"
   fi
   rm -f "$hdrfile"
 
@@ -190,9 +208,19 @@ usage_telemetry_fetch() {
 usage_telemetry_publish_file() {
   local envelope="$1" file="${2:-${AGENT_TOKEN_BUDGET_TELEMETRY_FILE:-}}"
   if [ -z "$file" ]; then
-    file="$(mktemp "${TMPDIR:-/tmp}/agent-token-telemetry.XXXXXX.json")"
+    file="$(mktemp "${TMPDIR:-/tmp}/agent-token-telemetry.XXXXXX")" || {
+      usage_telemetry_log "failed to create temporary file for telemetry"
+      return 1
+    }
   fi
-  printf '%s' "$envelope" > "$file"
+  # Write atomically (temp + rename) so concurrent readers never see a
+  # truncated, half-written file.
+  local tmp
+  tmp="$(mktemp "${file}.XXXXXX")" || return 1
+  if ! { printf '%s' "$envelope" > "$tmp" && mv -f "$tmp" "$file"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
   export AGENT_TOKEN_BUDGET_TELEMETRY_FILE="$file"
   printf '%s' "$file"
 }

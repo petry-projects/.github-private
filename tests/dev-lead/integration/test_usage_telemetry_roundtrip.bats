@@ -31,7 +31,8 @@ setup() {
   # (arl_now, honoring SOURCE_NOW). Anchor "now" 7 whole days before the weekly
   # reset so the glide threshold is exactly ceiling - reserve*7 = 100 - 14 = 86.
   WEEKLY_RESET="2026-09-22T16:00:00Z"
-  NOW_EPOCH="$(( $(date -u -d "$WEEKLY_RESET" +%s) - 7 * 86400 ))"
+  # 1789488000 is 2026-09-15T16:00:00Z, exactly 7 days before WEEKLY_RESET.
+  NOW_EPOCH=1789488000
   export USAGE_TELEMETRY_NOW="$NOW_EPOCH"
   export SOURCE_NOW="$NOW_EPOCH"
 
