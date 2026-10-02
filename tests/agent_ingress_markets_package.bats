@@ -34,13 +34,9 @@ teardown() {
 
 @test "markets §3: the ingress block is extracted and declares the five role jobs" {
   [ -s "$INGRESS" ]
-  run yq '.jobs | keys | .[]' "$INGRESS"
+  run yq -r '.jobs | keys | sort | join(",")' "$INGRESS"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"dev-lead"* ]]
-  [[ "$output" == *"pr-auto-review"* ]]
-  [[ "$output" == *"pr-review"* ]]
-  [[ "$output" == *"pr-review-mention"* ]]
-  [[ "$output" == *"ci-failure-analyst"* ]]
+  [ "$output" = "ci-failure-analyst,dev-lead,pr-auto-review,pr-review,pr-review-mention" ]
 }
 
 @test "markets §3: validate-ingress-if.sh passes (pure if:, bounded concurrency)" {
