@@ -1,0 +1,18 @@
+name: Agent Ingress
+# FIXTURE (ADR-0010) — the group does not carry the role name as a prefix
+# ("ci-" is not "ci-failure-analyst-"). The ingress guard must FAIL.
+on:
+  check_run:
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  ci-failure-analyst:
+    if: github.event_name == 'check_run'
+    concurrency:
+      group: "ci-${{ github.event.check_run.head_sha }}"
+      cancel-in-progress: false
+    uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@ci-failure-analyst/v1-stable
+    permissions:
+      checks: read

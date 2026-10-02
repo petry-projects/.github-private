@@ -195,6 +195,30 @@ YML
 }
 
 # ---------------------------------------------------------------------------
+# ADR-0010 collision rule: an agent-ingress job's caller-side concurrency group
+# must not reuse any group its pinned reusable declares, or the nested caller and
+# reusable groups block or cancel each other. Only the reusable AT THE PINNED REF
+# can answer that, so this guard (which already resolves it) owns the check.
+# ---------------------------------------------------------------------------
+
+@test "ingress concurrency: a role-prefixed group distinct from the reusable's groups passes" {
+  run env VCI_ROOT="$FIX/ingress-concurrency-ok" VCI_RESOLVE_DIR="$FIX/ingress-concurrency-reusable" bash "$SCRIPT"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"checked=1"* ]]
+}
+
+@test "ingress concurrency: a group colliding with a reusable-declared group FAILS" {
+  run env VCI_ROOT="$FIX/ingress-concurrency-collide" VCI_RESOLVE_DIR="$FIX/ingress-concurrency-reusable" bash "$SCRIPT"
+  echo "$output"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"'dev-lead'"* ]]
+  [[ "$output" == *"dev-lead-pr-"* ]]
+  [[ "$output" == *"collides"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # --pair mode: validate a single caller against an explicit reusable file
 # ---------------------------------------------------------------------------
 

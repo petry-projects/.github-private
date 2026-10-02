@@ -19,7 +19,13 @@
 # WHAT IT DOES
 #   For an agent-ingress workflow it asserts, per job, that
 #     (1) the job is a thin caller (it has a reusable `uses:` pin), and
-#     (2) the job's `if:` is a PURE event filter (no forbidden repo-state reach).
+#     (2) the job's `if:` is a PURE event filter (no forbidden repo-state reach),
+#     (3) any job-level `concurrency:` is bounded per ADR-0010: its `group` reads
+#         only that same event surface (checked by the same predicate), carries
+#         the role (job) name as a prefix, and `cancel-in-progress` is a literal
+#         boolean. The other half of ADR-0010's collision rule — no reuse of a
+#         group the pinned reusable declares — needs the reusable at its pinned
+#         ref, so validate-caller-inputs.sh enforces it with viif_group_stems.
 #   The ALLOW/FORBID rulings are the FROZEN, machine-readable table at
 #   tests/fixtures/agent-ingress/if-filter-rulings.tsv. This guard consumes THOSE
 #   ROWS DIRECTLY (not the ADR prose), so guard and test cannot drift (QA #8).
@@ -173,6 +179,151 @@ viif_forbidden() {
   return 1
 }
 
+# ── job-level concurrency: (ADR-0010) ────────────────────────────────────────
+
+# The literal Actions expression opener, matched as text (never expanded).
+# shellcheck disable=SC2016
+VIIF_EXPR_OPEN='${{'
+
+# viif_group_exprs <group> — print the body of every ${{ … }} expression in a
+# concurrency group, one per line (newlines inside a body folded to spaces).
+viif_group_exprs() {
+  local rest="${1//$'\n'/ }"
+  while [[ "$rest" == *"$VIIF_EXPR_OPEN"* ]]; do
+    rest="${rest#*"$VIIF_EXPR_OPEN"}"
+    printf '%s\n' "${rest%%'}}'*}"
+    [[ "$rest" == *'}}'* ]] || break
+    rest="${rest#*'}}'}"
+  done
+}
+
+# viif_group_stems <group> — print the literal STEM(s) a concurrency group can
+# begin with (sorted, de-duplicated): the text before any placeholder. A group
+# with a literal head (`role-${{ … }}`) has that head as its one stem. A group
+# that is one whole expression has as stems the literals in RESULT position of its
+# first expression — the first argument of a top-level format() and bare string
+# operands of ||/&& — cut at the first `{0}`-style placeholder. Comparison operands
+# (`github.event_name == 'pull_request'`), nested format() arguments, and other
+# function arguments are not group names and are skipped. Used for both the role
+# prefix rule and the reusable-collision rule.
+viif_group_stems() {
+  local group="${1//$'\n'/ }" head
+  head="${group%%"$VIIF_EXPR_OPEN"*}"
+  head="${head#"${head%%[![:space:]]*}"}"
+  [[ "$group" == *"$VIIF_EXPR_OPEN"* ]] || head="${head%"${head##*[![:space:]]}"}"
+  if [ -n "$head" ]; then
+    printf '%s\n' "$head"
+    return 0
+  fi
+  viif_group_exprs "$group" | head -n 1 | awk '
+    function skipws() { while (i <= n && substr(s, i, 1) ~ /[ \t]/) i++ }
+    {
+      s = $0; n = length(s); i = 1; sp = 0; prev = "START"
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c ~ /[ \t]/) { i++; continue }
+        if (c == "\047") {
+          lit = ""; j = i + 1
+          while (j <= n) {
+            d = substr(s, j, 1)
+            if (d == "\047") { if (substr(s, j + 1, 1) == "\047") { lit = lit d; j += 2; continue } break }
+            lit = lit d; j++
+          }
+          i = j + 1; skipws(); nx = substr(s, i, 2)
+          calls = 0
+          for (q = 1; q <= sp; q++) if (st[q] != "G") calls++
+          cand = 0
+          if (calls == 0) cand = (prev != "CMP" && nx !~ /^(==|!=|<|>)/)
+          else if (calls == 1 && st[sp] == "F" && prev == "FOPEN") cand = 1
+          if (cand) { p = index(lit, "{"); stem = p ? substr(lit, 1, p - 1) : lit; if (stem != "") print stem }
+          prev = "LIT"; continue
+        }
+        two = substr(s, i, 2)
+        if (two == "||" || two == "&&") { prev = "LOGIC"; i += 2; continue }
+        if (two == "==" || two == "!=" || two == "<=" || two == ">=") { prev = "CMP"; i += 2; continue }
+        if (c == "<" || c == ">") { prev = "CMP"; i++; continue }
+        if (c == "(") { st[++sp] = "G"; prev = "GOPEN"; i++; continue }
+        if (c == "[") { st[++sp] = "I"; prev = "IOPEN"; i++; continue }
+        if (c == ")" || c == "]") { if (sp > 0) sp--; prev = "CLOSE"; i++; continue }
+        if (c ~ /[A-Za-z0-9_]/) {
+          j = i; while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_.*-]/) j++
+          id = substr(s, i, j - i); i = j; skipws()
+          if (substr(s, i, 1) == "(") {
+            st[++sp] = (tolower(id) == "format") ? "F" : "C"
+            prev = (st[sp] == "F") ? "FOPEN" : "COPEN"; i++; continue
+          }
+          prev = "ID"; continue
+        }
+        prev = "OTHER"; i++
+      }
+    }' | LC_ALL=C sort -u
+}
+
+# viif_check_concurrency <role> <group> <cancel-in-progress> — the ADR-0010
+# bounds on one job-level concurrency: block. Prints one reason per violation and
+# returns 1; prints nothing and returns 0 if bounded. <cancel-in-progress> is the
+# raw value ("" when absent). Checks:
+#   (1) every ${{ }} in the group reads only the event surface a job-level if:
+#       may read — the SAME viif_forbidden predicate, not a second one;
+#   (2) cancel-in-progress, if set, is a literal boolean;
+#   (3) every group stem carries the role name as a prefix (`<role>-…`).
+# The other half of the collision rule (no reuse of a group the pinned reusable
+# declares) needs the reusable at its pinned ref; validate-caller-inputs.sh owns it.
+viif_check_concurrency() {
+  local role="$1" group="$2" cancel="$3" rc=0 expr bad stem stems
+  if [ -z "$group" ]; then
+    echo "concurrency: declares no group"
+    return 1
+  fi
+
+  while IFS= read -r expr; do
+    [ -n "$expr" ] || continue
+    if ! bad="$(viif_forbidden "$expr")"; then
+      echo "concurrency.group reaches beyond the event payload — forbidden construct(s): ${bad}"
+      rc=1
+    fi
+  done < <(viif_group_exprs "$group")
+
+  case "$cancel" in
+    ''|true|false) : ;;
+    *) echo "concurrency.cancel-in-progress must be a literal boolean (true/false), got: ${cancel}"; rc=1 ;;
+  esac
+
+  stems="$(viif_group_stems "$group")"
+  if [ -z "$stems" ]; then
+    echo "concurrency.group carries no literal role prefix — it must begin with '${role}-'"
+    rc=1
+  fi
+  while IFS= read -r stem; do
+    [ -n "$stem" ] || continue
+    case "$stem" in
+      "$role"|"$role"-*) : ;;
+      *) echo "concurrency.group '${stem}' does not carry the role name as a prefix — it must begin with '${role}-'"; rc=1 ;;
+    esac
+  done <<< "$stems"
+  return "$rc"
+}
+
+# viif_job_concurrency <file> <job> — print the job's concurrency group and
+# cancel-in-progress, separated by \x1f ("" for each when absent; a non-
+# whitespace separator so an empty group cannot shift the fields on read). A scalar
+# `concurrency: <group>` is the group with no cancel-in-progress. Deliberately
+# avoids yq's `//` on cancel-in-progress: `false // ""` would drop a literal false.
+viif_job_concurrency() {
+  local file="$1" job="$2" tag group cancel=""
+  tag="$(yq ".jobs[\"$job\"].concurrency | tag" "$file" 2>/dev/null)"
+  case "$tag" in
+    '!!map')
+      group="$(yq ".jobs[\"$job\"].concurrency.group // \"\"" "$file" 2>/dev/null)"
+      cancel="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"]" "$file" 2>/dev/null)"
+      [ "$cancel" = "null" ] && cancel=""
+      ;;
+    '!!null'|'') group="" ;;
+    *) group="$(yq ".jobs[\"$job\"].concurrency" "$file" 2>/dev/null)" ;;
+  esac
+  printf '%s\x1f%s\n' "${group//$'\n'/ }" "$cancel"
+}
+
 # ── file-level validation ─────────────────────────────────────────────────────
 
 # viif_validate_ingress <file> — validate one agent-ingress workflow file. Each
@@ -180,7 +331,7 @@ viif_forbidden() {
 # filter. Emits ::error:: naming the offending job (and, for an if: violation,
 # the forbidden construct); returns 1 on any failure, 0 if clean.
 viif_validate_ingress() {
-  local file="$1" rc=0 job uses ifexpr bad
+  local file="$1" rc=0 job uses ifexpr bad group cancel reason
   local -a jobs
 
   mapfile -t jobs < <(yq '.jobs | keys | .[]' "$file" 2>/dev/null)
@@ -211,6 +362,16 @@ viif_validate_ingress() {
         rc=1
       fi
     fi
+
+    # (3) job-level concurrency: bounds (ADR-0010).
+    IFS=$'\x1f' read -r group cancel < <(viif_job_concurrency "$file" "$job")
+    if [ -n "$group" ] || [ -n "$cancel" ]; then
+      while IFS= read -r reason; do
+        [ -n "$reason" ] || continue
+        echo "::error::agent-ingress job '$job' ${reason} (ADR-0010: a job-level concurrency group may read only the event surface an if: may read, must carry the role name as a prefix, and cancel-in-progress must be a literal boolean)"
+        rc=1
+      done < <(viif_check_concurrency "$job" "$group" "$cancel")
+    fi
   done
 
   return "$rc"
@@ -225,12 +386,12 @@ viif_scan() {
     return 0
   fi
   if viif_validate_ingress "$ingress"; then
-    echo "ingress-if: OK — every agent-ingress job is a thin caller with a pure event-filter if:."
+    echo "ingress-if: OK — every agent-ingress job is a thin caller with a pure event-filter if: and bounded concurrency."
     return 0
   fi
   echo "" >&2
-  echo "ingress-if: FAIL — an agent-ingress job is not a thin caller or its if: reaches for repo state." >&2
-  echo "An ingress if: may reference ONLY the delivered event. See tests/fixtures/agent-ingress/if-filter-rulings.tsv and ADR-0007." >&2
+  echo "ingress-if: FAIL — an agent-ingress job is not a thin caller, its if: reaches for repo state, or its concurrency: is unbounded." >&2
+  echo "An ingress if: (and concurrency.group) may reference ONLY the delivered event. See tests/fixtures/agent-ingress/if-filter-rulings.tsv, ADR-0007 and ADR-0010." >&2
   return 1
 }
 
