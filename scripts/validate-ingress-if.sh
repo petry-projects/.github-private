@@ -188,13 +188,14 @@ VIIF_EXPR_OPEN='${{'
 # viif_group_exprs <group> — print the body of every ${{ … }} expression in a
 # concurrency group, one per line (newlines inside a body folded to spaces).
 viif_group_exprs() {
-  local rest="${1//$'\n'/ }" i c expr_body in_quote quote_char
+  local rest="${1//$'\n'/ }" i c expr_body in_quote quote_char closed
   while [[ "$rest" == *"$VIIF_EXPR_OPEN"* ]]; do
     rest="${rest#*"$VIIF_EXPR_OPEN"}"
     # Find the closing }} while respecting quoted strings inside the expression
     expr_body=""
     in_quote=0
     quote_char=""
+    closed=0
     i=0
     while (( i < ${#rest} )); do
       c="${rest:$i:1}"
@@ -212,6 +213,7 @@ viif_group_exprs() {
           # Found closing }}
           printf '%s\n' "$expr_body"
           rest="${rest:$((i+2))}"
+          closed=1
           break
         else
           expr_body+="$c"
@@ -220,7 +222,7 @@ viif_group_exprs() {
       (( i++ ))
     done
     # Unclosed ${{ — validate the remaining tail rather than dropping it.
-    if (( i >= ${#rest} )); then
+    if (( ! closed )); then
       printf '%s\n' "$expr_body"
       rest=""
     fi
