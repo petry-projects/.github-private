@@ -442,3 +442,9 @@ setup() {
   run vci_job_for_uses "$f" 7
   [ "$output" = "sq" ]
 }
+
+@test "viif_check_concurrency: an event-field branch beside a prefixed fallback is rejected (unprefixed leading result)" {
+  run viif_check_concurrency pr-review "\${{ github.event.pull_request.title || 'pr-review-fallback' }}" "true"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"every possible leading result must begin with 'pr-review-'"* ]]
+}

@@ -393,6 +393,10 @@ vci_scan_repo() {
       else
         echo "::warning::caller-inputs: could not resolve ${repo_slug}/${wf_path}@${ref} (referenced by $(basename "$wf")) — skipping; verify the forwarded inputs manually"
         warned=$((warned + 1))
+        if [ -n "$group" ]; then
+          echo "::error::caller-inputs: ingress job '${job}' declares a concurrency group but ${repo_slug}/${wf_path}@${ref} could not be resolved — the ADR-0010 collision rule cannot be checked"
+          rc=1
+        fi
       fi
     done
   done

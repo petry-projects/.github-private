@@ -284,6 +284,13 @@ viif_group_stems() {
             st[++sp] = (tolower(id) == "format") ? "F" : "C"
             prev = (st[sp] == "F") ? "FOPEN" : "COPEN"; i++; continue
           }
+          # A context reference in result position (not a comparison/&& operand, not
+          # a function argument) can itself be the group — unprefixed. Emit a
+          # sentinel stem so the role-prefix rule rejects it.
+          calls = 0
+          for (q = 1; q <= sp; q++) if (st[q] != "G") calls++
+          nx = substr(s, i, 2)
+          if (calls == 0 && prev != "CMP" && nx !~ /^(==|!=|<|>|&&)/ && id !~ /^(true|false|null)$/) print "<dynamic>"
           prev = "ID"; continue
         }
         prev = "OTHER"; i++
@@ -332,6 +339,7 @@ viif_check_concurrency() {
     [ -n "$stem" ] || continue
     case "$stem" in
       "$role"-*) : ;;
+      "<dynamic>") echo "concurrency.group can resolve to a bare expression value without the role prefix — every possible leading result must begin with '${role}-'"; rc=1 ;;
       *) echo "concurrency.group '${stem}' does not carry the role name as a prefix — it must begin with '${role}-'"; rc=1 ;;
     esac
   done <<< "$stems"
@@ -343,15 +351,15 @@ viif_check_concurrency() {
 # whitespace separator so an empty group cannot shift the fields on read). A scalar
 # `concurrency: <group>` is the group with no cancel-in-progress. Deliberately
 # avoids yq's `//` on cancel-in-progress: `false // ""` would drop a literal false.
-# Requires cancel-in-progress to be a literal boolean (type == "boolean"), not a
-# quoted string.
+# Requires cancel-in-progress to be a literal boolean (yq type "boolean", or the
+# "!!bool" tag some yq versions print), not a quoted string.
 viif_job_concurrency() {
   local file="$1" job="$2" type_val group cancel=""
   type_val="$(yq ".jobs[\"$job\"].concurrency | type" "$file" 2>/dev/null)"
   case "$type_val" in
     'object'|'!!map')
       group="$(yq ".jobs[\"$job\"].concurrency.group // \"\"" "$file" 2>/dev/null)"
-      # Check that cancel-in-progress, if present, is a literal boolean (type == "boolean")
+      # Check that cancel-in-progress, if present, is a literal boolean (type "boolean" or "!!bool")
       local cancel_type
       cancel_type="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"] | type" "$file" 2>/dev/null)"
       if [ "$cancel_type" = "boolean" ] || [ "$cancel_type" = "!!bool" ]; then
