@@ -514,9 +514,11 @@ scan_pr_for_undispositioned_bot_comments() {
     echo "0"; return 0
   fi
 
-  jq -r '.[] | select(.decision == "skip")
-         | "  [skip] bot-comment \(.id) (\(.login)) on PR '"${pr_number}"': \(.reason)"' \
-    <<< "$decisions" >&2 || true
+  if ! jq -r --arg pr "$pr_number" '.[] | select(.decision == "skip")
+         | "  [skip] bot-comment \(.id) (\(.login)) on PR \($pr): \(.reason)"' \
+       <<< "$decisions" >&2; then
+    echo "  [warn] bot-comment retry: could not render skip decisions for PR ${pr_number}" >&2
+  fi
 
   local pick cid version attempt now_iso
   pick=$(jq -c 'first(.[] | select(.decision == "dispatch")) // empty' <<< "$decisions")
@@ -537,6 +539,17 @@ scan_pr_for_undispositioned_bot_comments() {
          -f body="$(bcr_retry_marker "$cid" "$version" "$attempt" "$now_iso")" \
          --jq '.id // empty' 2>/dev/null); then
       echo "  [warn] bot-comment retry: could not record the retry marker on PR ${pr_number} — not dispatching (dedup unavailable)" >&2
+      echo "0"; return 0
+    fi
+    # Two concurrent scans can both have seen no marker. Keep only the earliest
+    # marker for this comment version; the loser withdraws and does not dispatch.
+    local first_marker
+    first_marker=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+      --jq '.[] | select((.body // "") | contains("dev-lead-bot-comment-retry id='"${cid}"' version='"${version}"' ")) | .id' \
+      2>/dev/null | sort -n | head -n1) || first_marker=""
+    if [ -n "$first_marker" ] && [ "$first_marker" != "$marker_id" ]; then
+      echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent scan already recorded a retry" >&2
+      gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1 || true
       echo "0"; return 0
     fi
   fi
