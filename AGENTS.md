@@ -665,6 +665,51 @@ like a quiet fleet. **Auto-resume is scoped by that source:** after the window's
   variable) until the epic's human sign-off; on a telemetry error it fails **open**
   (allow), so a budget-read outage never stops the fleet.
 
+### Gemini quota metering & per-key cooldown (#2030)
+
+Gemini is the fallback the fleet degrades to when the Claude budget trips. Its quota
+is checked from the fleet's **own token ledger**, not by a provider probe. The goal
+is to keep degrading from moving the outage onto an unmetered provider.
+
+- **Caps are data.** `scripts/lib/gemini-quota-caps.tsv` (next to `model-pricing.tsv`)
+  holds one row per key index × model: `tier`, `rpm`, `tpm`, `rpd`. It also holds the
+  `daily_reset_time` / `daily_reset_tz` and `default_cooldown_sec` settings. It
+  **ships with every limit `unknown`**. A maintainer fills in the real values;
+  nobody measures them by calling the Gemini API. Never hard-code a Gemini limit
+  in a script.
+- **Keys are named by index only:** `1` is the primary slot
+  (`GEMINI_API_KEY` / `GOOGLE_API_KEY`) and `N` is `GOOGLE_API_KEY_N`. A key value
+  never appears in a log, a ledger record, or cooldown state.
+- **Metering.** Each Gemini token record (`emit_token_record`) carries the
+  `key_index` that served it. `check_provider_headroom gemini`
+  (`scripts/lib/gemini-quota.sh`) sums the ledger (`GEMINI_LEDGER_FILE`, default
+  `TOKEN_LOG_FILE`) per key over three windows: the last minute (requests and
+  tokens) and the current day (requests, counted since the configured reset, or a
+  rolling 24h while the reset is unknown). Each sum is compared with its cap. The
+  call makes no network request.
+- **Result.** `0` means some key is below `DEV_LEAD_USAGE_THRESHOLD`.
+  `1` (skip) means every key is metered and at or above the threshold.
+  `2` (**constrained**) means the limits are unknown, a key has no caps row, or the
+  ledger is unreadable or corrupt.
+  `2` is deliberately **not** fail-open, unlike Claude's probe. It logs a
+  `::warning::` naming `limits unknown` or `ledger unreadable` and never prints
+  the `ok` line. The engine still runs on `2`, because refusing to degrade onto a
+  constrained Gemini is the actuation follow-up (after #2029). Rotation tries
+  constrained keys after keys with measured headroom.
+- **Cooldown memory.** When a key rate-limits or returns `RESOURCE_EXHAUSTED`, the
+  rotation appends a `kind:"gemini_key_cooldown"` record (`key_index`, `model`,
+  `until`) to the same ledger. The deadline comes from the error's retry hint
+  (`retryDelay` / "retry in Ns"), or from `default_cooldown_sec` if the error gives
+  none. Later calls and jobs that read that ledger skip the key on that model until
+  the deadline. If every key on a model is cooling down, no call is made, and the
+  chain moves to the next model and then to the cross-provider fallback. These
+  records share the Token Observatory channel, and cost reports count only
+  `token_usage` records.
+- **Visibility.** `scripts/token_report.sh` (fleet monitor and the weekly digest)
+  renders a **Gemini quota (per key index)** section next to the per-model usage.
+  It shows the peak requests/min, tokens/min, and requests/day against each cap,
+  plus the cooldowns recorded.
+
 ### Initiative Planner — blocking open-questions gate
 
 `scripts/initiative-planner/apply-plan.sh` will **not** materialize an epic + sub-issue

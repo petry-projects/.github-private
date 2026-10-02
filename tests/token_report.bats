@@ -491,3 +491,49 @@ PY
   elapsed="$(printf '%s\n' "$output" | sed -n 's/.*elapsed=\([0-9]*\).*/\1/p')"
   [ "$elapsed" -lt 15 ]
 }
+
+# ---------------------------------------------------------------------------
+# render_gemini_quota — per-key Gemini usage against the caps file (#2030)
+# ---------------------------------------------------------------------------
+
+_gq_dir() {
+  local d; d="$(mktemp -d)"
+  cat > "$d/run.jsonl" <<'JSONL'
+{"ts":"2026-06-01T10:00:05Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":100,"cache_read_tokens":0,"output_tokens":20,"key_index":1,"repo":"r"}
+{"ts":"2026-06-01T10:00:40Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":300,"cache_read_tokens":0,"output_tokens":30,"key_index":1,"repo":"r"}
+{"ts":"2026-06-01T10:05:00Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":50,"cache_read_tokens":0,"output_tokens":5,"key_index":1,"repo":"r"}
+{"ts":"2026-06-01T11:00:00Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":10,"cache_read_tokens":0,"output_tokens":1,"key_index":2,"repo":"r"}
+{"kind":"gemini_key_cooldown","ts":"2026-06-01T10:01:00Z","engine":"gemini","model":"gemini-3.8-flash","key_index":1,"until":1,"repo":"r"}
+{"ts":"2026-06-01T12:00:00Z","engine":"claude","model":"claude-opus-4-7","input_tokens":10,"output_tokens":1,"repo":"r"}
+JSONL
+  printf '%s' "$d"
+}
+
+@test "render_gemini_quota: per key index, peak per window against the caps file" {
+  local d caps; d="$(_gq_dir)"; caps="$(mktemp)"
+  printf '1\tgemini-3.8-flash\tfree\t10\t1000\tnone\n' > "$caps"
+  GEMINI_QUOTA_CAPS="$caps" run render_gemini_quota "$d"
+  rm -rf "$d" "$caps"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## Gemini quota (per key index)"* ]]
+  # key 1: 3 calls; peak minute = 2 req / 450 tok; peak day = 3 req (no cap); 1 cooldown
+  [[ "$output" == *'| 1 | `gemini-3.8-flash` | free | 3 | 2 / 10 (20%) | 450 / 1,000 (45%) | 3 (no cap) | 1 |'* ]]
+  # key 2 has no caps row → every window shows the cap as unknown, never hidden.
+  [[ "$output" == *'| 2 | `gemini-3.8-flash` | unknown | 1 | 1 / unknown | 11 / unknown | 1 / unknown | 0 |'* ]]
+}
+
+@test "render_gemini_quota: no-op when no record carries a gemini key index" {
+  run render_gemini_quota "$FIXTURES"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "render_token_report: Gemini quota section sits beside the per-model usage" {
+  local d; d="$(_gq_dir)"
+  run render_token_report "$d" 7 1 1
+  rm -rf "$d"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## Top cost drivers"*"## Gemini quota (per key index)"*"## By repository"* ]]
+  # The cooldown record is not a priced call.
+  [[ "$output" == *"5 LLM calls"* ]]
+}

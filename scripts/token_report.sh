@@ -45,6 +45,11 @@ if [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/model-pricing.sh" ]; 
   # shellcheck source=scripts/lib/model-pricing.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/model-pricing.sh"
 fi
+# Gemini per-key caps (gemini-quota-caps.tsv) for the "Gemini quota" section (#2030).
+if [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/gemini-quota.sh" ]; then
+  # shellcheck source=scripts/lib/gemini-quota.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/gemini-quota.sh"
+fi
 
 # ---------------------------------------------------------------------------
 # Pure rendering helpers (unit-tested)
@@ -216,6 +221,68 @@ render_cost_per_day() {
   ' "$enriched"
 }
 
+# _gq_cell <used> <cap> — "used / cap (pct%)" for one quota window; the cap may be
+# `none` (no cap on the window) or `unknown` (not filled yet — shown, never hidden).
+_gq_cell() {
+  local used="$1" cap="${2:-unknown}"
+  case "$cap" in
+    none) printf '%s (no cap)' "$(_fmt_int "$used")" ;;
+    0)    printf '%s / 0' "$(_fmt_int "$used")" ;;
+    *[!0-9]*|'') printf '%s / unknown' "$(_fmt_int "$used")" ;;
+    *)    printf '%s / %s (%d%%)' "$(_fmt_int "$used")" "$(_fmt_int "$cap")" $(( used * 100 / cap )) ;;
+  esac
+}
+
+# render_gemini_quota <jsonl_dir>
+# Emits the "Gemini quota (per key index)" section: for every key index × model seen
+# in the ledgers, the PEAK requests per minute, tokens per minute and requests per day
+# over the lookback against gemini-quota-caps.tsv, plus the cooldowns recorded. Peaks
+# are org-wide (every repo's ledger), which is how the shared keys are actually
+# consumed. Pure: no network. No-op when no record carries a Gemini key index.
+render_gemini_quota() {
+  local dir="$1"
+  local files=("$dir"/*.jsonl)
+  [ -e "${files[0]}" ] || return 0
+  local rows
+  rows="$(jq -r 'select(type == "object" and .engine == "gemini" and .key_index != null)
+      | [ (.kind // "token_usage"), (.key_index | tostring), (.model // "-"), (.ts // ""),
+          ((.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0)) ]
+      | @tsv' "${files[@]}" 2>/dev/null \
+    | awk -F'\t' '
+        $1 == "token_usage" && $4 != "" {
+          k = $2 "\t" $3; seen[k] = 1; calls[k]++
+          m = k SUBSEP substr($4, 1, 16); d = k SUBSEP substr($4, 1, 10)
+          rm[m]++; tm[m] += $5; rd[d]++
+          if (rm[m] > prm[k]) prm[k] = rm[m]
+          if (tm[m] > ptm[k]) ptm[k] = tm[m]
+          if (rd[d] > prd[k]) prd[k] = rd[d]
+        }
+        $1 == "gemini_key_cooldown" { k = $2 "\t" $3; seen[k] = 1; cd[k]++ }
+        END { for (k in seen)
+          printf "%s\t%d\t%d\t%d\t%d\t%d\n", k, calls[k], prm[k], ptm[k], prd[k], cd[k] }' \
+    | sort -t$'\t' -k1,1n -k2,2)"
+  [ -n "$rows" ] || return 0
+
+  printf '## Gemini quota (per key index)\n\n'
+  printf 'Peak usage per window over the lookback, metered from the ledger against '
+  printf '`scripts/lib/gemini-quota-caps.tsv` (#2030). Minutes and days are UTC buckets. '
+  printf '`unknown` = cap not filled yet — the headroom gate treats that key as constrained.\n\n'
+  printf '| Key | Model | Tier | Calls | Peak req/min | Peak tok/min | Peak req/day | Cooldowns |\n'
+  printf '|---:|---|---|---:|---:|---:|---:|---:|\n'
+  local idx model calls prm ptm prd cds caps tier rpm tpm rpd
+  while IFS=$'\t' read -r idx model calls prm ptm prd cds; do
+    caps=""
+    declare -F gq_caps_for >/dev/null 2>&1 && caps="$(gq_caps_for "$idx" "$model")"
+    tier="unknown"; rpm="unknown"; tpm="unknown"; rpd="unknown"
+    [ -n "$caps" ] && IFS=$'\t' read -r tier rpm tpm rpd <<< "$caps"
+    printf '| %s | `%s` | %s | %s | %s | %s | %s | %s |\n' \
+      "$idx" "$model" "$tier" "$(_fmt_int "$calls")" \
+      "$(_gq_cell "$prm" "$rpm")" "$(_gq_cell "$ptm" "$tpm")" "$(_gq_cell "$prd" "$rpd")" \
+      "$(_fmt_int "$cds")"
+  done <<< "$rows"
+  printf '\n'
+}
+
 # render_token_report <jsonl_dir> <lookback_days> <repo_count> <artifact_count> [generated_at]
 # Writes the full Markdown report (with USD cost) to stdout. Pure: no network.
 # Optional: PR_TITLE_FILE (TSV "url<TAB>title") adds PR titles to the cost-per-PR table.
@@ -304,6 +371,9 @@ render_token_report() {
         "$mean_disp" "$p50_disp"
     done
   printf '\n'
+
+  # Gemini per-key quota next to the per-model usage above (#2030).
+  render_gemini_quota "$dir"
 
   printf '## By repository\n\n'
   printf '| Repository | Calls | Cost | %% of $ | ET |\n'

@@ -224,6 +224,24 @@ teardown() {
   [ "$dur" = "null" ]
 }
 
+# ── emit_token_record: key_index (#2030) ──────────────────────────────────────
+
+@test "emit_token_record: records numeric key_index from the 11th arg" {
+  emit_token_record "dev-lead" "action" "gemini" "gemini-3.8-flash" 1000 0 100 "" 0 50 3
+  [ "$(jq '.key_index' < "$TOKEN_LOG_FILE")" = "3" ]
+}
+
+@test "emit_token_record: key_index is absent when omitted (other records unchanged)" {
+  emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 1000 200 100 "" 350 1234
+  [ "$(jq 'has("key_index")' < "$TOKEN_LOG_FILE")" = "false" ]
+}
+
+@test "emit_token_record: a non-numeric key_index is dropped, never recorded" {
+  emit_token_record "dev-lead" "action" "gemini" "gemini-3.8-flash" 1000 0 100 "" 0 50 "AIza-not-an-index"
+  [ "$(jq 'has("key_index")' < "$TOKEN_LOG_FILE")" = "false" ]
+  ! grep -q "AIza" "$TOKEN_LOG_FILE"
+}
+
 @test "emit_token_record: duration_ms of 0 is preserved as 0, not null" {
   # An explicit 0 is a measured value (edge case); only an absent/empty arg → null.
   emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 1000 200 100 "" 350 0
