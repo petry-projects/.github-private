@@ -255,7 +255,7 @@ vci_check_pair() {
 # sits on <uses_lineno>: the nearest preceding `<key>:` line indented less than
 # the `uses:` line.
 vci_job_for_uses() {
-  local file="$1" uses_lineno="$2" i line lws body uses_indent key
+  local file="$1" uses_lineno="$2" i line lws body uses_indent
   local -a lines
   mapfile -t lines < "$file"
   line="${lines[uses_lineno - 1]}"
