@@ -188,12 +188,37 @@ VIIF_EXPR_OPEN='${{'
 # viif_group_exprs <group> — print the body of every ${{ … }} expression in a
 # concurrency group, one per line (newlines inside a body folded to spaces).
 viif_group_exprs() {
-  local rest="${1//$'\n'/ }"
+  local rest="${1//$'\n'/ }" i c expr_body in_quote quote_char
   while [[ "$rest" == *"$VIIF_EXPR_OPEN"* ]]; do
     rest="${rest#*"$VIIF_EXPR_OPEN"}"
-    printf '%s\n' "${rest%%'}}'*}"
-    [[ "$rest" == *'}}'* ]] || break
-    rest="${rest#*'}}'}"
+    # Find the closing }} while respecting quoted strings inside the expression
+    expr_body=""
+    in_quote=0
+    quote_char=""
+    i=0
+    while (( i < ${#rest} )); do
+      c="${rest:$i:1}"
+      if (( in_quote )); then
+        expr_body+="$c"
+        if [ "$c" = "$quote_char" ] && [ "${rest:$((i-1)):1}" != "\\" ]; then
+          in_quote=0
+        fi
+      else
+        if [ "$c" = '"' ] || [ "$c" = "'" ]; then
+          expr_body+="$c"
+          in_quote=1
+          quote_char="$c"
+        elif [ "$c" = "}" ] && [ "${rest:$((i+1)):1}" = "}" ]; then
+          # Found closing }}
+          printf '%s\n' "$expr_body"
+          rest="${rest:$((i+2))}"
+          break
+        else
+          expr_body+="$c"
+        fi
+      fi
+      (( i++ ))
+    done
   done
 }
 
@@ -287,6 +312,7 @@ viif_check_concurrency() {
 
   case "$cancel" in
     ''|true|false) : ;;
+    __NOT_BOOLEAN__) echo "concurrency.cancel-in-progress must be a literal boolean (true/false), not a string"; rc=1 ;;
     *) echo "concurrency.cancel-in-progress must be a literal boolean (true/false), got: ${cancel}"; rc=1 ;;
   esac
 
@@ -298,7 +324,7 @@ viif_check_concurrency() {
   while IFS= read -r stem; do
     [ -n "$stem" ] || continue
     case "$stem" in
-      "$role"|"$role"-*) : ;;
+      "$role"-*) : ;;
       *) echo "concurrency.group '${stem}' does not carry the role name as a prefix — it must begin with '${role}-'"; rc=1 ;;
     esac
   done <<< "$stems"
@@ -310,16 +336,26 @@ viif_check_concurrency() {
 # whitespace separator so an empty group cannot shift the fields on read). A scalar
 # `concurrency: <group>` is the group with no cancel-in-progress. Deliberately
 # avoids yq's `//` on cancel-in-progress: `false // ""` would drop a literal false.
+# Requires cancel-in-progress to be a literal boolean (type == "boolean"), not a
+# quoted string.
 viif_job_concurrency() {
-  local file="$1" job="$2" tag group cancel=""
-  tag="$(yq ".jobs[\"$job\"].concurrency | tag" "$file" 2>/dev/null)"
-  case "$tag" in
-    '!!map')
+  local file="$1" job="$2" type_val group cancel=""
+  type_val="$(yq ".jobs[\"$job\"].concurrency | type" "$file" 2>/dev/null)"
+  case "$type_val" in
+    'object')
       group="$(yq ".jobs[\"$job\"].concurrency.group // \"\"" "$file" 2>/dev/null)"
-      cancel="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"]" "$file" 2>/dev/null)"
-      [ "$cancel" = "null" ] && cancel=""
+      # Check that cancel-in-progress, if present, is a literal boolean (type == "boolean")
+      local cancel_type
+      cancel_type="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"] | type" "$file" 2>/dev/null)"
+      if [ "$cancel_type" = "boolean" ]; then
+        cancel="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"]" "$file" 2>/dev/null)"
+        [ "$cancel" = "null" ] && cancel=""
+      elif [ "$cancel_type" != "null" ]; then
+        # cancel-in-progress is present but not a boolean — this is an error, mark with special value
+        cancel="__NOT_BOOLEAN__"
+      fi
       ;;
-    '!!null'|'') group="" ;;
+    'null'|'') group="" ;;
     *) group="$(yq ".jobs[\"$job\"].concurrency" "$file" 2>/dev/null)" ;;
   esac
   printf '%s\x1f%s\n' "${group//$'\n'/ }" "$cancel"
@@ -365,8 +401,10 @@ viif_validate_ingress() {
     fi
 
     # (3) job-level concurrency: bounds (ADR-0010).
-    IFS=$'\x1f' read -r group cancel < <(viif_job_concurrency "$file" "$job")
-    if [ -n "$group" ] || [ -n "$cancel" ]; then
+    local has_concurrency
+    has_concurrency="$(yq ".jobs[\"$job\"] | has(\"concurrency\")" "$file" 2>/dev/null)"
+    if [ "$has_concurrency" = "true" ]; then
+      IFS=$'\x1f' read -r group cancel < <(viif_job_concurrency "$file" "$job")
       concurrency_checks="$(viif_check_concurrency "$job" "$group" "$cancel" || true)"
       while IFS= read -r reason; do
         [ -n "$reason" ] || continue

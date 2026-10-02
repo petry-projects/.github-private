@@ -95,12 +95,15 @@ We will enforce the bounds in the existing guards rather than in new ones:
 - **The markets §3 rendering does not conform as written, and must change
   before it is adopted.** Run against the new checks:
   - `pr-auto-review` falls back to `github.run_id` in its group, and its
-    `cancel-in-progress` is an expression.
-  - `pr-review` falls back to `inputs.pr_url` and `github.run_id`.
+    `cancel-in-progress` is an expression — both fail the bounded rule.
+  - `pr-review` falls back to `inputs.pr_url` and `github.run_id` — both fail
+    the bounded rule.
+  - `ci-failure-analyst` renders as `group: "ci-failure-analyst-${{
+    github.event.check_run.head_sha }}"` with `cancel-in-progress: false` —
+    this conforms to all three bounds.
 
-  None of those is the event payload, so all three fail the bounded rule. The
-  role-prefix half passes for all three roles. The no-collision half, checked
-  against each pinned reusable, also passes:
+  The role-prefix half passes for all three roles. The no-collision half,
+  checked against each pinned reusable, also passes for all three:
   - `pr-auto-review-reusable.yml@pr-auto-review/v1-stable` and
     `ci-failure-analyst-reusable.yml@7974717…` declare no concurrency.
   - `pr-review.yml@pr-review/stable` declares `pr-review-pr-{…}` and
