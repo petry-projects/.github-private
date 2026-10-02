@@ -85,7 +85,7 @@ readonly _ACV_NOCHANGE_RE_UPPER='(NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY
 # stays open for the maintainer). Only phrases that do NOT themselves begin with a
 # negator are targeted, so the affirmative "NO CHANGE NEEDED" / "NOT A BUG" dispositions
 # are never clobbered.
-readonly _ACV_NOCHANGE_NEGATION_RE_UPPER='(CANNOT|CAN.?T|COULD ?NOT|COULDN.?T|WILL NOT|WON.?T|WOULD ?NOT|WOULDN.?T|SHOULD ?NOT|SHOULDN.?T|IS ?NOT|ISN.?T|ARE ?NOT|AREN.?T|WAS ?NOT|WASN.?T|WERE ?NOT|WEREN.?T|DOES ?NOT|DOESN.?T|DO ?NOT|DON.?T|DID ?NOT|DIDN.?T|NEVER|NOT)[[:space:]]+([A-Z'"'"']+[[:space:]]+){0,3}(FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|BY DESIGN|INTENDED BEHAVIOU?R)'
+readonly _ACV_NOCHANGE_NEGATION_RE_UPPER='(CANNOT|CAN.?T|COULD ?NOT|COULDN.?T|WILL NOT|WON.?T|WOULD ?NOT|WOULDN.?T|SHOULD ?NOT|SHOULDN.?T|IS ?NOT|ISN.?T|ARE ?NOT|AREN.?T|WAS ?NOT|WASN.?T|WERE ?NOT|WEREN.?T|DOES ?NOT|DOESN.?T|DO ?NOT|DON.?T|DID ?NOT|DIDN.?T|NEVER|NOT)[[:space:]]+([A-Z'"'"']+[[:space:]]+){0,3}(FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|BY DESIGN|INTENDED BEHAVIOU?R|NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT))'
 
 # Post-marker BOT-comment classification (#1735 AC2/AC4). A review bot that replies
 # AFTER our addressed-marker either ACKNOWLEDGES (accepts our refutation / records a
@@ -398,13 +398,15 @@ acv_latest_maintainer_disposition() {
     fi
   done <<<"$rows"
 
-  if [[ -n "$latest" ]]; then
-    echo "$latest"
-    return 0
-  fi
+  # Fail closed: any matching disposition with an unparseable timestamp wins over a
+  # valid latest one, since its true order against the others is unknown.
   if [[ "$saw_unparseable" -eq 1 ]]; then
     echo "unparseable"
     return 2
+  fi
+  if [[ -n "$latest" ]]; then
+    echo "$latest"
+    return 0
   fi
   echo ""
   return 1
@@ -443,19 +445,22 @@ acv_latest_nochange_disposition() {
   rows=$(jq -r '
       if type == "array" then
         .[]
-        | [ (.author.login // ""), (.author.__typename // ""), (.createdAt // ""), ((.body // "") | @base64) ]
+        | [ (.author.login // ""), (.author.__typename // ""), (.createdAt // ""), (.authorAssociation // ""), ((.body // "") | @base64) ]
         | join("\u001f")
       else empty end
     ' <<<"$comments_json" 2>/dev/null) || return 1
   [[ -z "$rows" ]] && return 1
 
   local latest="" saw_unparseable=0
-  local login typename created body_b64 body up
-  while IFS=$'\x1f' read -r login typename created body_b64; do
-    [[ -z "$login" && -z "$typename" && -z "$created" && -z "$body_b64" ]] && continue
+  local login typename created assoc body_b64 body up
+  while IFS=$'\x1f' read -r login typename created assoc body_b64; do
+    [[ -z "$login" && -z "$typename" && -z "$created" && -z "$assoc" && -z "$body_b64" ]] && continue
     # Our own account / non-User authors are never maintainer dispositions.
     [[ "$login" == "$bot_user" || "$login" == "$bot_user_stripped" ]] && continue
     [[ "$typename" != "User" ]] && continue
+    # Only a repo maintainer may authorize resolution; a missing/unknown association
+    # fails closed (CWE-863).
+    case "$assoc" in OWNER|MEMBER|COLLABORATOR) ;; *) continue ;; esac
     body=$(base64 --decode <<<"$body_b64" 2>/dev/null || base64 -d <<<"$body_b64" 2>/dev/null || printf '')
     # Marker-less is the discriminator: an agent-authored comment (carrying one of
     # our markers) is ours, never a maintainer disposition.
@@ -478,13 +483,15 @@ acv_latest_nochange_disposition() {
     fi
   done <<<"$rows"
 
-  if [[ -n "$latest" ]]; then
-    echo "$latest"
-    return 0
-  fi
+  # Fail closed: any matching disposition with an unparseable timestamp wins over a
+  # valid latest one, since its true order against the others is unknown.
   if [[ "$saw_unparseable" -eq 1 ]]; then
     echo "unparseable"
     return 2
+  fi
+  if [[ -n "$latest" ]]; then
+    echo "$latest"
+    return 0
   fi
   echo ""
   return 1

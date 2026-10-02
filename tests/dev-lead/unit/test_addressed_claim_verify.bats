@@ -192,7 +192,7 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "acv_latest_nochange_disposition: no no-change disposition -> rc1, empty" {
-  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
+  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 1 ]]
   [[ -z "$output" ]]
@@ -201,7 +201,7 @@ setup() {
 @test "acv_latest_nochange_disposition: marker-less human 'no change needed' -> rc0 with its date" {
   local comments='[
     {"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"},"body":"Missing closing backtick.","createdAt":"2026-09-01T09:00:00Z"},
-    {"author":{"login":"a-maintainer","__typename":"User"},"body":"This is a false positive — no change needed.","createdAt":"2026-09-02T12:00:00Z"}
+    {"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"This is a false positive — no change needed.","createdAt":"2026-09-02T12:00:00Z"}
   ]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
@@ -209,7 +209,7 @@ setup() {
 }
 
 @test "acv_latest_nochange_disposition: 'working as intended' is a no-change disposition -> rc0" {
-  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Working as intended.","createdAt":"2026-09-02T12:00:00Z"}]'
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Working as intended.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
   [[ "$output" == "2026-09-02T12:00:00Z" ]]
@@ -218,7 +218,7 @@ setup() {
 @test "acv_latest_nochange_disposition: 'no change required' (collides with REQUIRED) -> classified as no-change rc0" {
   # The blocking regex matches the substring REQUIRED; the no-change intent must win
   # so a maintainer waving off a finding is not misread as a blocking demand.
-  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"No change required here.","createdAt":"2026-09-02T12:00:00Z"}]'
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"No change required here.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
   [[ "$output" == "2026-09-02T12:00:00Z" ]]
@@ -227,7 +227,7 @@ setup() {
 @test "acv_latest_nochange_disposition: an agent-marker comment is never a no-change disposition" {
   # Body says 'no change needed' but carries our marker -> agent-authored -> ignored,
   # so the agent cannot manufacture its own resolution authorization (#1743 AC4).
-  local comments='[{"author":{"login":"don-petry","__typename":"User"},"body":"No change needed. <!-- dev-lead:addressed -->","createdAt":"2026-09-02T12:00:00Z"}]'
+  local comments='[{"author":{"login":"don-petry","__typename":"User"},"authorAssociation":"MEMBER","body":"No change needed. <!-- dev-lead:addressed -->","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 1 ]]
   [[ -z "$output" ]]
@@ -241,7 +241,7 @@ setup() {
 }
 
 @test "acv_latest_nochange_disposition: disposition with unparseable date -> rc2 (fail closed)" {
-  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"false positive","createdAt":""}]'
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"false positive","createdAt":""}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 2 ]]
   [[ "$output" == "unparseable" ]]
@@ -249,8 +249,8 @@ setup() {
 
 @test "acv_latest_nochange_disposition: multiple dispositions -> latest date wins" {
   local comments='[
-    {"author":{"login":"m1","__typename":"User"},"body":"false positive","createdAt":"2026-09-01T00:00:00Z"},
-    {"author":{"login":"m2","__typename":"User"},"body":"no change needed","createdAt":"2026-09-05T00:00:00Z"}
+    {"author":{"login":"m1","__typename":"User"},"authorAssociation":"MEMBER","body":"false positive","createdAt":"2026-09-01T00:00:00Z"},
+    {"author":{"login":"m2","__typename":"User"},"authorAssociation":"MEMBER","body":"no change needed","createdAt":"2026-09-05T00:00:00Z"}
   ]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
@@ -258,7 +258,7 @@ setup() {
 }
 
 @test "acv_latest_nochange_disposition: neutral chatter is not a no-change disposition -> rc1" {
-  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Thanks for looking into this.","createdAt":"2026-09-02T12:00:00Z"}]'
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Thanks for looking into this.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 1 ]]
   [[ -z "$output" ]]
@@ -267,14 +267,14 @@ setup() {
 @test "acv_latest_nochange_disposition: negated 'this is not a false positive' does NOT authorize -> rc1" {
   # The broad phrase match would see FALSE POSITIVE; the negation guard must win so a
   # maintainer explicitly rejecting the false-positive verdict never clears the thread (#1799).
-  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"This is not a false positive, please fix it.","createdAt":"2026-09-02T12:00:00Z"}]'
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"This is not a false positive, please fix it.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 1 ]]
   [[ -z "$output" ]]
 }
 
 @test "acv_latest_nochange_disposition: negated 'isn't working as intended' does NOT authorize -> rc1" {
-  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"This isn'"'"'t working as intended.","createdAt":"2026-09-02T12:00:00Z"}]'
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"This isn'"'"'t working as intended.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 1 ]]
   [[ -z "$output" ]]
@@ -283,7 +283,7 @@ setup() {
 @test "acv_latest_nochange_disposition: 'won'\''t fix' (affirmative) is still a no-change disposition -> rc0" {
   # The negator-lookalike WON'T is part of the affirmative phrase itself; it must not be
   # clobbered by the negation guard, which only fires when a negator precedes a phrase.
-  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Won'"'"'t fix — intentional.","createdAt":"2026-09-02T12:00:00Z"}]'
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Won'"'"'t fix — intentional.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
   [[ "$output" == "2026-09-02T12:00:00Z" ]]
@@ -292,7 +292,7 @@ setup() {
 @test "acv_latest_nochange_disposition: 'not a bug' (affirmative) is still a no-change disposition -> rc0" {
   # NOT A BUG begins with a negator but is an affirmative no-change phrase; it is excluded
   # from the negation guard's target set so it is never misread as a negated phrase.
-  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Not a bug.","createdAt":"2026-09-02T12:00:00Z"}]'
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Not a bug.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
   [[ "$output" == "2026-09-02T12:00:00Z" ]]
@@ -303,7 +303,7 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "acv_latest_marker_index: our marker reply as the only comment -> index 0" {
-  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Applied. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
+  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Applied. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
   run acv_latest_marker_index "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
   [[ "$output" == "0" ]]
@@ -312,7 +312,7 @@ setup() {
 @test "acv_latest_marker_index: marker reply after a bot finding -> its index (not comments(last:1))" {
   local comments='[
     {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Potential issue here.","createdAt":"2026-09-01T09:00:00Z"},
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}
   ]'
   run acv_latest_marker_index "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
@@ -321,7 +321,7 @@ setup() {
 
 @test "acv_latest_marker_index: marker NOT the latest comment (bot ack follows) -> still found" {
   local comments='[
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
     {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Customized review instruction saved!","createdAt":"2026-09-01T11:00:00Z"}
   ]'
   run acv_latest_marker_index "$comments" "donpetry-bot"
@@ -331,9 +331,9 @@ setup() {
 
 @test "acv_latest_marker_index: multiple of our markers -> latest index wins" {
   local comments='[
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"First. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"First. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
     {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"still an issue","createdAt":"2026-09-01T11:00:00Z"},
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Second. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T12:00:00Z"}
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Second. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T12:00:00Z"}
   ]'
   run acv_latest_marker_index "$comments" "donpetry-bot"
   [[ "$status" -eq 0 ]]
@@ -341,13 +341,13 @@ setup() {
 }
 
 @test "acv_latest_marker_index: no marker anywhere -> rc1 (unchanged no-marker behavior)" {
-  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Looked into it, no change.","createdAt":"2026-09-01T10:00:00Z"}]'
+  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Looked into it, no change.","createdAt":"2026-09-01T10:00:00Z"}]'
   run acv_latest_marker_index "$comments" "donpetry-bot"
   [[ "$status" -eq 1 ]]
 }
 
 @test "acv_latest_marker_index: marker from another account -> rc1 (not ours)" {
-  local comments='[{"author":{"login":"someone-else","__typename":"User"},"body":"Applied. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
+  local comments='[{"author":{"login":"someone-else","__typename":"User"},"authorAssociation":"MEMBER","body":"Applied. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
   run acv_latest_marker_index "$comments" "donpetry-bot"
   [[ "$status" -eq 1 ]]
 }
@@ -406,7 +406,7 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "acv_post_marker_clear: nothing after the marker -> clear rc0" {
-  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
+  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
   run acv_post_marker_clear "$comments" 0 "donpetry-bot"
   [[ "$status" -eq 0 ]]
   [[ "$output" == "clear" ]]
@@ -414,7 +414,7 @@ setup() {
 
 @test "acv_post_marker_clear: bot acknowledgement after our marker -> clear rc0 (AC2)" {
   local comments='[
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
     {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"✅ Customized review instruction saved!","createdAt":"2026-09-01T11:00:00Z"}
   ]'
   run acv_post_marker_clear "$comments" 0 "donpetry-bot"
@@ -424,7 +424,7 @@ setup() {
 
 @test "acv_post_marker_clear: bot NEW finding after our marker -> blocks rc1 (AC2)" {
   local comments='[
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
     {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Potential issue: new race condition on shutdown.","createdAt":"2026-09-01T11:00:00Z"}
   ]'
   run acv_post_marker_clear "$comments" 0 "donpetry-bot"
@@ -434,8 +434,8 @@ setup() {
 
 @test "acv_post_marker_clear: human comment after our marker ALWAYS blocks regardless of content -> rc1 (AC3, preserves #1415)" {
   local comments='[
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
-    {"author":{"login":"a-maintainer","__typename":"User"},"body":"Looks fine to me, thanks.","createdAt":"2026-09-01T11:00:00Z"}
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Looks fine to me, thanks.","createdAt":"2026-09-01T11:00:00Z"}
   ]'
   run acv_post_marker_clear "$comments" 0 "donpetry-bot"
   [[ "$status" -eq 1 ]]
@@ -444,7 +444,7 @@ setup() {
 
 @test "acv_post_marker_clear: undeterminable bot comment after our marker -> fail closed rc2 (AC4)" {
   local comments='[
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
     {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Interesting.","createdAt":"2026-09-01T11:00:00Z"}
   ]'
   run acv_post_marker_clear "$comments" 0 "donpetry-bot"
@@ -454,8 +454,8 @@ setup() {
 
 @test "acv_post_marker_clear: our own later note after the marker is ours -> clear rc0" {
   local comments='[
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Rebased onto latest main.","createdAt":"2026-09-01T11:00:00Z"}
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Rebased onto latest main.","createdAt":"2026-09-01T11:00:00Z"}
   ]'
   run acv_post_marker_clear "$comments" 0 "donpetry-bot"
   [[ "$status" -eq 0 ]]
@@ -466,8 +466,8 @@ setup() {
   # A User comment that carries one of our automation markers is agent-authored per
   # review_thread_is_agent_authored, so it is never treated as a human finding (#1735 AC3).
   local comments='[
-    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
-    {"author":{"login":"don-petry","__typename":"User"},"body":"Follow-up note. <!-- dev-lead -->","createdAt":"2026-09-01T11:00:00Z"}
+    {"author":{"login":"donpetry-bot","__typename":"User"},"authorAssociation":"MEMBER","body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"don-petry","__typename":"User"},"authorAssociation":"MEMBER","body":"Follow-up note. <!-- dev-lead -->","createdAt":"2026-09-01T11:00:00Z"}
   ]'
   run acv_post_marker_clear "$comments" 0 "donpetry-bot"
   [[ "$status" -eq 0 ]]
@@ -523,4 +523,37 @@ setup() {
   [[ "$status" -eq 0 ]]
   [[ "$(echo "$output" | jq -r .on_head)" == "false" ]]
   [[ "$(echo "$output" | jq -c .own_files)" == "[]" ]]
+}
+
+@test "acv_latest_nochange_disposition: User without maintainer authorAssociation does NOT authorize -> rc1" {
+  local comments='[{"author":{"login":"rando","__typename":"User"},"authorAssociation":"NONE","body":"false positive","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  local missing='[{"author":{"login":"rando","__typename":"User"},"body":"false positive","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$missing" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: negated 'do not think no change is needed' does NOT authorize -> rc1" {
+  local comments='[{"author":{"login":"m","__typename":"User"},"authorAssociation":"OWNER","body":"I do not think no change is needed.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: one unparseable date among valid ones -> rc2 (fail closed)" {
+  local comments='[
+    {"author":{"login":"m1","__typename":"User"},"authorAssociation":"OWNER","body":"false positive","createdAt":"2026-09-01T00:00:00Z"},
+    {"author":{"login":"m2","__typename":"User"},"authorAssociation":"OWNER","body":"no change needed","createdAt":""}
+  ]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 2 ]]
+}
+
+@test "acv_latest_maintainer_disposition: one unparseable date among valid ones -> rc2 (fail closed)" {
+  local comments='[
+    {"author":{"login":"m1","__typename":"User"},"body":"REQUIRED","createdAt":"2026-09-01T00:00:00Z"},
+    {"author":{"login":"m2","__typename":"User"},"body":"REQUIRED","createdAt":""}
+  ]'
+  run acv_latest_maintainer_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 2 ]]
 }

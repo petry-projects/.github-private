@@ -1568,7 +1568,7 @@ GITEOF
 }
 
 @test "resolve_addressed_bot_threads (#1735): marker then a human comment -> stays open (AC3)" {
-  export POST_MARKER_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"body":"Looks fine to me, thanks.","createdAt":"2026-09-01T11:00:00Z"}'
+  export POST_MARKER_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"OWNER","body":"Looks fine to me, thanks.","createdAt":"2026-09-01T11:00:00Z"}'
   _1735_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   run grep -q "PRRT_1735" "$_MUTATIONS_FILE"
@@ -1868,7 +1868,7 @@ case "\$ARGS" in
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"PullRequestReviewThread"*)
-    echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"a-maintainer","__typename":"User"},"body":"ACCEPTED — required before merge","createdAt":"2099-01-01T00:00:00Z"},{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in fix.txt. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"${base_sha}\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
+    echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"OWNER","body":"ACCEPTED — required before merge","createdAt":"2099-01-01T00:00:00Z"},{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in fix.txt. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"${base_sha}\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
   *"reviewThreads"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_disposition","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
@@ -2118,7 +2118,7 @@ GHEOF
 
 @test "no-change net (#1743): false-positive bot thread with a maintainer no-change disposition resolves on a no-commit pass" {
   export ORIGIN_AUTHOR_JSON='{"login":"gemini-code-assist[bot]","__typename":"Bot"}'
-  export DISPOSITION_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"body":"Confirmed false positive — the backticks are balanced. No change needed.","createdAt":"2026-09-02T12:00:00Z"}'
+  export DISPOSITION_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"OWNER","body":"Confirmed false positive — the backticks are balanced. No change needed.","createdAt":"2026-09-02T12:00:00Z"}'
   _nochange_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   # The pass produced no commit, so the #1617 resolution gate was CLOSED...
@@ -2129,7 +2129,7 @@ GHEOF
 
 @test "no-change net (#1743): a bot thread with a REQUIRED disposition (no no-change) still blocks on a no-commit pass" {
   export ORIGIN_AUTHOR_JSON='{"login":"gemini-code-assist[bot]","__typename":"Bot"}'
-  export DISPOSITION_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"body":"This MUST BE FIXED before merge — required.","createdAt":"2026-09-02T12:00:00Z"}'
+  export DISPOSITION_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"OWNER","body":"This MUST BE FIXED before merge — required.","createdAt":"2026-09-02T12:00:00Z"}'
   _nochange_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   [[ "$output" == *"resolution gate closed (#1609)"* ]]

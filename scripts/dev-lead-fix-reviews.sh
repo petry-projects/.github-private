@@ -556,7 +556,7 @@ resolve_bot_outdated_threads() {
   # __typename == "Bot" covers bots whose GraphQL login omits the [bot] suffix;
   # endswith("[bot]") covers bots that include it — both checks together are belt-and-suspenders.
   local ids=""
-  local cursor="" has_next_page="true" page_response page_ids
+  local cursor="" prev_cursor="" has_next_page="true" page_response page_ids
   local cursor_args=()
   local bot_outdated_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
     repository(owner:$owner,name:$repo){
@@ -587,6 +587,11 @@ resolve_bot_outdated_threads() {
       '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
       2>/dev/null || echo "")
     [ -z "$cursor" ] && has_next_page="false"
+    if [ "$has_next_page" = "true" ] && [ "$cursor" = "$prev_cursor" ]; then
+      echo "::error::reviewThreads pagination cursor did not advance on PR #${PR_NUMBER}; aborting" >&2
+      return 1
+    fi
+    prev_cursor="$cursor"
     cursor_args=("-f" "cursor=${cursor}")
   done
   # Strip leading/trailing blank lines from accumulated ids
@@ -716,7 +721,7 @@ resolve_addressed_bot_threads() {
       ... on PullRequestReviewThread {
         isResolved
         path
-        comments(first:100){nodes{author{login __typename} body createdAt}}
+        comments(first:100){nodes{author{login __typename} authorAssociation body createdAt}}
       }
     }
   }'
@@ -1201,7 +1206,7 @@ resolve_nochange_disposition_threads() {
         isResolved
         comments(first:100,after:$cursor){
           pageInfo{hasNextPage endCursor}
-          nodes{author{login __typename} body createdAt}
+          nodes{author{login __typename} authorAssociation body createdAt}
         }
       }
     }
@@ -1213,13 +1218,18 @@ resolve_nochange_disposition_threads() {
     [ -z "$id" ] && continue
 
     # Page through every comment in the thread; capture isResolved from the first page.
-    local c_cursor="" c_has_next="true" c_page c_pages_file first_page=1
+    local c_cursor="" c_prev_cursor="" c_has_next="true" c_page c_pages_file first_page=1 c_failed=0
     local c_cursor_args=()
     cur_resolved="unknown"
     c_pages_file=$(mktemp) || { echo "::error::failed to create temporary file" >&2; return 1; }
     while [ "$c_has_next" = "true" ]; do
       c_page=$(gh api graphql -f query="$node_query" -f id="$id" \
         "${c_cursor_args[@]}" 2>/dev/null || echo "{}")
+      # Fail closed: an incomplete comment history must never authorize resolution.
+      if ! printf '%s' "$c_page" | jq -e '.data.node.comments.nodes' >/dev/null 2>&1; then
+        c_failed=1
+        break
+      fi
       if [ "$first_page" -eq 1 ]; then
         cur_resolved=$(printf '%s' "$c_page" | jq -r \
           'if .data.node.isResolved == null then "unknown"
@@ -1232,10 +1242,20 @@ resolve_nochange_disposition_threads() {
       c_cursor=$(printf '%s' "$c_page" | jq -r \
         '.data?.node?.comments?.pageInfo?.endCursor // ""' 2>/dev/null || echo "")
       [ -z "$c_cursor" ] && c_has_next="false"
+      if [ "$c_has_next" = "true" ] && [ "$c_cursor" = "$c_prev_cursor" ]; then
+        c_failed=1
+        break
+      fi
+      c_prev_cursor="$c_cursor"
       c_cursor_args=("-f" "cursor=${c_cursor}")
     done
     comments_json=$(jq -s 'add // []' "$c_pages_file" 2>/dev/null || echo "[]")
     rm -f "$c_pages_file"
+
+    if [ "$c_failed" -eq 1 ]; then
+      echo "::error::incomplete comment pagination for thread ${id}; leaving unresolved (fail closed)" >&2
+      continue
+    fi
 
     if [ "$cur_resolved" != "false" ]; then
       echo "::notice::skipping thread ${id} — already resolved or state unknown at re-check (${cur_resolved})"
