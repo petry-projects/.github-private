@@ -5143,9 +5143,10 @@ _fixed_reply() {
   [[ "$output" != *"fixed-unverified"* ]]
 }
 
-@test "#2004 AC4(c): a \`fixed\` disposition citing the correct ANCESTOR commit verifies and minimizes on the first pass" {
+@test "#2004 AC4(c): a \`fixed\` disposition citing the correct earlier-pass commit verifies and minimizes on the first pass" {
   # The fix landed on an earlier pass; this pass commits nothing. The cited sha
-  # is an ancestor of head that this pass did NOT produce — it must still verify.
+  # is not bound to this pass's commit — it must still verify (the cited sha is
+  # head here; the fixture has no later commit).
   _setup_fixed_history_pass "$(jq -sc '.' <(_codeant_finding) <(_fixed_reply R1 "2026-09-30T13:00:00Z" __FIX__))"
 
   _run_fixed_history_pass
