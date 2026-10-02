@@ -45,18 +45,25 @@ PUBLIC_LIB="${BUDGET_POLLER_PUBLIC_LIB:-public/scripts/lib/agent-rate-limit.sh}"
 export AGENT_RATE_LIMITS_CONFIG="${AGENT_RATE_LIMITS_CONFIG:-public/standards/agent-rate-limits.json}"
 LOG_FILE="${BUDGET_POLLER_LOG:-budget-poller-log.jsonl}"
 
-workdir="$(mktemp -d)"
+workdir="$(mktemp -d)" || { bp_log "failed to create temporary directory"; exit 1; }
 trap 'rm -rf "$workdir"' EXIT
 
 # One clock for the adapter (observed_at), the public gates (SOURCE_NOW), and
 # the record, so a 429's retry window and the glide days-until-reset agree.
 NOW="$(bp_now)"
+if ! [[ "$NOW" =~ ^[0-9]+$ ]]; then
+  bp_log "invalid BUDGET_POLLER_NOW '${NOW}' — using the system clock"
+  NOW="$(date +%s)"
+fi
 export USAGE_TELEMETRY_NOW="$NOW"
 export SOURCE_NOW="$NOW"
 
 # 1. Read + publish on the existing seam.
 envelope="$(usage_telemetry_fetch)"
-usage_telemetry_publish_file "$envelope" "$workdir/telemetry.json" >/dev/null
+if ! usage_telemetry_publish_file "$envelope" "$workdir/telemetry.json" >/dev/null; then
+  bp_log "could not publish the telemetry file — degraded record"
+  : > "$workdir/telemetry.json" 2>/dev/null || true
+fi
 export AGENT_TOKEN_BUDGET_TELEMETRY_FILE="$workdir/telemetry.json"
 
 http_status="$(jq -r '.status // 0' <<<"$envelope" 2>/dev/null || printf '0')"

@@ -267,7 +267,8 @@ _field() { _last | jq -r "$1"; }
   MOCK_BODY="$(_body 33 50)"; export MOCK_BODY
   run bash "$POLLER"
   [[ "$output" != *"sk-ant-oat01-test"* ]]
-  run ! grep -q 'sk-ant-oat01-test' "$BUDGET_POLLER_LOG" "$GITHUB_STEP_SUMMARY"
+  run grep -q 'sk-ant-oat01-test' "$BUDGET_POLLER_LOG" "$GITHUB_STEP_SUMMARY"
+  [ "$status" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -366,8 +367,10 @@ _seed_degraded() {
   grep -qE '^[[:space:]]+- cron:' "$WORKFLOW"
   # Only read scopes are granted anywhere in the workflow. (`run !`, not a bare
   # `! grep`: errexit ignores a negated command, so a bare `!` asserts nothing.)
-  run ! grep -nE '^[[:space:]]+[a-z-]+:[[:space:]]*write([[:space:]]|$)' "$WORKFLOW"
-  run ! grep -nE 'write-all' "$WORKFLOW"
+  run grep -nE '^[[:space:]]+[a-z-]+:[[:space:]]*write([[:space:]]|$)' "$WORKFLOW"
+  [ "$status" -eq 1 ]
+  run grep -nE 'write-all' "$WORKFLOW"
+  [ "$status" -eq 1 ]
   grep -qE '^[[:space:]]+contents:[[:space:]]*read' "$WORKFLOW"
   # Authenticates with the existing secret only.
   grep -q 'secrets.CLAUDE_CODE_OAUTH_TOKEN' "$WORKFLOW"
@@ -377,11 +380,16 @@ _seed_degraded() {
   local f
   for f in "$WORKFLOW" "$POLLER" "$POLLER_LIB"; do
     [ -f "$f" ]
-    run ! grep -nE 'AGENTS_PAUSED|AGENTS_PAUSE_SOURCE' "$f"
-    run ! grep -nE 'gh[[:space:]]+variable[[:space:]]+(set|delete)' "$f"
-    run ! grep -niE 'actions/variables' "$f"
-    run ! grep -nE '(-X|--method)[[:space:]]*(POST|PUT|PATCH|DELETE)' "$f"
-    run ! grep -niE 'updateVariable|createVariable|deleteVariable|(create|update|delete)(Org|Repo)Variable' "$f"
+    run grep -nE 'AGENTS_PAUSED|AGENTS_PAUSE_SOURCE' "$f"
+    [ "$status" -eq 1 ]
+    run grep -nE 'gh[[:space:]]+variable[[:space:]]+(set|delete)' "$f"
+    [ "$status" -eq 1 ]
+    run grep -niE 'actions/variables' "$f"
+    [ "$status" -eq 1 ]
+    run grep -nE '(-X|--method)[[:space:]]*(POST|PUT|PATCH|DELETE)' "$f"
+    [ "$status" -eq 1 ]
+    run grep -niE 'updateVariable|createVariable|deleteVariable|(create|update|delete)(Org|Repo)Variable' "$f"
+    [ "$status" -eq 1 ]
   done
 }
 
