@@ -322,3 +322,44 @@ ${marker}" \
   [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq -r '.chosen.id')" = "R1" ]
 }
+
+# ── #2008: edits re-open a dispositioned comment ─────────────────────────────
+# cdv_disposition_is_stale <comment_lastEditedAt> <disposition_createdAt>
+#   0 = the comment was edited AFTER the disposition (stale — needs a fresh one)
+#   1 = not stale (never edited, or edited at/before the disposition)
+#   2 = a timestamp is unreadable (caller fails closed)
+
+_stale() {
+  run bash -c "source '$LIB'; cdv_disposition_is_stale \"\$1\" \"\$2\"" _ "$1" "$2"
+}
+
+@test "stale(#2008): edited after the disposition → 0 (stale)" {
+  _stale "2026-10-01T20:35:00Z" "2026-10-01T19:23:54Z"
+  [ "$status" -eq 0 ]
+}
+
+@test "stale(#2008): edited before the disposition → 1" {
+  _stale "2026-10-01T19:20:00Z" "2026-10-01T19:23:54Z"
+  [ "$status" -eq 1 ]
+}
+
+@test "stale(#2008): edited at exactly the disposition time → 1 (the disposition saw that body)" {
+  _stale "2026-10-01T19:23:54Z" "2026-10-01T19:23:54Z"
+  [ "$status" -eq 1 ]
+}
+
+@test "stale(#2008): never edited (empty or null lastEditedAt) → 1" {
+  _stale "" "2026-10-01T19:23:54Z"
+  [ "$status" -eq 1 ]
+  _stale "null" "2026-10-01T19:23:54Z"
+  [ "$status" -eq 1 ]
+}
+
+@test "stale(#2008): an unreadable timestamp fails closed → 2" {
+  _stale "yesterday" "2026-10-01T19:23:54Z"
+  [ "$status" -eq 2 ]
+  _stale "2026-10-01T20:35:00Z" ""
+  [ "$status" -eq 2 ]
+  _stale "2026-10-01T20:35:00Z" "not-a-time"
+  [ "$status" -eq 2 ]
+}
