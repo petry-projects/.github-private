@@ -358,6 +358,10 @@ vci_scan_repo() {
       keys="$(vci_with_keys_for_job "$wf" "$uses_lineno")"
       job="" group=""
       if [ "$(basename "$wf")" = "agent-ingress.yml" ]; then
+        if ! command -v yq >/dev/null 2>&1; then
+          echo "::error::caller-inputs: yq is required to validate agent-ingress.yml concurrency groups but was not found on PATH"
+          return 1
+        fi
         job="$(vci_job_for_uses "$wf" "$uses_lineno")"
         [ -n "$job" ] && IFS=$'\x1f' read -r group _ < <(viif_job_concurrency "$wf" "$job")
       fi
