@@ -72,6 +72,17 @@ permissions: {}
 #
 # cancel-in-progress is false: a newer same-lane event queues behind the active
 # run rather than killing it, so an in-flight pickup always finishes.
+#
+# BUT GitHub keeps at most ONE *pending* run per group: a newer queued run still
+# cancels an older PENDING one. A burst of bot issue comments right after a PR
+# opens therefore drops most fix-bot-comment runs before they start (#2009: the
+# CodeRabbit/CodeAnt runs were cancelled with zero steps while the `opened` run
+# held dev-lead-pr-2009). fix-bot-comment can push commits, so it deliberately
+# stays in the per-PR lane (serialized with every other pushing run) rather than
+# getting its own per-comment group. A dropped run is recovered instead by the
+# undispositioned bot-comment retry (#2017): scripts/dev-lead-retry.sh re-dispatches
+# one deduplicated fix-bot-comment pass per PR by comment node id, from the retry
+# cron and from pr-review's `undispositioned-pr-comment` verdict.
 concurrency:
   group: >-
     ${{

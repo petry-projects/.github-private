@@ -4866,3 +4866,45 @@ _orig_comment() {
   [ ! -s "$MINLOG" ]
   [[ "$output" == *"no authorized dev-lead disposition reply"* ]]
 }
+
+# ── #2017: fix-bot-comment terminal markers name the comment they processed ────
+# The undispositioned bot-comment retry (dev-lead-retry.sh) must not re-dispatch
+# a pass that already ENDED on the comment's current version. The terminal
+# marker's `comment=<node id>` is that "pass ended" signal.
+
+@test "fix-reviews: fix-bot-comment terminal marker carries comment=<node id> (#2017)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC_kwDOabc123'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"intent=fix-bot-comment status=no-changes comment=IC_kwDOabc123 -->"* ]]
+}
+
+@test "fix-reviews: a malformed COMMENT_NODE_ID is never stamped into the marker (#2017)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC x --> injected'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"intent=fix-bot-comment status=no-changes -->"* ]]
+  [[ "$output" != *"comment=IC"* ]]
+}

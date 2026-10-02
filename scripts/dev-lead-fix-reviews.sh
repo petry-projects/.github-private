@@ -139,11 +139,20 @@ build_and_run() {
 # post_reviews_terminal: writes a terminal status marker after a retryable
 # intent completes. This prevents the retry cron from re-dispatching the same
 # intent on subsequent runs when the SHA hasn't changed.
+#
+# A fix-bot-comment marker also names the comment the pass processed
+# (` comment=<node id>`, #2017): the undispositioned bot-comment retry in
+# dev-lead-retry.sh reads it as "a pass already ENDED on this comment version" and
+# does not re-dispatch one that finished without a disposition. Only a well-formed
+# node id is stamped, so a malformed value can never break out of the marker.
 post_reviews_terminal() {
   local intent="$1" status="${2:-applied}" summary="${3:-}"
-  local sha_part=""
+  local sha_part="" comment_part=""
   [ -n "${HEAD_SHA:-}" ] && sha_part=" sha=${HEAD_SHA}"
-  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_part} intent=${intent} status=${status} -->"
+  if [ "$intent" = "fix-bot-comment" ] && [[ "${COMMENT_NODE_ID:-}" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
+    comment_part=" comment=${COMMENT_NODE_ID}"
+  fi
+  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_part} intent=${intent} status=${status}${comment_part} -->"
 
   local body="${marker}"
   if [ -n "$summary" ]; then
@@ -1541,8 +1550,10 @@ has_reviews_rate_limited_marker() {
 
 # post_reviews_rate_limited: posts a rate-limited marker for fix-reviews intents.
 # For retryable intents (fix-reviews, review-changes, rebase), the cron will re-dispatch.
-# For non-retryable intents (on-mention, fix-bot-comment), asks the user to re-trigger
-# since USER_INSTRUCTION/COMMENT_BODY cannot be reconstructed at retry time.
+# fix-bot-comment is re-dispatched per comment by the cron's undispositioned
+# bot-comment scan (#2017), which re-fetches the comment by node id. on-mention is
+# not retryable: it asks the user to re-trigger, since USER_INSTRUCTION cannot be
+# reconstructed at retry time.
 #
 # $2 (reason) selects both the machine-readable status token and the user-facing
 # wording:
@@ -1634,7 +1645,12 @@ post_reviews_rate_limited() {
       fix-reviews|review-changes|rebase)
         retry_msg="The retry cron will re-attempt automatically."
         ;;
-      on-mention|fix-bot-comment)
+      fix-bot-comment)
+        # #2017: the cron's undispositioned bot-comment scan re-dispatches the pass
+        # (re-reading the comment by node id) while it still lacks a disposition.
+        retry_msg="The retry cron will re-attempt automatically while the bot comment still lacks a disposition."
+        ;;
+      on-mention)
         retry_msg="Please re-trigger manually (re-mention \`@dev-lead\`) when the rate limit clears — the original request cannot be reconstructed automatically."
         ;;
       *)

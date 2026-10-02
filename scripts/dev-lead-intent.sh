@@ -199,6 +199,102 @@ matches_info_status_pattern() {
   [ "$result" = "true" ]
 }
 
+# classify_bot_comment_retry <pr_number>
+# Routes a `dev-lead-reviews-retry` dispatch with intent_type=fix-bot-comment
+# (#2017). Re-fetches the comment named by client_payload.comment_node_id BY NODE
+# ID and emits fix-bot-comment with its CURRENT body, or a skip when the retry is
+# no longer needed or allowed. Fails closed (skip) whenever the comment cannot be
+# read or does not belong to this PR.
+classify_bot_comment_retry() {
+  local pr_number="$1"
+  local node_id node login typename body pr_of state head_ref pr_author minimized reason
+  node_id=$(jq -r '.client_payload.comment_node_id // empty' "$EVENT_PATH" 2>/dev/null || true)
+  # Same well-formed-node-id rule the workflow applies before exporting it.
+  if [[ ! "$node_id" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
+    emit_skip "bot-comment-retry-no-node-id"
+    return 0
+  fi
+
+  # shellcheck disable=SC2016  # $id is a GraphQL variable placeholder, not shell
+  node=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{
+      id author{login __typename} body createdAt lastEditedAt isMinimized minimizedReason
+      pullRequest{number state headRefName author{login}} }}}' \
+    -f id="$node_id" 2>/dev/null | jq -ce '.data.node | objects | select(.id != null)' 2>/dev/null) || node=""
+  if [ -z "$node" ]; then
+    emit_skip "bot-comment-retry-fetch-failed"
+    return 0
+  fi
+  login=$(jq -r '.author.login // ""' <<< "$node")
+  typename=$(jq -r '.author.__typename // ""' <<< "$node")
+  body=$(jq -r '.body // ""' <<< "$node")
+  pr_of=$(jq -r '.pullRequest.number // ""' <<< "$node")
+  state=$(jq -r '.pullRequest.state // ""' <<< "$node")
+  head_ref=$(jq -r '.pullRequest.headRefName // ""' <<< "$node")
+  pr_author=$(jq -r '.pullRequest.author.login // ""' <<< "$node")
+  minimized=$(jq -r 'if .isMinimized == true then (.minimizedReason // "" | ascii_downcase) else "" end' <<< "$node")
+
+  # The comment must be on THIS PR — a payload cannot aim a pass at another PR's comment.
+  if [ "$pr_of" != "$pr_number" ]; then
+    emit_skip "bot-comment-retry-pr-mismatch"
+    return 0
+  fi
+  if [ "$state" != "OPEN" ]; then
+    emit_skip "pr-already-closed"
+    return 0
+  fi
+  # GraphQL reports a bot's login without the [bot] suffix the webhook uses.
+  login="${login%"[bot]"}"
+  if [ -z "$login" ] || [ "$typename" = "User" ] || ! is_trusted_bot "${login}[bot]"; then
+    emit_skip "bot-comment-retry-untrusted-author"
+    return 0
+  fi
+  # Authorship gate (#1311), from the PR the comment belongs to.
+  case "$head_ref" in
+    dev-lead/issue-*) : ;;
+    *)
+      if [ -z "$pr_author" ] || [ "$pr_author" != "$BOT_USER" ]; then
+        emit_skip "not-dev-lead-authored"
+        return 0
+      fi ;;
+  esac
+  if [ "$minimized" = "resolved" ]; then
+    emit_skip "bot-comment-already-resolved"
+    return 0
+  fi
+  if matches_info_status_pattern "$login" "$body"; then
+    emit_skip "info-status-notice"
+    return 0
+  fi
+
+  # Cheap no-op when the work is already done: a covering disposition (or a
+  # completed fix-bot-comment pass) on the comment's current version — e.g. the
+  # original event-driven run finished while this retry was queued behind it.
+  # Best-effort: if the PR's comments cannot be read, run the pass anyway; the
+  # fix-bot-comment prompt re-checks for an existing disposition itself.
+  reason=$(
+    # shellcheck source=scripts/lib/bot-comment-retry.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bot-comment-retry.sh" 2>/dev/null || exit 0
+    comments=$(bcr_fetch_pr_comments "$GITHUB_REPOSITORY" "$pr_number") || exit 0
+    bcr_retry_decisions "$comments" "$TRUSTED_BOTS" '{}' "$(date -u +%s)" 2>/dev/null \
+      | jq -r --arg id "$node_id" 'first(.[] | select(.id == $id)) | .reason // ""' 2>/dev/null || true
+  ) || reason=""
+  case "$reason" in
+    dispositioned)  emit_skip "bot-comment-already-dispositioned"; return 0 ;;
+    pass-completed) emit_skip "bot-comment-pass-completed"; return 0 ;;
+  esac
+
+  # Same context shape as the issue_comment path: no head_sha, so the pass
+  # resolves the PR's CURRENT head at run time rather than the sweep-time one.
+  local context
+  context=$(jq -nc \
+    --argjson pr_number "$pr_number" \
+    --arg actor "${login}[bot]" \
+    --arg body "$body" \
+    --arg comment_node_id "$node_id" \
+    '{"pr_number":$pr_number,"actor":$actor,"body":$body,"comment_node_id":$comment_node_id}')
+  emit_intent "fix-bot-comment" "bot-comment-retry-dispatch" "$context"
+}
+
 # ── read event ───────────────────────────────────────────────────────────────
 
 EVENT_NAME="${GITHUB_EVENT_NAME:-}"
@@ -604,7 +700,16 @@ case "$EVENT_NAME" in
         fi
         intent_type=$(jq -r '.client_payload.intent_type // empty' "$EVENT_PATH" 2>/dev/null || true)
         case "$intent_type" in
-          fix-reviews|fix-bot-comment|on-mention|review-changes|rebase)
+          fix-bot-comment)
+            # Undispositioned bot-comment retry (#2017, dev-lead-retry.sh). The
+            # payload names the comment by node id only; its body is NEVER taken
+            # from the payload. Re-fetch the comment's CURRENT (possibly edited)
+            # body, author and lastEditedAt by that id and re-check every
+            # precondition the issue_comment path applies, since the PR may have
+            # moved on while the retry was queued.
+            classify_bot_comment_retry "$pr_number"
+            ;;
+          fix-reviews|on-mention|review-changes|rebase)
             context=$(jq -nc \
               --argjson pr_number "$pr_number" \
               --arg head_sha "${head_sha:-}" \
