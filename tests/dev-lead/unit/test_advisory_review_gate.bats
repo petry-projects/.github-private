@@ -1052,7 +1052,7 @@ _ADV_HEAD_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 # check runs served from the REST check-runs endpoint.
 _make_mock_gh_dir_check_runs() {
   local runs="$1" tmpdir
-  tmpdir=$(mktemp -d)
+  tmpdir=$(mktemp -d) || { echo "failed to create temp dir" >&2; exit 1; }
   printf '{"headRefOid":"%s","reviews":%s,"comments":[]}\n' "$_ADV_HEAD_SHA" "$_ADV_FOUR_REVIEWS" > "$tmpdir/pr.json"
   printf '{"total_count":0,"check_runs":%s}\n' "$runs" > "$tmpdir/runs.json"
   cat > "$tmpdir/gh" << MOCK_EOF

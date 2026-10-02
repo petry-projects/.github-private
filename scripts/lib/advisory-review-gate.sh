@@ -158,17 +158,18 @@ log_success() {
 #   Best-effort: no registry, no reporter, no head SHA, or a failed fetch → "[]"
 #   (reviews/comments are still counted exactly as before; never an API error).
 _advisory_check_run_states() {
-  local sha reporters runs
+  local sha reporters runs repo
   sha=$(jq -r '.headRefOid // empty' <<< "$1" 2>/dev/null) || sha=""
   if [[ -z "$sha" || ! "$PR_URL" =~ ^https?://[^/]+/([^/]+/[^/]+)/pull/ ]] \
       || ! declare -F reviewer_sources_check_run_reporters >/dev/null; then
     echo '[]'; return 0
   fi
+  repo="${BASH_REMATCH[1]}"
   reporters=$(reviewer_sources_check_run_reporters 2>/dev/null | jq -Rn --argjson bots "$2" '
     [inputs | split("\t") | select(length == 2 and (.[0] as $l | $bots | any(. == $l))) | {(.[1]): .[0]}]
     | add // {}') || reporters='{}'
   [[ "$reporters" == "{}" ]] && { echo '[]'; return 0; }
-  runs=$(gh api --paginate "repos/${BASH_REMATCH[1]}/commits/${sha}/check-runs?per_page=100" 2>/dev/null) || {
+  runs=$(timeout 30 gh api --paginate "repos/${repo}/commits/${sha}/check-runs?per_page=100" 2>/dev/null) || {
     log_warn "check-run fetch failed at head ${sha:0:8} — counting reviews/comments only (#2005)"
     echo '[]'; return 0
   }
