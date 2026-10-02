@@ -207,7 +207,7 @@ matches_info_status_pattern() {
 # read or does not belong to this PR.
 classify_bot_comment_retry() {
   local pr_number="$1"
-  local node_id node login typename body pr_of state head_ref pr_author minimized reason
+  local repo_of node_id node login typename body pr_of state head_ref pr_author minimized reason
   node_id=$(jq -r '.client_payload.comment_node_id // empty' "$EVENT_PATH" 2>/dev/null || true)
   # Same well-formed-node-id rule the workflow applies before exporting it.
   if [[ ! "$node_id" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
@@ -218,7 +218,7 @@ classify_bot_comment_retry() {
   # shellcheck disable=SC2016  # $id is a GraphQL variable placeholder, not shell
   node=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{
       id author{login __typename} body createdAt lastEditedAt isMinimized minimizedReason
-      pullRequest{number state headRefName author{login}} }}}' \
+      pullRequest{number state headRefName author{login} repository{nameWithOwner}} }}}' \
     -f id="$node_id" 2>/dev/null | jq -ce '.data.node | objects | select(.id != null)' 2>/dev/null) || node=""
   if [ -z "$node" ]; then
     emit_skip "bot-comment-retry-fetch-failed"
@@ -231,10 +231,11 @@ classify_bot_comment_retry() {
   state=$(jq -r '.pullRequest.state // ""' <<< "$node")
   head_ref=$(jq -r '.pullRequest.headRefName // ""' <<< "$node")
   pr_author=$(jq -r '.pullRequest.author.login // ""' <<< "$node")
+  repo_of=$(jq -r '.pullRequest.repository.nameWithOwner // ""' <<< "$node")
   minimized=$(jq -r 'if .isMinimized == true then (.minimizedReason // "" | ascii_downcase) else "" end' <<< "$node")
 
   # The comment must be on THIS PR — a payload cannot aim a pass at another PR's comment.
-  if [ "$pr_of" != "$pr_number" ]; then
+  if [ "$pr_of" != "$pr_number" ] || [ "$repo_of" != "${GITHUB_REPOSITORY:-}" ]; then
     emit_skip "bot-comment-retry-pr-mismatch"
     return 0
   fi
@@ -244,7 +245,7 @@ classify_bot_comment_retry() {
   fi
   # GraphQL reports a bot's login without the [bot] suffix the webhook uses.
   login="${login%"[bot]"}"
-  if [ -z "$login" ] || [ "$typename" = "User" ] || ! is_trusted_bot "${login}[bot]"; then
+  if [ -z "$login" ] || [ "$typename" != "Bot" ] || ! is_trusted_bot "${login}[bot]"; then
     emit_skip "bot-comment-retry-untrusted-author"
     return 0
   fi
@@ -273,12 +274,15 @@ classify_bot_comment_retry() {
   # fix-bot-comment prompt re-checks for an existing disposition itself.
   reason=$(
     # shellcheck source=scripts/lib/bot-comment-retry.sh
-    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bot-comment-retry.sh" 2>/dev/null || exit 0
-    comments=$(bcr_fetch_pr_comments "$GITHUB_REPOSITORY" "$pr_number") || exit 0
-    bcr_retry_decisions "$comments" "$TRUSTED_BOTS" '{}' "$(date -u +%s)" 2>/dev/null \
-      | jq -r --arg id "$node_id" 'first(.[] | select(.id == $id)) | .reason // ""' 2>/dev/null || true
-  ) || reason=""
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bot-comment-retry.sh" 2>/dev/null || { echo unreadable; exit 0; }
+    comments=$(bcr_fetch_pr_comments "$GITHUB_REPOSITORY" "$pr_number") || { echo unreadable; exit 0; }
+    decisions=$(bcr_retry_decisions "$comments" "$TRUSTED_BOTS" '{}' "$(date -u +%s)" 2>/dev/null) \
+      || { echo unreadable; exit 0; }
+    jq -r --arg id "$node_id" 'first(.[] | select(.id == $id)) | .reason // ""' <<< "$decisions" 2>/dev/null \
+      || echo unreadable
+  ) || reason="unreadable"
   case "$reason" in
+    unreadable)     emit_skip "bot-comment-retry-state-unreadable"; return 0 ;;
     dispositioned)  emit_skip "bot-comment-already-dispositioned"; return 0 ;;
     pass-completed) emit_skip "bot-comment-pass-completed"; return 0 ;;
   esac

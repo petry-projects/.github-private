@@ -1648,7 +1648,7 @@ post_reviews_rate_limited() {
       fix-bot-comment)
         # #2017: the cron's undispositioned bot-comment scan re-dispatches the pass
         # (re-reading the comment by node id) while it still lacks a disposition.
-        retry_msg="The retry cron will re-attempt automatically while the bot comment still lacks a disposition."
+        retry_msg="The bot-comment retry scan may re-dispatch this pass (a bounded number of attempts, not tied to the rate-limit reset); if it is exhausted, re-mention \`@dev-lead\` once the limit clears."
         ;;
       on-mention)
         retry_msg="Please re-trigger manually (re-mention \`@dev-lead\`) when the rate limit clears — the original request cannot be reconstructed automatically."

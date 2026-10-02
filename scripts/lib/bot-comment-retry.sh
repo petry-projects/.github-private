@@ -120,7 +120,7 @@ bcr_retry_decisions() {
         | ([ $notes[] | select(.t >= $vt) | .disp[] | select(attr("id") == $id) ] | length > 0) as $covered
         | ([ $notes[] | select(.t >= $vt) | .pass[] | select(attr("comment") == $id) ] | length > 0) as $ran
         | [ $notes[] | .t as $t | .retry[]
-            | select(attr("id") == $id and attr("version") == $ver)
+            | select(attr("id") == $id and ((attr("version") // "") | (try epoch catch null)) == $vt)
             | {t: $t, attempt: ((attr("attempt") // "0") | tonumber? // 0)} ] as $retries
         | ([ $retries[].attempt ] + [ ($retries | length) ] | max) as $attempts
         | ([ $retries[].t ] | max) as $last_retry
@@ -160,12 +160,18 @@ bcr_fetch_pr_comments() {
   while [ "$has_next" = "true" ]; do
     page=$(gh api graphql -f query="$query" -F owner="${repo%%/*}" -F repo="${repo##*/}" \
       -F pr="$pr" "${cursor_args[@]}" 2>/dev/null) || return 1
+    # Fail closed on a partial response: any GraphQL error, a missing comments
+    # connection, or a non-boolean hasNextPage means the snapshot is unreadable.
+    printf '%s' "$page" | jq -e '(.errors // null) == null
+      and (.data.repository.pullRequest.comments.pageInfo.hasNextPage | type) == "boolean"' \
+      >/dev/null 2>&1 || return 1
     nodes=$(printf '%s' "$page" | jq -ce '.data.repository.pullRequest.comments.nodes | arrays' 2>/dev/null) \
       || return 1
     all=$(jq -cn --argjson a "$all" --argjson b "$nodes" '$a + $b') || return 1
-    has_next=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage // false')
+    has_next=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage')
     cursor=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor // ""')
-    [ -z "$cursor" ] && has_next="false"
+    # More pages promised but no cursor to fetch them: the list is incomplete.
+    if [ "$has_next" = "true" ] && [ -z "$cursor" ]; then return 1; fi
     cursor_args=(-f "cursor=${cursor}")
   done
   printf '%s\n' "$all"

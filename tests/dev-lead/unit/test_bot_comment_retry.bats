@@ -407,7 +407,7 @@ GHEOF
   [ "$gate_line" -lt "$scan_line" ]
   [ "$scan_line" -lt "$verdict_line" ]
   # Never in DRY_RUN, and best-effort (cannot fail the review run).
-  sed -n "${gate_line},${verdict_line}p" "$REVIEW" | grep -q 'DRY_RUN:-false}" != "true"'
+  sed -n "${gate_line},${verdict_line}p" "$REVIEW" | grep -q 'DRY_RUN:-false}" != "true" \] && \[ -n "\$_OWNER_REPO" \]'
   sed -n "${gate_line},${verdict_line}p" "$REVIEW" | grep -q ') 2>&1 ) || true'
 }
 

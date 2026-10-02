@@ -31,7 +31,7 @@ case "$*" in
   *"api graphql"*"node(id"*) printf '%s' "$NODE_JSON" ;;
   *"api graphql"*) jq -nc --argjson n "$COMMENTS_JSON" \
        '{data:{repository:{pullRequest:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:$n}}}}}' ;;
-  *) exit 0 ;;
+  *) exit 1 ;;
 esac
 GHEOF
   chmod +x "$MOCK_BIN/gh"
@@ -73,10 +73,10 @@ _node() {
   NODE_JSON="$(jq -nc --arg l "$1" --arg b "$2" --arg m "${3:-}" \
     --argjson pr "${4:-2009}" --arg ref "${5:-dev-lead/issue-2008-x}" --arg st "${6:-OPEN}" \
     --arg e "${7:-}" '
-    {data:{node:{id:"IC_cr", author:{login:$l}, body:$b,
+    {data:{node:{id:"IC_cr", author:{login:$l, __typename:(if $l == "alice" then "User" else "Bot" end)}, body:$b,
       createdAt:"2026-10-01T23:05:43Z", lastEditedAt:(if $e == "" then null else $e end),
       isMinimized:($m != ""), minimizedReason:(if $m == "" then null else $m end),
-      pullRequest:{number:$pr, state:$st, headRefName:$ref, author:{login:"don-petry"}}}}}')"
+      pullRequest:{number:$pr, state:$st, headRefName:$ref, author:{login:"don-petry"}, repository:{nameWithOwner:"petry-projects/.github-private"}}}}}')"
   export NODE_JSON
 }
 
@@ -183,11 +183,23 @@ _node() {
   [ "$(_get_env INTENT_REASON)" = "pr-already-closed" ]
 }
 
+@test "bot-comment retry: trusted login with a User author type → skip" {
+  _event IC_cr
+  _node alice "x"
+  NODE_JSON="${NODE_JSON//alice/coderabbitai}"
+  export NODE_JSON
+  NODE_JSON="$(jq -c '.data.node.author.__typename = "User"' <<< "$NODE_JSON")"
+  export NODE_JSON
+
+  run bash "$INTENT_SCRIPT"
+  [ "$(_get_env INTENT_REASON)" = "bot-comment-retry-untrusted-author" ]
+}
+
 @test "bot-comment retry: PR not dev-lead authored → skip" {
   _event IC_cr
-  NODE_JSON="$(jq -nc '{data:{node:{id:"IC_cr", author:{login:"coderabbitai"}, body:"x",
+  NODE_JSON="$(jq -nc '{data:{node:{id:"IC_cr", author:{login:"coderabbitai", __typename:"Bot"}, body:"x",
     createdAt:"2026-10-01T23:05:43Z", lastEditedAt:null, isMinimized:false, minimizedReason:null,
-    pullRequest:{number:2009, state:"OPEN", headRefName:"feature/x", author:{login:"alice"}}}}}')"
+    pullRequest:{number:2009, state:"OPEN", headRefName:"feature/x", author:{login:"alice"}, repository:{nameWithOwner:"petry-projects/.github-private"}}}}}')"
   export NODE_JSON
 
   run bash "$INTENT_SCRIPT"
@@ -209,11 +221,12 @@ _node() {
   [ "$(_get_env INTENT_REASON)" = "bot-comment-pass-completed" ]
 }
 
-@test "bot-comment retry: unreadable PR comment list still runs the pass (prompt re-checks idempotency)" {
+@test "bot-comment retry: unreadable PR comment list → skip (fail closed)" {
   _event IC_cr
   _node coderabbitai "Walkthrough"
   export COMMENTS_JSON='null'
 
   run bash "$INTENT_SCRIPT"
-  [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "bot-comment-retry-state-unreadable" ]
 }
