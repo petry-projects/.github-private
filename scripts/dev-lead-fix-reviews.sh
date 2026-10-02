@@ -1008,7 +1008,7 @@ resolve_dispositioned_comments() {
   # origin/<base> locally. Fetch it once, best-effort; if it is still missing,
   # cdv_verify_fixed fails closed (base-unknown) with a loud warning.
   if ! git rev-parse -q --verify "origin/${BASE_REF:-main}^{commit}" >/dev/null 2>&1; then
-    git fetch --quiet origin "${BASE_REF:-main}" >/dev/null 2>&1 || true
+    git fetch --quiet origin "refs/heads/${BASE_REF:-main}:refs/remotes/origin/${BASE_REF:-main}" >/dev/null 2>&1 || true
   fi
 
   local resolved_count=0
