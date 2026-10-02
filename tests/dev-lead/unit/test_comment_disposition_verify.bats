@@ -363,3 +363,65 @@ _stale() {
   _stale "2026-10-01T20:35:00Z" "not-a-time"
   [ "$status" -eq 2 ]
 }
+
+# ────────────────────────────────────────────────────────────────────
+# cdv_verify_fixed (#2004) — does the cited `fixed` sha address the finding?
+#   cdv_verify_fixed <on_head> <on_base> <own_file_count> <sha_author_date> <finding_created_at>
+#     0 + "verified"; 1 + reason token (not-on-head | on-base-branch | base-unknown
+#     | empty-diff | undated | predates-finding)
+# ────────────────────────────────────────────────────────────────────
+
+_verify_fixed() {
+  run bash -c "source '$LIB'; cdv_verify_fixed \"\$1\" \"\$2\" \"\$3\" \"\$4\" \"\$5\"" _ "$1" "$2" "$3" "$4" "$5"
+}
+
+@test "verify_fixed: a PR commit authored AFTER the finding, with a non-empty diff, verifies (#2004 AC1)" {
+  _verify_fixed true false 1 "2026-09-30T12:00:00Z" "2026-09-30T11:00:00Z"
+  [ "$status" -eq 0 ]
+  [ "$output" = "verified" ]
+}
+
+@test "verify_fixed: the commit that INTRODUCED the finding (authored before it) fails — predates-finding (#2004, PR #1977 shape)" {
+  _verify_fixed true false 1 "2026-09-30T10:00:00Z" "2026-09-30T11:00:00Z"
+  [ "$status" -eq 1 ]
+  [ "$output" = "predates-finding" ]
+}
+
+@test "verify_fixed: a commit authored at the same instant as the finding fails closed (must strictly postdate)" {
+  _verify_fixed true false 1 "2026-09-30T11:00:00Z" "2026-09-30T11:00:00Z"
+  [ "$status" -eq 1 ]
+  [ "$output" = "predates-finding" ]
+}
+
+@test "verify_fixed: a sha not on the PR head fails — not-on-head" {
+  _verify_fixed false false 1 "2026-09-30T12:00:00Z" "2026-09-30T11:00:00Z"
+  [ "$status" -eq 1 ]
+  [ "$output" = "not-on-head" ]
+}
+
+@test "verify_fixed: a base-branch commit (merged in from main) fails — on-base-branch" {
+  _verify_fixed true true 1 "2026-09-30T12:00:00Z" "2026-09-30T11:00:00Z"
+  [ "$status" -eq 1 ]
+  [ "$output" = "on-base-branch" ]
+}
+
+@test "verify_fixed: an unknowable base-branch membership fails closed — base-unknown" {
+  _verify_fixed true unknown 1 "2026-09-30T12:00:00Z" "2026-09-30T11:00:00Z"
+  [ "$status" -eq 1 ]
+  [ "$output" = "base-unknown" ]
+}
+
+@test "verify_fixed: an empty own diff (e.g. a merge commit) fails — empty-diff" {
+  _verify_fixed true false 0 "2026-09-30T12:00:00Z" "2026-09-30T11:00:00Z"
+  [ "$status" -eq 1 ]
+  [ "$output" = "empty-diff" ]
+}
+
+@test "verify_fixed: a missing or malformed date fails closed — undated" {
+  _verify_fixed true false 1 "" "2026-09-30T11:00:00Z"
+  [ "$status" -eq 1 ]
+  [ "$output" = "undated" ]
+  _verify_fixed true false 1 "2026-09-30T12:00:00Z" "yesterday"
+  [ "$status" -eq 1 ]
+  [ "$output" = "undated" ]
+}

@@ -5021,3 +5021,160 @@ _resolved_bot_comment() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"intent=fix-bot-comment status=no-changes read_at=2026-10-02T21:00:00Z -->"* ]]
 }
+
+# ── #2004: a `fixed` disposition must cite the sha that FIXED the finding ──────
+# The PR #1977 deadlock: dev-lead cited the commit that INTRODUCED a CodeAnt
+# finding (89f46597) instead of the one that fixed it (e7e7008b). The harness
+# could never verify it, never minimized the comment, and said nothing. These
+# drive a real SUCCESSFUL no-commit pass (the #1977 run was status=no-changes)
+# over a git history of: base (origin/main) → introducing commit (authored
+# BEFORE the finding) → fixing commit (authored AFTER the finding).
+
+# _setup_fixed_history_pass <nodes-json-template>
+#   Builds the repo, exports INTRO_SHA / FIX_SHA, substitutes them for the
+#   literal tokens __INTRO__ / __FIX__ in the template, and stubs gh + engine.
+_setup_fixed_history_pass() {
+  FH_REPO="$BATS_TEST_TMPDIR/fh_repo"
+  mkdir -p "$FH_REPO"
+  git -C "$FH_REPO" init -q
+  _fh_commit() {  # $1=author/committer date $2=content $3=message
+    echo "$2" > "$FH_REPO/stub_drift.sh"
+    git -C "$FH_REPO" add .
+    GIT_AUTHOR_DATE="$1" GIT_COMMITTER_DATE="$1" \
+      git -C "$FH_REPO" -c user.email="t@test" -c user.name="T" commit -q -m "$3"
+  }
+  _fh_commit "2026-09-30T09:00:00Z" "# the --emit-workflow REFERENCE_MANIFEST" "base"
+  git -C "$FH_REPO" update-ref refs/remotes/origin/main HEAD
+  _fh_commit "2026-09-30T10:00:00Z" "# the --emit-workflow-only REFERENCE_MANIFEST" "feat: introduce the defect"
+  INTRO_SHA="$(git -C "$FH_REPO" rev-parse HEAD)"
+  _fh_commit "2026-09-30T12:00:00Z" "# the --emit-workflow REFERENCE_MANIFEST mode" "fix(reviews): address review comments"
+  FIX_SHA="$(git -C "$FH_REPO" rev-parse HEAD)"
+
+  export COMMENTS_NODES="${1//__INTRO__/$INTRO_SHA}"
+  COMMENTS_NODES="${COMMENTS_NODES//__FIX__/$FIX_SHA}"
+  export MINLOG="$BATS_TEST_TMPDIR/minimize.log"
+  : > "$MINLOG"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "No actionable items."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"minimizeComment"*)
+    echo "\$ARGS" >> "\$MINLOG"
+    printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
+  *"on IssueComment"*)
+    printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
+  *"comments(first:100"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"\$COMMENTS_NODES"'}}}}}'; exit 0 ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}}' ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${FIX_SHA}"},"base":{"ref":"main"},"auto_merge":null}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"issues/"*"comments"*) echo '[]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+_run_fixed_history_pass() {
+  rm -f /tmp/dev-lead-session-output.txt
+  run bash -c "
+    cd '$FH_REPO'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=1977 HEAD_SHA=$FIX_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export BOT_USER='donpetry-bot' MINLOG='$MINLOG'
+    export COMMENTS_NODES='$COMMENTS_NODES'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+}
+
+# The CodeAnt finding, posted at 11:00Z — after the introducing commit, before the fix.
+_codeant_finding() {
+  jq -nc '{id:"IC_CODEANT", author:{login:"codeant-ai", __typename:"Bot"},
+    body:"Nitpick: the comment names a nonexistent --emit-workflow-only mode.",
+    isMinimized:false, minimizedReason:null, createdAt:"2026-09-30T11:00:00Z"}'
+}
+
+# A BOT_USER `fixed` reply. $1=id $2=createdAt $3=sha-token
+_fixed_reply() {
+  jq -nc --arg id "$1" --arg c "$2" \
+    --arg body "Fixed the mode name in stub_drift.sh.
+<!-- dev-lead:comment-disposition id=IC_CODEANT disposition=fixed sha=$3 -->" \
+    '{id:$id, author:{login:"donpetry-bot", __typename:"Bot"}, body:$body, isMinimized:false, minimizedReason:null, createdAt:$c}'
+}
+
+@test "#2004 AC4(a): a \`fixed\` disposition citing the INTRODUCING commit fails verification loudly and is not minimized" {
+  _setup_fixed_history_pass "$(jq -sc '.' <(_codeant_finding) <(_fixed_reply R1 "2026-09-30T13:00:00Z" __INTRO__))"
+
+  _run_fixed_history_pass
+
+  [ "$status" -eq 0 ]
+  # The finding stays open — nothing minimized.
+  ! grep -q 'minimizeComment' "$MINLOG"
+  # AC2: a distinct, actionable warning — not a silent skip.
+  [[ "$output" == *"::warning::"*"IC_CODEANT"*"fixed-unverified:predates-finding"* ]]
+}
+
+@test "#2004 AC4(b): the same comment re-answered with the FIXING sha verifies — original RESOLVED, stale reply OUTDATED" {
+  _setup_fixed_history_pass "$(jq -sc '.' <(_codeant_finding) \
+    <(_fixed_reply R1 "2026-09-30T13:00:00Z" __INTRO__) \
+    <(_fixed_reply R2 "2026-09-30T14:00:00Z" __FIX__))"
+
+  _run_fixed_history_pass
+
+  [ "$status" -eq 0 ]
+  grep -Eq 'classifier:RESOLVED.*id=IC_CODEANT' "$MINLOG"
+  grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
+  ! grep -Eq 'id=R2' "$MINLOG"
+  [[ "$output" != *"fixed-unverified"* ]]
+}
+
+@test "#2004 AC4(c): a \`fixed\` disposition citing the correct ANCESTOR commit verifies and minimizes on the first pass" {
+  # The fix landed on an earlier pass; this pass commits nothing. The cited sha
+  # is an ancestor of head that this pass did NOT produce — it must still verify.
+  _setup_fixed_history_pass "$(jq -sc '.' <(_codeant_finding) <(_fixed_reply R1 "2026-09-30T13:00:00Z" __FIX__))"
+
+  _run_fixed_history_pass
+
+  [ "$status" -eq 0 ]
+  grep -Eq 'classifier:RESOLVED.*id=IC_CODEANT' "$MINLOG"
+  [ "$(grep -c 'minimizeComment' "$MINLOG")" -eq 1 ]
+}
+
+@test "#2004: a \`fixed\` sha that is a base-branch commit fails verification with fixed-unverified:on-base-branch" {
+  _setup_fixed_history_pass "$(jq -sc '.' <(_codeant_finding) <(_fixed_reply R1 "2026-09-30T13:00:00Z" __BASE__))"
+  local base_sha; base_sha="$(git -C "$FH_REPO" rev-parse refs/remotes/origin/main)"
+  COMMENTS_NODES="${COMMENTS_NODES//__BASE__/$base_sha}"
+
+  _run_fixed_history_pass
+
+  [ "$status" -eq 0 ]
+  ! grep -q 'minimizeComment' "$MINLOG"
+  [[ "$output" == *"fixed-unverified:on-base-branch"* ]]
+}
+
+@test "#2004 AC1/AC3 fix-reviews prompt: an UNVERIFIED own disposition is re-answered, citing the commit that fixed the finding" {
+  local p="$SCRIPT_DIR/prompts/dev-lead/fix-reviews.md"
+  grep -q "#2004" "$p"
+  # AC3: the never-answer-your-own-reply rule is scoped so it cannot seal a deadlock.
+  grep -qi "does not apply to an unverified" "$p"
+  # AC1: cite the fixing commit (not the introducing one, not head by default).
+  grep -qi "not the commit that introduced" "$p"
+  grep -qi "authored after the finding" "$p"
+  # The obsolete pre-#2004 workaround (cite an earlier fix as `answered`) is gone.
+  ! grep -qi "Post an \`answered\` disposition instead" "$p"
+}

@@ -1004,6 +1004,13 @@ resolve_dispositioned_comments() {
     return 0
   fi
 
+  # A `fixed` sha must not be a base-branch commit (#2004), which needs
+  # origin/<base> locally. Fetch it once, best-effort; if it is still missing,
+  # cdv_verify_fixed fails closed (base-unknown) with a loud warning.
+  if ! git rev-parse -q --verify "origin/${BASE_REF:-main}^{commit}" >/dev/null 2>&1; then
+    git fetch --quiet origin "${BASE_REF:-main}" >/dev/null 2>&1 || true
+  fi
+
   local resolved_count=0
   local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
   local reverify edited_at chosen_created stale_rc
@@ -1130,29 +1137,36 @@ resolve_dispositioned_comments() {
           fi
           continue
         fi
-        # Bind the `fixed` evidence to THIS pass's commit — not merely any ancestor
-        # already on the PR head. Without this, a prior pass's commit (or any
-        # existing ancestor) satisfies the on-head + non-empty-diff check even when
-        # the current pass produced no fix. Require: this pass advanced the head
-        # (RESOLUTION_BASE_SHA → current HEAD via ri_may_resolve), the cited sha was
-        # produced by this pass (reachable from HEAD but NOT from the pre-pass base),
-        # and its diff is non-empty. Fail closed when the pre-pass base or HEAD is
-        # unknowable, or the sha predates this pass.
-        local facts on_head own_files cumulative_files pass_base pass_head
-        pass_base="${RESOLUTION_BASE_SHA:-}"
-        pass_head="$(git rev-parse HEAD 2>/dev/null || true)"
-        if ri_may_resolve "$pass_base" "$pass_head" \
-             && git merge-base --is-ancestor "$sha" "$pass_head" 2>/dev/null \
-             && ! git merge-base --is-ancestor "$sha" "$pass_base" 2>/dev/null; then
-          facts=$(acv_gather_commit_facts "$sha")
-          on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
-          own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
-          cumulative_files=$(printf '%s' "$facts" | jq -r '(.cumulative_files // []) | length' 2>/dev/null || echo "0")
-          if [ "$on_head" = "true" ] && { [ "${own_files:-0}" -gt 0 ] || [ "${cumulative_files:-0}" -gt 0 ]; }; then
-            verified="true"
+        # The cited sha must be the commit that FIXED the finding (#2004) — which
+        # may have landed on an EARLIER pass, so it is not bound to this pass. It
+        # must be a PR commit on head (not reachable from origin/<base>), carry a
+        # non-empty own diff, and be AUTHORED AFTER the finding comment: the commit
+        # that introduced a defect always predates the comment reporting it, which
+        # is exactly the sha PR #1977's disposition wrongly cited. cdv_verify_fixed
+        # decides; any unknowable fact fails closed.
+        local facts on_head own_files on_base sha_date finding_date fixed_reason
+        facts=$(acv_gather_commit_facts "$sha")
+        on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
+        own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
+        on_base="unknown"
+        if git rev-parse -q --verify "origin/${BASE_REF:-main}^{commit}" >/dev/null 2>&1; then
+          if git merge-base --is-ancestor "$sha" "origin/${BASE_REF:-main}" 2>/dev/null; then
+            on_base="true"
+          else
+            on_base="false"
           fi
+        fi
+        sha_date=$(TZ=UTC git show -s --date=format-local:'%Y-%m-%dT%H:%M:%SZ' --format=%ad "$sha" 2>/dev/null || true)
+        finding_date=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+          'first(.[] | select(.id == $id)) | .createdAt // ""' 2>/dev/null || echo "")
+        if fixed_reason=$(cdv_verify_fixed "$on_head" "$on_base" "$own_files" "$sha_date" "$finding_date"); then
+          verified="true"
         else
-          echo "::notice::skipping comment ${cid} — cited sha ${sha} was not produced by this pass (base=${pass_base:-<unset>} head=${pass_head:-<unset>}); leaving open (#1813)"
+          # AC2 (#2004): an unverifiable `fixed` is a distinct, loud signal — never a
+          # silent "not minimized" indistinguishable from "dev-lead has not run".
+          # The next pass re-answers it (fix-reviews.md Phase 1b) with the right sha.
+          echo "::warning::comment ${cid} — \`fixed\` disposition cites sha ${sha} which failed verification (fixed-unverified:${fixed_reason}; sha authored ${sha_date:-<unknown>}, finding posted ${finding_date:-<unknown>}); leaving open — dev-lead must re-answer citing the commit whose diff fixes the finding (#2004)"
+          continue
         fi
         ;;
       out-of-scope)

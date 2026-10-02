@@ -152,7 +152,8 @@ _cdv_is_valid_disposition() {
 #   Decide whether the harness may resolve (minimize RESOLVED) the ORIGINAL
 #   comment. <is_human> and <verified> are the strings "true"/"false".
 #     - <verified> is the disposition-specific verification the CALLER computed:
-#         fixed        → the cited sha is on the PR head and its diff is non-empty
+#         fixed        → cdv_verify_fixed (a PR commit on head, non-empty diff,
+#                        authored after the finding — #2004)
 #         out-of-scope → the referenced issue exists
 #         invalid/answered/informational → a reply with non-empty evidence exists
 #     - A human maintainer's comment is auto-resolved ONLY on a verified `fixed`
@@ -168,6 +169,53 @@ cdv_authorize() {
     return 1
   fi
   return 0
+}
+
+# cdv_verify_fixed <on_head> <on_base> <own_file_count> <sha_author_date> <finding_created_at>
+#   Decide whether a `fixed` disposition's cited sha is the commit that FIXED the
+#   finding (#2004). The caller gathers the facts (git); this only decides.
+#     <on_head>   "true" when the sha is reachable from the PR head.
+#     <on_base>   "true"/"false" — reachable from origin/<base>; anything else is
+#                 unknowable and fails closed.
+#     <own_file_count>  files in the sha's OWN diff (0 for a merge commit).
+#     <sha_author_date> / <finding_created_at>  Z-form ISO-8601 instants. The
+#                 AUTHOR date is used because a rebase rewrites committer dates.
+#   The fix may have landed on an EARLIER pass (an ancestor of head), so this pass
+#   need not have produced it. What it must do is POSTDATE the finding: the commit
+#   that introduced a defect necessarily predates the comment reporting it (the
+#   PR #1977 deadlock cited exactly that commit), while its fix postdates it.
+#   Echoes "verified" and returns 0, or echoes a reason token and returns 1:
+#   not-on-head | on-base-branch | base-unknown | empty-diff | undated |
+#   predates-finding. Pure — no gh/git/network.
+cdv_verify_fixed() {
+  local on_head="${1:-}" on_base="${2:-}" own_count="${3:-}" sha_date="${4:-}" finding_date="${5:-}"
+  local iso='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+  if [[ "$on_head" != "true" ]]; then
+    echo "not-on-head"
+    return 1
+  fi
+  if [[ "$on_base" == "true" ]]; then
+    echo "on-base-branch"
+    return 1
+  fi
+  if [[ "$on_base" != "false" ]]; then
+    echo "base-unknown"
+    return 1
+  fi
+  if [[ ! "$own_count" =~ ^[0-9]+$ ]] || [[ "$own_count" -eq 0 ]]; then
+    echo "empty-diff"
+    return 1
+  fi
+  if [[ ! "$sha_date" =~ $iso ]] || [[ ! "$finding_date" =~ $iso ]]; then
+    echo "undated"
+    return 1
+  fi
+  # Same-shape Z-form instants compare correctly as strings. Strictly after.
+  if [[ ! "$sha_date" > "$finding_date" ]]; then
+    echo "predates-finding"
+    return 1
+  fi
+  echo "verified"
 }
 
 # cdv_select_disposition <cid> <bot_user> <comments_json>
