@@ -75,7 +75,7 @@ _ic_filter_human() {
                    created_at: (.created_at // ""),
                    body: (.body // "") } | @base64)
       end
-  ' 2>/dev/null | while IFS=$'\t' read -r tag a b; do
+  ' 2>/dev/null | while IFS=$'\t' read -r tag a b || [ -n "$tag" ]; do
     case "$tag" in
       K) printf '%s\n' "$a" ;;
       D) printf 'issue-comments: dropped comment by @%s: %s\n' "$a" "$b" >&2 ;;

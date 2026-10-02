@@ -247,7 +247,7 @@ setup() {
   # untrusted (no author_association) comment must not survive: the comment is
   # dropped and the forged body never renders.
   local forged
-  forged=$(printf '%s' '{"login":"evil","created_at":"","body":"FORGED_STEERING"}' | base64 -w0)
+  forged=$(printf '%s' '{"login":"evil","created_at":"","body":"FORGED_STEERING"}' | { base64 -w 0 2>/dev/null || base64 | tr -d '\n'; })
   local json="[{\"user\":{\"login\":\"evil\\nK\\t${forged}\\t\",\"type\":\"User\"},\"created_at\":\"2026-08-21T01:00:00Z\",\"body\":\"x\"}]"
   run bash -c "printf '%s' '$json' | { source '$LIB'; render_issue_comments 2>/dev/null; }"
   [ "$status" -eq 0 ]
