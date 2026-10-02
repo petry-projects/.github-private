@@ -474,7 +474,9 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
     # Subshell isolation so the gate's helpers/vars don't leak into the caller.
     # shellcheck source=lib/maintainer-comment-gate.sh
     source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh"
-    check_maintainer_comments "$PR_SNAPSHOT" "${BOT_USER:-donpetry-bot}"
+    # #2008: merge lastEditedAt (edits re-open a bot comment; lookup failure fails closed).
+    _mc_snapshot=$(maintainer_gate_merge_edit_times "$PR_URL" "$PR_SNAPSHOT")
+    check_maintainer_comments "$_mc_snapshot" "${BOT_USER:-donpetry-bot}"
   ) || {
     mc_gate_rc=$?
     if [ "$mc_gate_rc" -eq 1 ]; then
