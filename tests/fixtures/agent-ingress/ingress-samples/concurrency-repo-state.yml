@@ -1,0 +1,19 @@
+name: Agent Ingress
+# FIXTURE (ADR-0010) — the job-level concurrency group reaches for repo state
+# (a config variable), outside the event-payload surface a job-level if: may
+# read. The ingress guard must FAIL naming the construct.
+on:
+  pull_request:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  pr-review:
+    if: github.event_name == 'pull_request'
+    concurrency:
+      group: "pr-review-${{ vars.REVIEW_LANE }}-${{ github.event.pull_request.number }}"
+      cancel-in-progress: true
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/v1-stable
+    permissions:
+      pull-requests: write

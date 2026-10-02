@@ -178,9 +178,10 @@ teardown() {
   # #2008: the section-aware CodeRabbit rate-limit scope (a shared jq def that both
   # detectors apply). Raised 600→615 for #2008's producer-path edit-time merge
   # (get_advisory_bot_states merges lastEditedAt via maintainer_gate_merge_edit_times
-  # before classifying). This still guards the original intent: no polling loops, no
-  # ballooning.
-  [ "$lines" -lt 615 ]
+  # before classifying). Raised 615→655 for #2005: the single-fetch, registry-driven
+  # check-run clean-pass helper (_advisory_check_run_states). This still guards the
+  # original intent: no polling loops, no ballooning.
+  [ "$lines" -lt 655 ]
 }
 
 # ────────────────────────────────────────────────────────────────────
@@ -1091,4 +1092,123 @@ _events_dir() {
   [[ "$output" == *"gemini-code-assist"* ]]
   [[ "$output" == *"COMMENTED"* ]]
   [[ "$output" != *"RATE_LIMITED"* ]]
+}
+
+# ────────────────────────────────────────────────────────────────────
+# CHECK-RUN CLEAN PASSES (issue #2005)
+#
+# graphite-app reports a clean pass ONLY as its `Graphite / AI Reviews` check run
+# (no PR review, no comment). The gate counts a completed+success check run whose
+# name matches the registry's check_run_name column as a clean submission from that
+# bot — for the current head SHA only — so a clean PR reaches quorum without waiting
+# out the 1200s head-age timeout.
+# ────────────────────────────────────────────────────────────────────
+
+# The four non-check-run advisory bots, all submitted (far-future times keep the
+# quiescence fallback disarmed so only the check run can complete the quorum).
+_ADV_FOUR_REVIEWS='[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:01:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:02:00Z"},{"author":{"login":"cubic-dev-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:03:00Z"}]'
+_ADV_HEAD_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
+# _make_mock_gh_dir_check_runs <check_runs_array_json> — recent head (inside the
+# head-age window), the four reviews above at head _ADV_HEAD_SHA, and the given
+# check runs served from the REST check-runs endpoint.
+_make_mock_gh_dir_check_runs() {
+  local runs="$1" tmpdir
+  tmpdir=$(mktemp -d) || { echo "failed to create temp dir" >&2; exit 1; }
+  printf '{"headRefOid":"%s","reviews":%s,"comments":[]}\n' "$_ADV_HEAD_SHA" "$_ADV_FOUR_REVIEWS" > "$tmpdir/pr.json"
+  printf '{"total_count":0,"check_runs":%s}\n' "$runs" > "$tmpdir/runs.json"
+  cat > "$tmpdir/gh" << MOCK_EOF
+#!/usr/bin/env bash
+args="\$*"
+if [[ "\$args" == *"reviews,comments"* ]]; then
+  cat '$tmpdir/pr.json'
+elif [[ "\$args" == *"check-runs"* ]]; then
+  [[ "\$args" == *"repos/owner/repo/commits/${_ADV_HEAD_SHA}/check-runs"* ]] || exit 1
+  cat '$tmpdir/runs.json'
+elif [[ "\$args" == *"graphql"* ]]; then
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
+fi
+MOCK_EOF
+  chmod +x "$tmpdir/gh"
+  echo "$tmpdir"
+}
+
+_run_gate_with_check_runs() {
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_check_runs "$1")
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+}
+
+_graphite_run() { # <status> <conclusion|null> [head_sha]
+  local concl='null'; [ "$2" != "null" ] && concl="\"$2\""
+  printf '[{"name":"Graphite / AI Reviews","head_sha":"%s","status":"%s","conclusion":%s,"completed_at":"2099-01-01T00:04:00Z"}]' \
+    "${3:-$_ADV_HEAD_SHA}" "$1" "$concl"
+}
+
+@test "Gate runtime: a clean Graphite check run at head counts as its submission (issue #2005)" {
+  _run_gate_with_check_runs "$(_graphite_run completed success)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"graphite-app → COMMENTED"* ]]
+}
+
+@test "Gate runtime: a failed Graphite check run is NOT counted as clean (issue #2005)" {
+  _run_gate_with_check_runs "$(_graphite_run completed failure)"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"graphite-app"* ]]
+}
+
+@test "Gate runtime: a neutral Graphite check run is NOT counted as clean (issue #2005)" {
+  _run_gate_with_check_runs "$(_graphite_run completed neutral)"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"graphite-app"* ]]
+}
+
+@test "Gate runtime: a pending Graphite check run is NOT counted yet (issue #2005)" {
+  _run_gate_with_check_runs "$(_graphite_run in_progress null)"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"graphite-app"* ]]
+}
+
+@test "Gate runtime: a clean Graphite check run on a stale SHA is NOT counted (issue #2005)" {
+  _run_gate_with_check_runs "$(_graphite_run completed success bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"graphite-app"* ]]
+}
+
+@test "Gate runtime: a bot with check_run_name=- gains nothing from check runs (issue #2005)" {
+  # gemini-code-assist carries check_run_name=- in the registry. Drop its review so
+  # it is absent, then serve clean check runs named after it: none may credit it.
+  # The Graphite run in the same response is still counted (the lookup works).
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_check_runs \
+    "[{\"name\":\"gemini-code-assist\",\"head_sha\":\"$_ADV_HEAD_SHA\",\"status\":\"completed\",\"conclusion\":\"success\",\"completed_at\":\"2099-01-01T00:05:00Z\"},{\"name\":\"Gemini Code Assist\",\"head_sha\":\"$_ADV_HEAD_SHA\",\"status\":\"completed\",\"conclusion\":\"success\",\"completed_at\":\"2099-01-01T00:05:00Z\"},$(_graphite_run completed success | sed 's/^\[//; s/\]$//')]")
+  jq -c '.reviews |= map(select(.author.login != "gemini-code-assist"))' "$tmpdir/pr.json" > "$tmpdir/pr2.json"
+  mv "$tmpdir/pr2.json" "$tmpdir/pr.json"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"gemini-code-assist"* ]]
+  [[ "$output" == *"graphite-app → COMMENTED"* ]]
+}
+
+@test "Gate runtime: a failed check-run fetch degrades to reviews/comments only, never an API error (issue #2005)" {
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_check_runs "$(_graphite_run completed success)")
+  sed -i 's|cat .*runs.json.*|exit 1|' "$tmpdir/gh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"graphite-app"* ]]
+}
+
+@test "Advisory gate: no check-run name is hard-coded — the registry is the source (issue #2005)" {
+  ! grep -q 'AI Reviews' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  grep -q 'reviewer_sources_check_run_reporters' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
