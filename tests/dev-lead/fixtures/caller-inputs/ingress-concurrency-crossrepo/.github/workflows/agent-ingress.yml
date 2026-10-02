@@ -1,0 +1,20 @@
+name: Agent Ingress
+# FIXTURE (ADR-0010) — cross-repo pin with a caller-side group; an unresolvable
+# cross-repo reusable soft-passes with a ::warning:: only.
+on:
+  pull_request:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  dev-lead:
+    if: github.event_name == 'pull_request'
+    concurrency:
+      group: "dev-lead-ingress-pr-${{ github.event.pull_request.number }}"
+      cancel-in-progress: false
+    uses: petry-projects/.github/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-test
+    with:
+      agent_ref: dev-lead/v1-test
+    permissions:
+      contents: write
