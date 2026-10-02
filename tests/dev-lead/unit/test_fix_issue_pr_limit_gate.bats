@@ -233,7 +233,8 @@ teardown() {
 # Overwrite the fake guard with one that records the PR_LIMITS_ORG_CAP it sees
 # ("<unset>" when absent) so tests can assert the value reaches the gate.
 _install_cap_recording_guard() {
-  CAP_SEEN_FILE="$(mktemp -u)"; export CAP_SEEN_FILE
+  CAP_SEEN_FILE="$(mktemp)" || { echo "Failed to create temp file" >&2; return 1; }
+  export CAP_SEEN_FILE
   cat > "$PLG_STANDARDS_DIR/scripts/lib/pr-limit-gate.sh" <<'GUARDEOF'
 #!/usr/bin/env bash
 plg_admission_gate() {
@@ -288,20 +289,17 @@ GUARDEOF
     [ -z "${CI:-}" ] || { echo "yq is required in CI" >&2; return 1; }
     skip "yq not installed"
   fi
-  local wf steps found=0
+  local wf count bad_steps found=0
   for wf in "$SCRIPT_DIR"/.github/workflows/*.yml; do
-    # Step names (one per line) whose run: invokes the gate-running script.
-    steps=$(yq -r '.jobs[].steps[]? | select((.run // "") | test("dev-lead-fix-issue\\.sh")) | .name' "$wf")
-    [ -n "$steps" ] || continue
-    while IFS= read -r name; do
-      found=$((found + 1))
-      local val
-      val=$(NAME="$name" yq -r '.jobs[].steps[]? | select(.name == strenv(NAME)) | .env.PR_LIMITS_ORG_CAP // ""' "$wf")
-      [ "$val" = '${{ vars.PR_LIMITS_ORG_CAP }}' ] || {
-        echo "$(basename "$wf"): step '$name' PR_LIMITS_ORG_CAP='$val' (want \${{ vars.PR_LIMITS_ORG_CAP }})" >&2
-        return 1
-      }
-    done <<< "$steps"
+    count=$(yq -r '[.jobs[].steps[]? | select((.run // "") | test("dev-lead-fix-issue\\.sh"))] | length' "$wf")
+    [ "$count" -gt 0 ] || continue
+    found=$((found + count))
+    # Steps running the script that do not map the variable (unnamed-safe).
+    bad_steps=$(yq -r '.jobs[].steps[]? | select((.run // "") | test("dev-lead-fix-issue\\.sh")) | select(.env.PR_LIMITS_ORG_CAP != "${{ vars.PR_LIMITS_ORG_CAP }}") | (.name // "unnamed step")' "$wf")
+    [ -z "$bad_steps" ] || {
+      echo "$(basename "$wf"): steps lacking PR_LIMITS_ORG_CAP: $bad_steps" >&2
+      return 1
+    }
   done
   # Guard against the selector silently matching nothing.
   [ "$found" -ge 2 ]
