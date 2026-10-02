@@ -567,6 +567,9 @@ jobs:
           ISSUE_NUMBER: ${{ env.INTENT_ISSUE_NUMBER }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          # Runtime override for the org-wide automation open-PR cap read by the
+          # PR-limit admission gate (#2018); empty/undefined → cap from pr-limits.json.
+          PR_LIMITS_ORG_CAP: ${{ vars.PR_LIMITS_ORG_CAP }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
