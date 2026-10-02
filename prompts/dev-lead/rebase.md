@@ -39,10 +39,11 @@ Resolve the merge conflicts and rebase the branch onto `${BASE_REF}`:
      resolution, not an unsafe merge — do not abort for it. Commits `f828bbe9`
      and `e11169ce` were exactly this class and had to be hand-fixed; treat them
      as the reference for what a mechanical adjacency resolution looks like.
-   - Only treat a conflict as unresolvable when the two sides make *contradictory*
-     changes to the **same** logic (e.g. both edit the same condition, value, or
-     statement in incompatible ways) — that is the genuinely-ambiguous case the
-     safety guard exists for.
+   - Treat a conflict as unresolvable — and escalate — whenever you cannot establish
+     its correct resolution. That includes *contradictory* changes to the **same**
+     logic (e.g. both edit the same condition, value, or statement in incompatible
+     ways) and any non-contradictory but order-dependent change where picking an
+     order would be arbitrary. When unsure, escalate rather than guess.
    - Stage the resolved file: `git add <file>`
 5. Continue the rebase: `git rebase --continue`
 6. Force-push the rebased branch, pinning the lease so a concurrent steering

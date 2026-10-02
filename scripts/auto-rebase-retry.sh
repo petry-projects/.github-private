@@ -47,7 +47,6 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 DRY_RUN="${DRY_RUN:-false}"
 GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}"
 PR_NUMBER="${PR_NUMBER:-}"
-HAVE_DISPATCH_PAT="${HAVE_DISPATCH_PAT:-false}"
 GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true; }
@@ -59,7 +58,7 @@ summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true; }
 # manually-invocable surface. It fires a `dev-lead-reviews-retry`
 # repository_dispatch (the same bridge the conflict sentinel uses) carrying the
 # PR number and intent=rebase, so the PR is routed straight into dev-lead's
-# rebase intent. A PAT is required for the dispatch to trigger the workflow.
+# rebase intent.
 if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
   case "${PR_NUMBER}" in
     ''|*[!0-9]*|0|0[0-9]*)
@@ -78,20 +77,11 @@ if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
        -f "event_type=dev-lead-reviews-retry" \
        -f "client_payload[pr_number]=${PR_NUMBER}" \
        -f "client_payload[intent_type]=rebase"; then
-    # A 204 from the dispatches API only means the event was accepted — not that a
-    # rebase will run. A repository_dispatch created with the default GITHUB_TOKEN
-    # does not trigger the downstream workflow (GitHub's recursion guard), so
-    # without a PAT the accepted dispatch fires nothing. Only claim recovery when a
-    # PAT is in use; otherwise surface a warning so a human knows no rebase started.
-    if [ "$HAVE_DISPATCH_PAT" = "true" ]; then
-      echo "::notice::Dispatched dev-lead-reviews-retry for PR #${PR_NUMBER} (intent=rebase)"
-      summary "### Manual rebase recovery dispatched"
-      summary "Routed PR #${PR_NUMBER} into dev-lead's \`rebase\` intent."
-    else
-      echo "::warning::Accepted a dev-lead-reviews-retry dispatch for PR #${PR_NUMBER}, but no PAT is configured — a repository_dispatch created with the default GITHUB_TOKEN does not trigger the downstream workflow, so no rebase will run. Configure GH_PAT_DON_PETRY or GH_PAT_WORKFLOWS and retry."
-      summary "### Manual rebase recovery could not trigger a rebase"
-      summary "The dispatch for PR #${PR_NUMBER} was accepted, but the default \`GITHUB_TOKEN\` cannot trigger the downstream workflow — configure a PAT (GH_PAT_DON_PETRY / GH_PAT_WORKFLOWS) and retry."
-    fi
+    # repository_dispatch is exempt from GitHub's GITHUB_TOKEN recursion guard, so
+    # an accepted dispatch triggers the downstream workflow with any token.
+    echo "::notice::Dispatched dev-lead-reviews-retry for PR #${PR_NUMBER} (intent=rebase)"
+    summary "### Manual rebase recovery dispatched"
+    summary "Routed PR #${PR_NUMBER} into dev-lead's \`rebase\` intent."
   else
     echo "::warning::Failed to dispatch dev-lead-reviews-retry for PR #${PR_NUMBER} — a maintainer should retry manually"
     summary "### Manual rebase recovery failed to dispatch"

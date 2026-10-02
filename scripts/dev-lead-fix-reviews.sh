@@ -26,6 +26,10 @@ source "$(dirname "$0")/lib/comment-disposition-verify.sh"
 source "$(dirname "$0")/lib/maintainer-comment-gate.sh"
 # Structured PR-body backfill (#1805): heal an existing PR whose body is still
 # missing 3+ required description sections, once, marker-keyed.
+# Absolute agent-scripts dir, captured before any cd into a PR worktree so later
+# `$(dirname "$0")` lookups (verify_resolution_integrity) cannot resolve relative
+# to the worktree.
+AGENT_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
 source "$(dirname "$0")/lib/redact.sh"
 # Rebase exhaustion handling (#865): abort cleanly on hard conflicts instead of
@@ -1431,17 +1435,22 @@ This PR's rebase conflict failed automated resolution **${REBASE_MAX_FAIL_ATTEMP
 
 **Reason for last failure:** ${reason}
 
-Resolve the conflict manually, then delete this comment to re-enable automated rebasing."
+Resolve the conflict manually, then remove the \`${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}\` label **and** delete this comment to re-enable automated rebasing."
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-    echo "[dry-run] would post rebase exhaustion marker and add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} on PR #${PR_NUMBER}"
+    echo "[dry-run] would post rebase exhaustion marker, add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} and disable auto-merge on PR #${PR_NUMBER}"
     return 0
   fi
+  # A PR held for human review must not auto-merge once the conflict is resolved
+  # by hand: suppress the EXIT-trap auto-merge restore and disable any armed one.
+  _AM_NEEDS_RESTORE=0
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
   # Escalate loudly (#1890 AC #3): applying needs-human-review makes the hold gate
   # (dev-lead-intent.sh) skip every subsequent rebase sentinel for this PR, so the
   # loop converges to a single escalation instead of re-firing indefinitely.
   gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
     || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
+    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
 }
 
 # escalate_rebase_needs_human <reason>: hand a rebase off to a human immediately
@@ -1534,7 +1543,7 @@ pr_mergeable_conflict_state() {
 verify_resolution_integrity() {
   local base_ref="${1:-${BASE_REF:-main}}" rc=0 changed file
   local script_dir
-  script_dir="$(dirname "$0")"
+  script_dir="${AGENT_SCRIPT_DIR:-$(dirname "$0")}"
   changed="$(git diff --name-only "origin/${base_ref}...HEAD" -- '*.sh' 2>/dev/null || true)"
   while IFS= read -r file || [ -n "$file" ]; do
     [ -n "$file" ] || continue
