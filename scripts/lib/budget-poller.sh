@@ -331,7 +331,9 @@ bp_download_latest_log() {
   branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || printf '')"
   # `gh --jq` takes no --arg, so the branch is interpolated: allow-list its charset.
   [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]] || branch="main"
-  ids="$(gh api "repos/${repo}/actions/artifacts?name=${BUDGET_POLLER_ARTIFACT}&per_page=30" \
+  # --paginate: other branches' runs can fill a single page and hide an older
+  # trusted log. The API lists newest first, so per-page filtering keeps that order.
+  ids="$(gh api --paginate "repos/${repo}/actions/artifacts?name=${BUDGET_POLLER_ARTIFACT}&per_page=100" \
     --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"${branch}\")] | sort_by(.created_at) | reverse | .[].id" \
     2>/dev/null)" || return 2
   # Newest first; fall through to older artifacts when one is unreadable/malformed.
