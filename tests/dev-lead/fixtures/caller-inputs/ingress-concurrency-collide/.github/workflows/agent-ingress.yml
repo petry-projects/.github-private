@@ -1,0 +1,20 @@
+name: Agent Ingress
+# FIXTURE (ADR-0010) — the dev-lead job's caller-side group reuses the
+# 'dev-lead-pr-' group its pinned reusable already declares, so caller and
+# reusable runs would queue behind each other. The job forwards NO with: inputs,
+# so the guard must still resolve the reusable for the collision check. FAIL.
+on:
+  pull_request:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  dev-lead:
+    if: github.event_name == 'pull_request'
+    concurrency:
+      group: "dev-lead-pr-${{ github.event.pull_request.number }}"
+      cancel-in-progress: false
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-test
+    permissions:
+      contents: write
