@@ -50,6 +50,20 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      # merge_group.base_ref is the full ref (refs/heads/main); SonarCloud needs
+      # the short branch name or it creates a spurious branch.
+      - name: Resolve Sonar branch name
+        id: branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "${EVENT_NAME}" in
+            merge_group) echo "name=${BASE_REF#refs/heads/}" >> "$GITHUB_OUTPUT" ;;
+            push) echo "name=${REF_NAME}" >> "$GITHUB_OUTPUT" ;;
+            *) echo "name=" >> "$GITHUB_OUTPUT" ;;
+          esac
       - name: SonarCloud Scan
         id: sonar
         if: env.SONAR_TOKEN != ''
@@ -58,10 +72,8 @@ jobs:
           args: >-
             -Dsonar.scanner.skipJreProvisioning=true
             -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
-            ${{ github.event_name == 'merge_group' &&
-            format('-Dsonar.branch.name={0}', github.event.merge_group.base_ref)
-            || github.event_name == 'push' &&
-            format('-Dsonar.branch.name={0}', github.ref_name)
+            ${{ steps.branch.outputs.name != '' &&
+            format('-Dsonar.branch.name={0}', steps.branch.outputs.name)
             || '' }}
         continue-on-error: true
       - name: SonarCloud Scan (retry)
@@ -71,8 +83,6 @@ jobs:
           args: >-
             -Dsonar.scanner.skipJreProvisioning=true
             -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
-            ${{ github.event_name == 'merge_group' &&
-            format('-Dsonar.branch.name={0}', github.event.merge_group.base_ref)
-            || github.event_name == 'push' &&
-            format('-Dsonar.branch.name={0}', github.ref_name)
+            ${{ steps.branch.outputs.name != '' &&
+            format('-Dsonar.branch.name={0}', steps.branch.outputs.name)
             || '' }}

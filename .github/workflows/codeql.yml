@@ -78,7 +78,12 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          if [[ "${{ needs.analyze.result }}" == "failure" ]]; then
+      # Fail closed: only a fully successful matrix passes. `cancelled` and
+      # `skipped` runs completed no scan, so they must not report green.
+      - env:
+          ANALYZE_RESULT: ${{ needs.analyze.result }}
+        run: |
+          if [[ "${ANALYZE_RESULT}" != "success" ]]; then
+            echo "CodeQL analyze result: ${ANALYZE_RESULT} (expected success)" >&2
             exit 1
           fi

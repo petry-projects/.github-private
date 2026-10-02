@@ -25,50 +25,18 @@ setup() {
 # Helper: evaluate a python expression against a parsed workflow document.
 # $1 = workflow file path, $2 = python expression referencing `on` and `jobs`.
 # Prints the repr of the result so bats can assert on stdout.
-# Requires PyYAML or provides a basic fallback parser for simple workflows.
+# Requires PyYAML (hard requirement; fails with a clear error if missing).
 _wf() {
   WF="$1" EXPR="$2" python3 - <<'PY'
 import os, sys
 
 try:
     import yaml
-    def parse_yaml(text):
-        return yaml.safe_load(text)
 except ImportError:
-    def parse_yaml(text):
-        root = {}
-        stack = [(-1, root, None)]
-        for line in text.splitlines():
-            trimmed = line.strip()
-            if not trimmed or trimmed.startswith('#'):
-                continue
-            indent = len(line) - len(line.lstrip())
-            while stack[-1][0] >= indent:
-                stack.pop()
-            _, parent, parent_key = stack[-1]
-            if trimmed.startswith('-'):
-                val = trimmed[1:].strip().strip("'\"")
-                _, container, key = stack[-1]
-                if isinstance(container, dict) and not container:
-                    container = []
-                    _, grandparent, _ = stack[-2]
-                    grandparent[key] = container
-                    stack[-1] = (stack[-1][0], container, key)
-                if isinstance(container, list):
-                    container.append(val)
-            elif ':' in trimmed:
-                key, val = trimmed.split(':', 1)
-                key = key.strip().strip("'\"")
-                val = val.strip().strip("'\"")
-                if val:
-                    if val.lower() == 'true': val = True
-                    elif val.lower() == 'false': val = False
-                    parent[key] = val
-                else:
-                    new_dict = {}
-                    parent[key] = new_dict
-                    stack.append((indent, new_dict, key))
-        return root
+    sys.exit("PyYAML is required to run these tests (pip install pyyaml)")
+
+def parse_yaml(text):
+    return yaml.safe_load(text)
 
 with open(os.environ["WF"], encoding="utf-8") as fh:
     doc = parse_yaml(fh.read())
@@ -197,6 +165,45 @@ PY
 
 @test "codeql.yml CodeQL aggregation job requires analyze and always runs (AC4)" {
   run _wf "$WORKFLOWS/codeql.yml" "jobs.get('CodeQL', {}).get('needs') == 'analyze' and jobs.get('CodeQL', {}).get('if') == 'always()'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+# Fail closed: a cancelled/skipped matrix completes no scan and must not report
+# the required `CodeQL` check green. Execute the job's script for each result.
+_codeql_agg_run() {
+  local script
+  script="$(_wf "$WORKFLOWS/codeql.yml" "jobs['CodeQL']['steps'][0]['run']")"
+  ANALYZE_RESULT="$1" bash -c "$script"
+}
+
+@test "codeql.yml CodeQL aggregation job passes only on success (AC4)" {
+  run _codeql_agg_run success
+  [ "$status" -eq 0 ]
+}
+
+@test "codeql.yml CodeQL aggregation job fails for every non-success result (AC4)" {
+  for r in failure cancelled skipped; do
+    run _codeql_agg_run "$r"
+    [ "$status" -ne 0 ]
+  done
+}
+
+@test "codeql.yml CodeQL aggregation job reads needs.analyze.result via env (AC4)" {
+  run _wf "$WORKFLOWS/codeql.yml" "jobs['CodeQL']['steps'][0]['env']['ANALYZE_RESULT']"
+  [ "$status" -eq 0 ]
+  [ "$output" = '${{ needs.analyze.result }}' ]
+}
+
+# SonarCloud must receive the short branch name, never a full refs/heads/ ref.
+@test "sonarcloud.yml scan and retry steps never pass a refs/heads/ branch name (AC1)" {
+  run _wf "$WORKFLOWS/sonarcloud.yml" "all('refs/heads/' not in str(s.get('with', {}).get('args', '')) and 'merge_group.base_ref' not in str(s.get('with', {}).get('args', '')) for s in jobs['sonarcloud']['steps'])"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "sonarcloud.yml strips refs/heads/ in the branch-resolution step (AC1)" {
+  run _wf "$WORKFLOWS/sonarcloud.yml" "any('#refs/heads/' in str(s.get('run', '')) for s in jobs['sonarcloud']['steps'] if s.get('id') == 'branch')"
   [ "$status" -eq 0 ]
   [ "$output" = "True" ]
 }
