@@ -228,6 +228,16 @@ YML
   [[ "$output" == *"::error::"* ]]
 }
 
+@test "ingress concurrency: an unresolvable cross-repo reusable soft-passes with a warning only" {
+  empty="$(mktemp -d)"
+  run env VCI_ROOT="$FIX/ingress-concurrency-crossrepo" VCI_RESOLVE_DIR="$empty" bash "$SCRIPT"
+  rmdir "$empty"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" != *"::error::"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # --pair mode: validate a single caller against an explicit reusable file
 # ---------------------------------------------------------------------------

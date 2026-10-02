@@ -451,5 +451,6 @@ setup() {
 
 @test "viif_group_stems: an unreachable operand right of a truthy literal || is not a stem" {
   run viif_group_stems "\${{ 'pr-review-fixed' || github.event.action }}"
+  [ "$status" -eq 0 ]
   [ "$output" = "pr-review-fixed" ]
 }
