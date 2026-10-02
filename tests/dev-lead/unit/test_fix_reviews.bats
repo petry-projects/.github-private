@@ -2142,7 +2142,7 @@ GHEOF
   # The thread's originating comment is a human maintainer, not a bot. The net
   # targets only bot-originated threads (#1415), so it never touches this one.
   export ORIGIN_AUTHOR_JSON='{"login":"a-maintainer","__typename":"User"}'
-  export DISPOSITION_NODE='{"author":{"login":"another-maintainer","__typename":"User"},"body":"No change needed here.","createdAt":"2026-09-02T12:00:00Z"}'
+  export DISPOSITION_NODE='{"author":{"login":"another-maintainer","__typename":"User"},"authorAssociation":"OWNER","body":"No change needed here.","createdAt":"2026-09-02T12:00:00Z"}'
   _nochange_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   run grep -q "PRRT_nochange" "$_MUTATIONS_FILE"
@@ -2151,7 +2151,7 @@ GHEOF
 
 @test "no-change net (#1743): a REQUIRED disposition postdating a no-change one supersedes it and still blocks" {
   export ORIGIN_AUTHOR_JSON='{"login":"gemini-code-assist[bot]","__typename":"Bot"}'
-  export DISPOSITION_NODE='{"author":{"login":"m1","__typename":"User"},"body":"Looks like a false positive, no change needed.","createdAt":"2026-09-02T12:00:00Z"},{"author":{"login":"m2","__typename":"User"},"body":"On reflection this is REQUIRED — please fix.","createdAt":"2026-09-03T12:00:00Z"}'
+  export DISPOSITION_NODE='{"author":{"login":"m1","__typename":"User"},"authorAssociation":"OWNER","body":"Looks like a false positive, no change needed.","createdAt":"2026-09-02T12:00:00Z"},{"author":{"login":"m2","__typename":"User"},"authorAssociation":"OWNER","body":"On reflection this is REQUIRED — please fix.","createdAt":"2026-09-03T12:00:00Z"}'
   _nochange_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   # A strictly-newer REQUIRED disposition supersedes the earlier no-change one.

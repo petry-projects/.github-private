@@ -85,7 +85,7 @@ readonly _ACV_NOCHANGE_RE_UPPER='(NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY
 # stays open for the maintainer). Only phrases that do NOT themselves begin with a
 # negator are targeted, so the affirmative "NO CHANGE NEEDED" / "NOT A BUG" dispositions
 # are never clobbered.
-readonly _ACV_NOCHANGE_NEGATION_RE_UPPER='(CANNOT|CAN.?T|COULD ?NOT|COULDN.?T|WILL NOT|WON.?T|WOULD ?NOT|WOULDN.?T|SHOULD ?NOT|SHOULDN.?T|IS ?NOT|ISN.?T|ARE ?NOT|AREN.?T|WAS ?NOT|WASN.?T|WERE ?NOT|WEREN.?T|DOES ?NOT|DOESN.?T|DO ?NOT|DON.?T|DID ?NOT|DIDN.?T|NEVER|NOT)[[:space:]]+([A-Z'"'"']+[[:space:]]+){0,3}(FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|BY DESIGN|INTENDED BEHAVIOU?R|NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT))'
+readonly _ACV_NOCHANGE_NEGATION_RE_UPPER='(CANNOT|CAN.?T|COULD ?NOT|COULDN.?T|WILL NOT|WON.?T|WOULD ?NOT|WOULDN.?T|SHOULD ?NOT|SHOULDN.?T|IS ?NOT|ISN.?T|ARE ?NOT|AREN.?T|WAS ?NOT|WASN.?T|WERE ?NOT|WEREN.?T|DOES ?NOT|DOESN.?T|DO ?NOT|DON.?T|DID ?NOT|DIDN.?T|NEVER|NOT)[,[:space:]]+([A-Z,'"'"']+[[:space:]]+){0,6}(FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|BY DESIGN|INTENDED BEHAVIOU?R|NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT))'
 
 # Post-marker BOT-comment classification (#1735 AC2/AC4). A review bot that replies
 # AFTER our addressed-marker either ACKNOWLEDGES (accepts our refutation / records a
@@ -472,6 +472,11 @@ acv_latest_nochange_disposition() {
     [[ "$up" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]] && continue
     # Does the marker-less human comment assert a no-change disposition?
     [[ "$up" =~ $_ACV_NOCHANGE_RE_UPPER ]] || continue
+    # A question or an expression of doubt/disagreement is not an affirmative verdict
+    # ("Could this be a false positive?", "I disagree with calling this a false
+    # positive") -> fail closed (#1799).
+    [[ "$up" == *'?'* ]] && continue
+    [[ "$up" =~ (DISAGREE|DOUBT|UNCLEAR|NOT[[:space:]]SURE|UNSURE|NOT[[:space:]]CONVINCED) ]] && continue
     # A disposition with no parseable timestamp cannot be ordered against a
     # competing REQUIRED disposition -> fail closed.
     if [[ -z "$created" ]] || ! _acv_is_iso8601 "$created"; then

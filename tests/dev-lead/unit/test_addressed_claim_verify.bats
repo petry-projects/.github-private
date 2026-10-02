@@ -208,6 +208,42 @@ setup() {
   [[ "$output" == "2026-09-02T12:00:00Z" ]]
 }
 
+@test "acv_latest_nochange_disposition: rejected/questioned phrase #0 is not a disposition -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"I do not think this is a false positive.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: rejected/questioned phrase #1 is not a disposition -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"I do not believe this is a false positive.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: rejected/questioned phrase #2 is not a disposition -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"This is not, in my judgement, a false positive.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: rejected/questioned phrase #3 is not a disposition -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"It'\''s not at all clear this is a false positive.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: rejected/questioned phrase #4 is not a disposition -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Could this be a false positive?","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: rejected/questioned phrase #5 is not a disposition -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"I disagree with calling this a false positive.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
 @test "acv_latest_nochange_disposition: 'working as intended' is a no-change disposition -> rc0" {
   local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Working as intended.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments" "donpetry-bot"

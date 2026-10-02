@@ -1154,7 +1154,7 @@ resolve_nochange_disposition_threads() {
   # resolve_addressed_bot_threads). The last reply's body/author is deliberately NOT
   # captured here; it is re-read per candidate below.
   local ids=""
-  local cursor="" has_next_page="true" page_response page_ids
+  local cursor="" prev_cursor="" has_next_page="true" page_response page_ids
   local cursor_args=()
   local enum_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
     repository(owner:$owner,name:$repo){
@@ -1187,6 +1187,11 @@ resolve_nochange_disposition_threads() {
       '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
       2>/dev/null || echo "")
     [ -z "$cursor" ] && has_next_page="false"
+    if [ "$has_next_page" = "true" ] && [ "$cursor" = "$prev_cursor" ]; then
+      echo "::error::review-thread pagination cursor did not advance; aborting no-change enumeration" >&2
+      return 1
+    fi
+    prev_cursor="$cursor"
     cursor_args=("-f" "cursor=${cursor}")
   done
 
@@ -1237,8 +1242,15 @@ resolve_nochange_disposition_threads() {
         first_page=0
       fi
       printf '%s' "$c_page" | jq -c '.data?.node?.comments?.nodes // []' 2>/dev/null >> "$c_pages_file" || echo "[]" >> "$c_pages_file"
+      # Fail closed on missing/malformed pageInfo: absent metadata must not read as
+      # end-of-history, or a later REQUIRED reply could stay unseen.
       c_has_next=$(printf '%s' "$c_page" | jq -r \
-        '.data?.node?.comments?.pageInfo?.hasNextPage // false' 2>/dev/null || echo "false")
+        'if (.data.node.comments.pageInfo.hasNextPage | type) == "boolean"
+         then .data.node.comments.pageInfo.hasNextPage else "invalid" end' 2>/dev/null || echo "invalid")
+      if [ "$c_has_next" != "true" ] && [ "$c_has_next" != "false" ]; then
+        c_failed=1
+        break
+      fi
       c_cursor=$(printf '%s' "$c_page" | jq -r \
         '.data?.node?.comments?.pageInfo?.endCursor // ""' 2>/dev/null || echo "")
       [ -z "$c_cursor" ] && c_has_next="false"
@@ -1273,6 +1285,18 @@ resolve_nochange_disposition_threads() {
     if [ "${nochange_rc:-1}" -ne 0 ] || [ -z "$nochange_ts" ]; then
       # No no-change disposition — this is not our thread to resolve (a plain bot
       # finding with no maintainer verdict still blocks, exactly as before).
+      continue
+    fi
+
+    # A bot finding posted AFTER the no-change verdict is a new concern the verdict
+    # never covered -> leave the thread open (fail closed).
+    local later_finding
+    later_finding=$(jq -r --arg ts "$nochange_ts" --arg re "$_ACV_BOT_FINDING_RE_UPPER" \
+      '[.[] | select((.author.__typename // "") == "Bot" and (.createdAt // "") > $ts
+                     and ((.body // "") | ascii_upcase | test($re)))] | length' \
+      <<<"$comments_json" 2>/dev/null || echo "1")
+    if [ "${later_finding:-1}" != "0" ]; then
+      echo "::notice::skipping thread ${id} — a bot finding postdates the no-change disposition (${nochange_ts}); leaving unresolved (fail closed)"
       continue
     fi
 
