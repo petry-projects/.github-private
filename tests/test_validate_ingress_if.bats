@@ -318,6 +318,93 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# Job-level concurrency: (ADR-0010, #2002). A group may read only the event
+# surface a job-level if: may read (checked with the SAME viif_forbidden
+# predicate), must carry the role name as a prefix, and cancel-in-progress must
+# be a literal boolean. Collision with the pinned reusable's own groups needs the
+# reusable at its pinned ref, so validate-caller-inputs owns that half.
+# ---------------------------------------------------------------------------
+
+@test "viif_group_stems: a literal head is the stem; expression groups yield result-position format()/fallback literals only" {
+  run viif_group_stems 'ci-failure-analyst-${{ github.event.check_run.head_sha }}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "ci-failure-analyst-" ]
+
+  run viif_group_stems "\${{ (github.event_name == 'pull_request' && format('pr-auto-review-pr-{0}', github.event.pull_request.number)) || 'pr-auto-review-batch' }}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'pr-auto-review-batch\npr-auto-review-pr-')" ]
+
+  # Nested format() arguments and function-call arguments are not group names.
+  run viif_group_stems "\${{ format('pr-review-pr-{0}{1}', format('{0}/pull/{1}', github.event.x, github.event.y), '-x') || contains(github.event.z, 'nope') }}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pr-review-pr-" ]
+}
+
+@test "viif_group_exprs: a quoted }} does not close the expression; an unclosed tail is still emitted" {
+  run viif_group_exprs "x-\${{ format('}}') }}"
+  [ "$status" -eq 0 ]
+  [ "$output" = " format('}}') " ]
+
+  run viif_group_exprs "x-\${{ github.event.a == '}}' && 'y' }}-\${{ github.event.b }}"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [[ "${lines[0]}" == *"'}}'"* ]]
+
+  run viif_group_exprs 'pr-review-${{ vars.lane'
+  [ "$status" -eq 0 ]
+  [ "$output" = " vars.lane" ]
+  run viif_check_concurrency pr-review 'pr-review-${{ vars.lane' ""
+  [ "$status" -eq 1 ]
+}
+
+@test "viif_group_stems: every expression of a multi-expression group is stem-checked" {
+  run viif_group_stems "\${{ format('a-{0}', github.event.number) }}-\${{ format('b-{0}', github.event.number) }}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'a-\nb-')" ]
+}
+
+@test "concurrency: an explicit null cancel-in-progress fails" {
+  run viif_validate_ingress "${SAMPLES}/concurrency-cancel-null.yml"
+  echo "$output"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"literal boolean"* ]]
+}
+
+@test "concurrency: a bounded, role-prefixed group with a literal cancel-in-progress passes" {
+  run viif_validate_ingress "${SAMPLES}/concurrency-good.yml"
+  echo "$output"
+  [ "$status" -eq 0 ]
+}
+
+@test "concurrency: a group reaching repo state fails, via the same if: predicate" {
+  run viif_validate_ingress "${SAMPLES}/concurrency-repo-state.yml"
+  echo "$output"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error"* ]]
+  [[ "$output" == *"'pr-review'"* ]]
+  [[ "$output" == *"concurrency"* ]]
+  [[ "$output" == *"vars"* ]]
+}
+
+@test "concurrency: a non-literal cancel-in-progress fails" {
+  run viif_validate_ingress "${SAMPLES}/concurrency-cancel-expr.yml"
+  echo "$output"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"'pr-auto-review'"* ]]
+  [[ "$output" == *"cancel-in-progress"* ]]
+  [[ "$output" == *"literal boolean"* ]]
+}
+
+@test "concurrency: a group without the role-name prefix fails" {
+  run viif_validate_ingress "${SAMPLES}/concurrency-no-prefix.yml"
+  echo "$output"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"'ci-failure-analyst'"* ]]
+  [[ "$output" == *"role"* ]]
+  [[ "$output" == *"ci-"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # Repo scan: no live agent-ingress.yml yet (it is a docs reference until the
 # collapse story), so a scan of a tree without one is a clean pass — never a
 # silent skip that hides an absent guard.
@@ -339,4 +426,31 @@ setup() {
   rm -rf "$root"
   [ "$status" -eq 1 ]
   [[ "$output" == *"vars"* ]]
+}
+
+@test "vci_job_for_uses: finds the job key for plain, commented, and quoted keys" {
+  # shellcheck source=scripts/validate-caller-inputs.sh
+  source "${REPO_ROOT}/scripts/validate-caller-inputs.sh"
+  local f="${BATS_TEST_TMPDIR}/wf.yml"
+  printf '%s\n' 'jobs:' '  plain: # note' '    uses: x/y/.github/workflows/a.yml@v1' \
+    '  "dq":' '    uses: x/y/.github/workflows/b.yml@v1' \
+    "  'sq':" '    uses: x/y/.github/workflows/c.yml@v1' > "$f"
+  run vci_job_for_uses "$f" 3
+  [ "$output" = "plain" ]
+  run vci_job_for_uses "$f" 5
+  [ "$output" = "dq" ]
+  run vci_job_for_uses "$f" 7
+  [ "$output" = "sq" ]
+}
+
+@test "viif_check_concurrency: an event-field branch beside a prefixed fallback is rejected (unprefixed leading result)" {
+  run viif_check_concurrency pr-review "\${{ github.event.pull_request.title || 'pr-review-fallback' }}" "true"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"every possible leading result must begin with 'pr-review-'"* ]]
+}
+
+@test "viif_group_stems: an unreachable operand right of a truthy literal || is not a stem" {
+  run viif_group_stems "\${{ 'pr-review-fixed' || github.event.action }}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pr-review-fixed" ]
 }
