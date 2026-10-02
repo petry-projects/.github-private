@@ -831,7 +831,12 @@ ESCALATION_END
     rm -f "$ESCALATION_BODY"
   fi
   emit_verdict escalate max-cycles-reached "a human removes the needs-human-review label to grant a fresh cycle budget (an @mention will not reset the cap)"
-  exit 100
+  # Exit 101 is the human-escalation sentinel (#1754 AC1): a delivered escalation
+  # is counted as `escalated`, not a no-op. A DRY_RUN posted nothing, so it stays 100.
+  if [ "${DRY_RUN:-false}" = "true" ]; then
+    exit 100
+  fi
+  exit 101
 fi
 
 # Per-PR automation budget (#926): bound TOTAL automated activity on this PR over
@@ -843,10 +848,20 @@ fi
 if [ "${DRY_RUN:-false}" != "true" ]; then
   PR_BUDGET_NUMBER=$(echo "$PR_URL" | sed -E 's|.*/pull/([0-9]+).*|\1|')
   PR_BUDGET_REPO=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
+  # Probe the dedupe marker BEFORE enforce_pr_budget: the run that performs the
+  # escalation exits 101 (counted `escalated`, #1754 AC1); later runs that only
+  # find the budget already exhausted are holds and keep exit 100.
+  PR_BUDGET_ALREADY_ESCALATED=false
+  if pr_automation_already_escalated "$PR_BUDGET_NUMBER" "$PR_BUDGET_REPO"; then
+    PR_BUDGET_ALREADY_ESCALATED=true
+  fi
   if enforce_pr_budget "$PR_BUDGET_NUMBER" "$PR_BUDGET_REPO"; then
     echo "    cap: per-PR automation budget exhausted — halting automated review (escalated to human)"
     emit_verdict escalate automation-budget-exhausted "a human interaction (comment or approval) resets the per-PR automation budget"
-    exit 100
+    if [ "$PR_BUDGET_ALREADY_ESCALATED" = "true" ]; then
+      exit 100
+    fi
+    exit 101
   fi
 fi
 
