@@ -59,6 +59,10 @@ PROMPTS_DIR="$(resolve_abs "$PROMPTS_DIR")"
 export PROMPTS_DIR
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
+# When this pass started, i.e. a lower bound on when it read the PR's comments.
+# Stamped on terminal markers as read_at= so the #2008 stale-edit dedup can tell a
+# pass that read an edited body from one that merely FINISHED after the edit.
+PASS_STARTED_AT="${PASS_STARTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 INTEGRITY_MARKER_PREFIX="<!-- dev-lead-conflict-integrity pr="
 NONCONVERGE_MARKER_PREFIX="<!-- dev-lead-review-nonconverge pr="
 # Consecutive not-applied passes against the same review before escalating to a
@@ -151,9 +155,12 @@ build_and_run() {
 # intent on subsequent runs when the SHA hasn't changed.
 post_reviews_terminal() {
   local intent="$1" status="${2:-applied}" summary="${3:-}"
-  local sha_part=""
+  local sha_part="" read_part=""
   [ -n "${HEAD_SHA:-}" ] && sha_part=" sha=${HEAD_SHA}"
-  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_part} intent=${intent} status=${status} -->"
+  if [[ "${PASS_STARTED_AT:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    read_part=" read_at=${PASS_STARTED_AT}"
+  fi
+  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_part} intent=${intent} status=${status}${read_part} -->"
 
   local body="${marker}"
   if [ -n "$summary" ]; then
@@ -902,8 +909,8 @@ resolve_dispositioned_comments() {
   local bot_user="${BOT_USER:-donpetry-bot}"
 
   # Fetch ALL PR issue comments (author login + __typename, body, minimize state,
-  # createdAt, and the node id used both to match a disposition reply's `id=` and
-  # as minimizeComment's subjectId). The full set is needed twice: to find
+  # createdAt, lastEditedAt (#2008), and the node id used both to match a
+  # disposition reply's `id=` and as minimizeComment's subjectId). The full set is needed twice: to find
   # candidates AND to locate their disposition replies (a flat comment list, not a
   # thread). Paginated 100/page.
   local pages_file cursor="" has_next_page="true" page_response page_nodes
@@ -913,7 +920,7 @@ resolve_dispositioned_comments() {
       pullRequest(number:$pr){
         comments(first:100,after:$cursor){
           pageInfo{hasNextPage endCursor}
-          nodes{ id author{login __typename} body isMinimized minimizedReason createdAt }
+          nodes{ id author{login __typename} authorAssociation body isMinimized minimizedReason createdAt lastEditedAt }
         }
       }
     }
@@ -959,6 +966,45 @@ resolve_dispositioned_comments() {
       | .id
     ' 2>/dev/null || true)
 
+  # #2008: edits re-open a dispositioned comment. CodeRabbit edits ONE summary
+  # comment in place. On PR #2000 a Security Architecture finding was appended
+  # after the comment had been dispositioned `informational` and minimized, and
+  # nothing ever addressed it. Two cases, both for RESOLVED bot comments:
+  #   (a) RE-OPEN — the gate would re-block it (maintainer_gate_reopen_candidates):
+  #       edited with no covering disposition, edited after its latest one, or
+  #       covered only by `informational` while the body is finding-bearing.
+  #       UNMINIMIZE it, so it is visibly open and the next pass dispositions the
+  #       current body.
+  #   (b) RE-VERIFY — a fresh disposition was posted after the edit, while an older
+  #       one predates it. The gate already accepts the fresh one, so verify it here
+  #       like any other: on success the stale reply goes OUTDATED, on failure the
+  #       comment is unminimized (fail closed).
+  local reopen_ids reverify_ids rid
+  reopen_ids=$(maintainer_gate_reopen_candidates "$all_comments" "$bot_user" 2>/dev/null \
+    | jq -r '.[]?' 2>/dev/null || true)
+  while IFS= read -r rid; do
+    [ -z "$rid" ] && continue
+    if gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+        -f id="$rid" >/dev/null 2>&1; then
+      echo "::notice::unminimized comment ${rid} — edited after its latest disposition (or its disposition cannot cover a finding-bearing body); it needs a fresh disposition (#2008)"
+    else
+      echo "::warning::failed to unminimize comment ${rid} (edited after its latest disposition); the maintainer-comment gate still blocks on it (#2008)"
+    fi
+  done <<< "$reopen_ids"
+  reverify_ids=$(printf '%s' "$all_comments" | jq -r --arg reopen "$reopen_ids" '
+      ($reopen | split("\n")) as $skip
+      | .[] | objects
+      | select((.author?.__typename // "") == "Bot")
+      | select(((.isMinimized // false) == true)
+               and (((.minimizedReason // "") | ascii_downcase) == "resolved"))
+      | select((.lastEditedAt // null) != null)
+      | select(.id as $id | $skip | index($id) | not)
+      | .id
+    ' 2>/dev/null || true)
+  if [ -n "$reverify_ids" ]; then
+    candidate_ids=$(printf '%s\n%s' "$candidate_ids" "$reverify_ids")
+  fi
+
   if [ -z "$(printf '%s' "$candidate_ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no undispositioned PR issue comments on PR #${PR_NUMBER}"
     return 0
@@ -966,19 +1012,29 @@ resolve_dispositioned_comments() {
 
   local resolved_count=0
   local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
+  local reverify edited_at chosen_created stale_rc
   while IFS= read -r cid || [ -n "$cid" ]; do
     [ -z "$cid" ] && continue
 
+    # (b) above: an already-RESOLVED, edited bot comment. It is re-verified only
+    # when a fresh disposition straddles the edit (checked after selection below).
+    reverify="false"
+    if printf '%s\n' "$reverify_ids" | grep -qxF -- "$cid"; then
+      reverify="true"
+    fi
+
     # Re-read the ORIGINAL comment's CURRENT minimize state so a comment minimized
     # since enumeration is not double-processed; a fetch that can't confirm state
-    # fails closed (skip).
-    cur_minimized=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{isMinimized minimizedReason}}}' \
-      -f id="$cid" 2>/dev/null \
-      | jq -r 'if .data.node.isMinimized == null then "unknown"
-               elif .data.node.isMinimized then "true" else "false" end' 2>/dev/null || echo "unknown")
-    if [ "$cur_minimized" != "false" ]; then
-      echo "::notice::skipping comment ${cid} — already minimized or state unknown at re-check (${cur_minimized})"
-      continue
+    # fails closed (skip). A re-verify candidate is RESOLVED by construction.
+    if [ "$reverify" != "true" ]; then
+      cur_minimized=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{isMinimized minimizedReason}}}' \
+        -f id="$cid" 2>/dev/null \
+        | jq -r 'if .data.node.isMinimized == null then "unknown"
+                 elif .data.node.isMinimized then "true" else "false" end' 2>/dev/null || echo "unknown")
+      if [ "$cur_minimized" != "false" ]; then
+        echo "::notice::skipping comment ${cid} — already minimized or state unknown at re-check (${cur_minimized})"
+        continue
+      fi
     fi
 
     is_human=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
@@ -1017,6 +1073,43 @@ resolve_dispositioned_comments() {
       done < <(printf '%s' "$selection" | jq -r '.superseded[]? // empty' 2>/dev/null || true)
     fi
 
+    if [ "$reverify" = "true" ]; then
+      # Re-verify only when the chosen (latest) disposition was posted at/after the
+      # edit while a superseded one predates it — a fresh disposition answering an
+      # edited body. Anything else is a settled RESOLVED comment: leave it.
+      edited_at=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+        'first(.[] | select(.id == $id)) | .lastEditedAt // ""' 2>/dev/null || echo "")
+      local chosen_created straddles="false" sid sid_created
+      chosen_created=$(printf '%s' "${selection:-}" | jq -r '.chosen.createdAt // ""' 2>/dev/null || echo "")
+      stale_rc=0
+      cdv_disposition_is_stale "$edited_at" "$chosen_created" || stale_rc=$?
+      if [ "$stale_rc" -eq 2 ]; then
+        # Unreadable edit/disposition timestamp: fail closed — re-open the comment.
+        if gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+            -f id="$cid" >/dev/null 2>&1; then
+          echo "::notice::unminimized comment ${cid} — unreadable edit/disposition timestamp (#2008)"
+        else
+          echo "::warning::failed to unminimize comment ${cid} with an unreadable edit/disposition timestamp (#2008)"
+        fi
+        continue
+      fi
+      if [ "${auth_count:-0}" -gt 1 ] && [ -n "$chosen_created" ] \
+         && [ "$stale_rc" -ne 0 ]; then
+        for sid in "${superseded_ids[@]:-}"; do
+          [ -z "$sid" ] && continue
+          sid_created=$(printf '%s' "$all_comments" | jq -r --arg id "$sid" \
+            'first(.[] | select(.id == $id)) | .createdAt // ""' 2>/dev/null || echo "")
+          if cdv_disposition_is_stale "$edited_at" "$sid_created"; then
+            straddles="true"
+          fi
+        done
+      fi
+      if [ "$straddles" != "true" ]; then
+        continue
+      fi
+      echo "::notice::re-verifying comment ${cid} — edited at ${edited_at} after an earlier disposition; a fresh disposition ${chosen_reply_id} covers the current body (#2008)"
+    fi
+
     if [ "${auth_count:-0}" -lt 1 ] || [ -z "$chosen_reply_id" ]; then
       echo "::notice::skipping comment ${cid} — no authorized dev-lead disposition reply from ${bot_user} found; leaving open (#1813)"
       continue
@@ -1035,6 +1128,12 @@ resolve_dispositioned_comments() {
       fixed)
         if [ "$pass_outcome" = "failed" ]; then
           echo "::notice::skipping comment ${cid} — a \`fixed\` disposition is not certified on a failed pass (its commit may not have been pushed); leaving open (#1992)"
+          if [ "$reverify" = "true" ]; then
+            # Already RESOLVED with a stale body: fail closed by re-opening it.
+            gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+              -f id="$cid" >/dev/null 2>&1 \
+              || echo "::error::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)" >&2
+          fi
           continue
         fi
         # Bind the `fixed` evidence to THIS pass's commit — not merely any ancestor
@@ -1074,6 +1173,19 @@ resolve_dispositioned_comments() {
         local evidence
         evidence=$(printf '%s' "$reply_body" | jq -Rsr 'gsub("<!--.*?-->";"";"s") | gsub("\\s";"";"g")' 2>/dev/null || echo "")
         [ -n "$evidence" ] && verified="true"
+        # #2008: `informational` claims "no finding". It never verifies against a
+        # body carrying a finding-bearing section (e.g. CodeRabbit's Security
+        # Architecture Review beside a rate-limit block). A notice covers only its
+        # own section; each finding needs fixed/answered/invalid/out-of-scope.
+        if [ "$disposition" = "informational" ] && [ "$verified" = "true" ]; then
+          local orig_body
+          orig_body=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+            'first(.[] | select(.id == $id)) | .body // ""' 2>/dev/null || echo "")
+          if cdv_body_has_findings "$orig_body"; then
+            verified="false"
+            echo "::notice::comment ${cid} carries a finding-bearing section — an \`informational\` disposition cannot cover it; each finding needs a real disposition (#2008)"
+          fi
+        fi
         ;;
       *)
         verified="false"
@@ -1082,6 +1194,58 @@ resolve_dispositioned_comments() {
 
     if ! cdv_authorize "$disposition" "$is_human" "$verified"; then
       echo "::notice::skipping comment ${cid} — disposition '${disposition}' not authorized to resolve (is_human=${is_human} verified=${verified}); leaving open (#1813)"
+      if [ "$reverify" = "true" ]; then
+        # Fail closed: the fresh disposition answering the edit did not verify,
+        # and the older one predates the edit, so nothing covers the current body.
+        if gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+            -f id="$cid" >/dev/null 2>&1; then
+          echo "::notice::unminimized comment ${cid} — its post-edit disposition did not verify (#2008)"
+        else
+          echo "::warning::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)"
+        fi
+      fi
+      continue
+    fi
+
+    if [ "$reverify" = "true" ]; then
+      # Already RESOLVED. Only converge the superseded replies to OUTDATED, so the
+      # next pass sees exactly one disposition and does not re-verify again.
+      local rsid
+      for rsid in "${superseded_ids[@]:-}"; do
+        [ -z "$rsid" ] && continue
+        if gh api graphql -f query='mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}' \
+            -f id="$rsid" >/dev/null 2>&1; then
+          echo "::notice::minimized superseded disposition reply ${rsid} OUTDATED (#1992, #2008)"
+        else
+          echo "::warning::failed to minimize superseded disposition reply ${rsid} OUTDATED"
+        fi
+      done
+      continue
+    fi
+
+    # An un-minimized candidate must not be hidden from a disposition that predates
+    # its last edit (#2008 AC1): that judged an older body. Stale → leave visible
+    # for a fresh disposition; unreadable timestamp → fail closed, also visible.
+    edited_at=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+      'first(.[] | select(.id == $id)) | .lastEditedAt // ""' 2>/dev/null || echo "")
+    chosen_created=$(printf '%s' "${selection:-}" | jq -r '.chosen.createdAt // ""' 2>/dev/null || echo "")
+    stale_rc=0
+    cdv_disposition_is_stale "$edited_at" "$chosen_created" || stale_rc=$?
+    if [ "$stale_rc" -ne 1 ]; then
+      echo "::notice::not minimizing comment ${cid} — its disposition predates the last edit (${edited_at}) or a timestamp is unreadable; needs a fresh disposition (#2008)"
+      # Converge duplicates to one (#1992): minimize every superseded disposition
+      # reply OUTDATED before skipping, so a later pass sees exactly one authorized
+      # disposition even when the candidate is not yet minimized.
+      local sid
+      for sid in "${superseded_ids[@]:-}"; do
+        [ -z "$sid" ] && continue
+        if gh api graphql -f query='mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}' \
+            -f id="$sid" >/dev/null 2>&1; then
+          echo "::notice::minimized superseded disposition reply ${sid} OUTDATED (#1992)"
+        else
+          echo "::warning::failed to minimize superseded disposition reply ${sid} OUTDATED"
+        fi
+      done
       continue
     fi
 
