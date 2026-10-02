@@ -184,6 +184,9 @@ cdv_authorize() {
 #   need not have produced it. What it must do is POSTDATE the finding: the commit
 #   that introduced a defect necessarily predates the comment reporting it (the
 #   PR #1977 deadlock cited exactly that commit), while its fix postdates it.
+#   An issue comment has no file/line anchor (unlike a review thread), so there is
+#   no path to require the sha to touch; the non-empty own diff plus the
+#   postdates-finding rule is the strongest check available without guessing.
 #   Echoes "verified" and returns 0, or echoes a reason token and returns 1:
 #   not-on-head | on-base-branch | base-unknown | empty-diff | undated |
 #   predates-finding. Pure — no gh/git/network.
