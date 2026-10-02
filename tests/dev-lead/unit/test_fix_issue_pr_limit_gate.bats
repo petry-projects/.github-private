@@ -267,8 +267,27 @@ GUARDEOF
   rm -f "$CAP_SEEN_FILE"
 }
 
+# In workflows, ${{ vars.PR_LIMITS_ORG_CAP }} renders as "" (set-but-empty) when the
+# org variable is undefined, so that is the production "no override" path.
+@test "pr-limit gate: PR_LIMITS_ORG_CAP empty (undefined org var) → passed through as empty" {
+  export DEV_LEAD_DRY_RUN="false"
+  export PR_LIMITS_ORG_CAP=""
+  _install_cap_recording_guard
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CAP_SEEN_FILE")" = "" ]
+  rm -f "$CAP_SEEN_FILE"
+}
+
 @test "pr-limit gate: every workflow step running dev-lead-fix-issue.sh maps vars.PR_LIMITS_ORG_CAP" {
-  command -v yq >/dev/null || skip "yq not installed"
+  # yq is preinstalled on GitHub-hosted runners; never let this regression check
+  # silently vanish from CI (skip is for local runs only).
+  if ! command -v yq >/dev/null; then
+    [ -z "${CI:-}" ] || { echo "yq is required in CI" >&2; return 1; }
+    skip "yq not installed"
+  fi
   local wf steps found=0
   for wf in "$SCRIPT_DIR"/.github/workflows/*.yml; do
     # Step names (one per line) whose run: invokes the gate-running script.
