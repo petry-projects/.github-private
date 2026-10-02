@@ -68,7 +68,7 @@ JSON
 @test "200: envelope carries status, observed_at, and the body unmodified" {
   export MOCK_STATUS=200
   MOCK_BODY="$(_ok_body)"; export MOCK_BODY
-  run usage_telemetry_fetch
+  run --separate-stderr usage_telemetry_fetch
   [ "$status" -eq 0 ]
   [ "$(jq -r '.status' <<<"$output")" = "200" ]
   [ "$(jq -r '.observed_at' <<<"$output")" = "1000000000" ]
@@ -81,7 +81,7 @@ JSON
   export MOCK_STATUS=429
   export MOCK_RETRY_AFTER=120
   export MOCK_BODY='{"error":"rate_limited"}'
-  run usage_telemetry_fetch
+  run --separate-stderr usage_telemetry_fetch
   [ "$status" -eq 0 ]
   [ "$(jq -r '.status' <<<"$output")" = "429" ]
   [ "$(jq -r '.retry_after' <<<"$output")" = "120" ]
@@ -91,7 +91,7 @@ JSON
 @test "other non-200 (500): status set, no retry_after" {
   export MOCK_STATUS=500
   export MOCK_BODY='{"error":"server_error"}'
-  run usage_telemetry_fetch
+  run --separate-stderr usage_telemetry_fetch
   [ "$status" -eq 0 ]
   [ "$(jq -r '.status' <<<"$output")" = "500" ]
   [ "$(jq -r '.retry_after // "absent"' <<<"$output")" = "absent" ]
@@ -100,7 +100,7 @@ JSON
 @test "malformed body on a 200: body is omitted (library degrades to allow)" {
   export MOCK_STATUS=200
   export MOCK_BODY='this is not json <<<'
-  run usage_telemetry_fetch
+  run --separate-stderr usage_telemetry_fetch
   [ "$status" -eq 0 ]
   [ "$(jq -r '.status' <<<"$output")" = "200" ]
   # A non-JSON upstream body must not corrupt the envelope; it is dropped so the
@@ -111,7 +111,7 @@ JSON
 @test "missing-window: a 200 body with no windows passes through unmodified" {
   export MOCK_STATUS=200
   export MOCK_BODY='{"account":"x","limits":[]}'
-  run usage_telemetry_fetch
+  run --separate-stderr usage_telemetry_fetch
   [ "$status" -eq 0 ]
   [ "$(jq -r '.status' <<<"$output")" = "200" ]
   [ "$(jq -Sc '.body' <<<"$output")" = '{"account":"x","limits":[]}' ]
