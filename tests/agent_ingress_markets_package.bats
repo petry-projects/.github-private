@@ -56,6 +56,17 @@ teardown() {
   [ "$n" -ge 4 ]
 }
 
+@test "markets §3: each role job uses the target recorded in its own snapshot" {
+  local expected
+  expected="$(sed -n 's/^# PINNED-USES: //p' "$SNAPSHOTS/pr-auto-review-reusable.yml")"
+  [ -n "$expected" ]
+  [ "$(yq -r '.jobs["pr-auto-review"].uses' "$INGRESS")" = "$expected" ]
+
+  expected="$(sed -n 's/^# PINNED-USES: //p' "$SNAPSHOTS/ci-failure-analyst-reusable.yml")"
+  [ -n "$expected" ]
+  [ "$(yq -r '.jobs["ci-failure-analyst"].uses' "$INGRESS")" = "$expected" ]
+}
+
 @test "markets §3: validate-caller-inputs.sh passes against the pinned reusables (no collision)" {
   VCI_ROOT="$ROOT" VCI_RESOLVE_DIR="$SNAPSHOTS" run bash "$SCRIPT_DIR/scripts/validate-caller-inputs.sh"
   echo "$output"
