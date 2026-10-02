@@ -143,6 +143,59 @@ ${marker}
   [ "$status" -eq 1 ]
 }
 
+# ── rebase_conflict_state ─────────────────────────────────────────────────────
+# The authoritative post-condition check (#1890 AC #2): the rebase intent must
+# not report success from its exit code / a local trial-merge — it must assert
+# the PR's real GitHub mergeable state. rebase_conflict_state is the pure decision
+# over the (mergeable, mergeStateStatus) pair `gh pr view` returns.
+
+@test "rebase_conflict_state: CONFLICTING + DIRTY is conflicting" {
+  run rebase_conflict_state "CONFLICTING" "DIRTY"
+  [ "$status" -eq 0 ]
+  [ "$output" = "conflicting" ]
+}
+
+@test "rebase_conflict_state: mergeable CONFLICTING is conflicting regardless of state status" {
+  run rebase_conflict_state "CONFLICTING" "UNKNOWN"
+  [ "$output" = "conflicting" ]
+}
+
+@test "rebase_conflict_state: mergeStateStatus DIRTY is conflicting even if mergeable says MERGEABLE" {
+  run rebase_conflict_state "MERGEABLE" "DIRTY"
+  [ "$output" = "conflicting" ]
+}
+
+@test "rebase_conflict_state: MERGEABLE + CLEAN is resolved" {
+  run rebase_conflict_state "MERGEABLE" "CLEAN"
+  [ "$status" -eq 0 ]
+  [ "$output" = "resolved" ]
+}
+
+@test "rebase_conflict_state: MERGEABLE + BEHIND is resolved (base moved, not a conflict)" {
+  run rebase_conflict_state "MERGEABLE" "BEHIND"
+  [ "$output" = "resolved" ]
+}
+
+@test "rebase_conflict_state: MERGEABLE + BLOCKED is resolved (held by review, not a conflict)" {
+  run rebase_conflict_state "MERGEABLE" "BLOCKED"
+  [ "$output" = "resolved" ]
+}
+
+@test "rebase_conflict_state: UNKNOWN mergeable is indeterminate (GitHub still computing)" {
+  run rebase_conflict_state "UNKNOWN" "UNKNOWN"
+  [ "$output" = "indeterminate" ]
+}
+
+@test "rebase_conflict_state: empty inputs are indeterminate" {
+  run rebase_conflict_state "" ""
+  [ "$output" = "indeterminate" ]
+}
+
+@test "rebase_conflict_state: MERGEABLE + UNKNOWN is resolved (mergeable is a positive no-conflict signal)" {
+  run rebase_conflict_state "MERGEABLE" "UNKNOWN"
+  [ "$output" = "resolved" ]
+}
+
 # ── rebase_failure_reason ─────────────────────────────────────────────────────
 
 @test "rebase_failure_reason: exit 124 is described as a timeout on an unresolvable conflict" {
