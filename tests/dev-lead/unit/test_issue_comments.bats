@@ -265,5 +265,8 @@ setup() {
   run _ic_filter_human <<<'[]'
   [ "$status" -eq 0 ]
   [ -n "$output" ]
-  [ "$(printf '%s' "$output" | base64 -d)" = '{"login":"alice","created_at":"","body":"LAST_NO_NEWLINE"}' ]
+  local decoded
+  decoded=$(printf '%s' "$output" | base64 -d 2>/dev/null) ||
+    decoded=$(printf '%s' "$output" | base64 -D)
+  [ "$decoded" = '{"login":"alice","created_at":"","body":"LAST_NO_NEWLINE"}' ]
 }
