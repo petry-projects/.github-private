@@ -143,6 +143,7 @@ CFGEOF
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$PR_CREATED_FLAG" "$COMMENT_FILE"
+  [ -z "${CAP_SEEN_FILE:-}" ] || rm -f "$CAP_SEEN_FILE"
   rm -rf "$STUB_BIN_DIR" "$PLG_STANDARDS_DIR"
 }
 
@@ -223,4 +224,84 @@ teardown() {
   [ -f "$PR_CREATED_FLAG" ]
   [[ "$output" == *"::warning::"* ]]
   [[ "$output" == *"failing open"* ]]
+}
+
+# ── PR_LIMITS_ORG_CAP wiring (#2018) ─────────────────────────────────────────
+# The shared guard's plg_effective_org_cap (petry-projects/.github#1221) reads
+# PR_LIMITS_ORG_CAP as a runtime override for the org-wide cap. The org variable
+# only takes effect if every workflow step that runs the gate maps it into env.
+
+# Overwrite the fake guard with one that records the PR_LIMITS_ORG_CAP it sees
+# ("<unset>" when absent) so tests can assert the value reaches the gate.
+_install_cap_recording_guard() {
+  CAP_SEEN_FILE="$(mktemp)" || { echo "Failed to create temp file" >&2; return 1; }
+  export CAP_SEEN_FILE
+  cat > "$PLG_STANDARDS_DIR/scripts/lib/pr-limit-gate.sh" <<'GUARDEOF'
+#!/usr/bin/env bash
+plg_admission_gate() {
+  printf '%s' "${PR_LIMITS_ORG_CAP-<unset>}" > "$CAP_SEEN_FILE"
+  return 0
+}
+GUARDEOF
+}
+
+@test "pr-limit gate: PR_LIMITS_ORG_CAP from step env reaches plg_admission_gate" {
+  export DEV_LEAD_DRY_RUN="false"
+  export PR_LIMITS_ORG_CAP="42"
+  _install_cap_recording_guard
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CAP_SEEN_FILE")" = "42" ]
+  rm -f "$CAP_SEEN_FILE"
+}
+
+@test "pr-limit gate: PR_LIMITS_ORG_CAP unset → script does not inject a cap" {
+  export DEV_LEAD_DRY_RUN="false"
+  unset PR_LIMITS_ORG_CAP
+  _install_cap_recording_guard
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CAP_SEEN_FILE")" = "<unset>" ]
+  rm -f "$CAP_SEEN_FILE"
+}
+
+# In workflows, ${{ vars.PR_LIMITS_ORG_CAP }} renders as "" (set-but-empty) when the
+# org variable is undefined, so that is the production "no override" path.
+@test "pr-limit gate: PR_LIMITS_ORG_CAP empty (undefined org var) → passed through as empty" {
+  export DEV_LEAD_DRY_RUN="false"
+  export PR_LIMITS_ORG_CAP=""
+  _install_cap_recording_guard
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CAP_SEEN_FILE")" = "" ]
+  rm -f "$CAP_SEEN_FILE"
+}
+
+@test "pr-limit gate: every workflow step running dev-lead-fix-issue.sh maps vars.PR_LIMITS_ORG_CAP" {
+  # yq is preinstalled on GitHub-hosted runners; never let this regression check
+  # silently vanish from CI (skip is for local runs only).
+  if ! command -v yq >/dev/null; then
+    [ -z "${CI:-}" ] || { echo "yq is required in CI" >&2; return 1; }
+    skip "yq not installed"
+  fi
+  local wf count bad_steps found=0
+  for wf in "$SCRIPT_DIR"/.github/workflows/*.yml; do
+    count=$(yq -r '[.jobs[].steps[]? | select((.run // "") | test("dev-lead-fix-issue\\.sh"))] | length' "$wf")
+    [ "$count" -gt 0 ] || continue
+    found=$((found + count))
+    # Steps running the script that do not map the variable (unnamed-safe).
+    bad_steps=$(yq -r '.jobs[].steps[]? | select((.run // "") | test("dev-lead-fix-issue\\.sh")) | select(.env.PR_LIMITS_ORG_CAP != "${{ vars.PR_LIMITS_ORG_CAP }}") | (.name // "unnamed step")' "$wf")
+    [ -z "$bad_steps" ] || {
+      echo "$(basename "$wf"): steps lacking PR_LIMITS_ORG_CAP: $bad_steps" >&2
+      return 1
+    }
+  done
+  # Guard against the selector silently matching nothing.
+  [ "$found" -ge 2 ]
 }

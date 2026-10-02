@@ -80,8 +80,8 @@ reviewer_sources_advisory_gate_logins() {
 #   "<login>\t<check_run_name>" one per line. A bot listed here posts each review as
 #   a check run whose completed run counts as a real response even with zero PR
 #   comments/reviews (the Graphite clean-pass case, #1908). Empty output means no
-#   registered source reports via check runs. Data-driven: the scorecard reads this
-#   instead of hard-coding graphite-app.
+#   registered source reports via check runs. Data-driven: the scorecard and the
+#   advisory gate (#2005) read this instead of hard-coding graphite-app.
 reviewer_sources_check_run_reporters() {
   _reviewer_sources_manifest_or_die reviewer_sources_check_run_reporters || return 1
   awk -F'\t' '!/^[[:space:]]*#/ && $1 != "" && $5 != "" && $5 != "-" { print $1 "\t" $5 }' \
