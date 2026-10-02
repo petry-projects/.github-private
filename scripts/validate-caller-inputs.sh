@@ -286,7 +286,7 @@ vci_job_for_uses() {
 # vci_reusable_groups <reusable_file> — print every concurrency group the
 # reusable declares (workflow-level and job-level), one per line.
 vci_reusable_groups() {
-  yq '(.concurrency, .jobs[]?.concurrency) | select(. != null) | ((select(type == "object") | .group) // .) | select(. != null) | sub("\n"; " ")' "$1" 2>/dev/null
+  yq '(.concurrency, .jobs[]?.concurrency) | select(. != null) | ((select(tag == "!!map") | .group) // .) | select(. != null) | sub("\n"; " ")' "$1" 2>/dev/null
 }
 
 # vci_check_concurrency_collision <job> <caller_group> <reusable_file> [label] —

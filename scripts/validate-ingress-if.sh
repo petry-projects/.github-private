@@ -349,19 +349,19 @@ viif_job_concurrency() {
   local file="$1" job="$2" type_val group cancel=""
   type_val="$(yq ".jobs[\"$job\"].concurrency | type" "$file" 2>/dev/null)"
   case "$type_val" in
-    'object')
+    'object'|'!!map')
       group="$(yq ".jobs[\"$job\"].concurrency.group // \"\"" "$file" 2>/dev/null)"
       # Check that cancel-in-progress, if present, is a literal boolean (type == "boolean")
       local cancel_type
       cancel_type="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"] | type" "$file" 2>/dev/null)"
-      if [ "$cancel_type" = "boolean" ]; then
+      if [ "$cancel_type" = "boolean" ] || [ "$cancel_type" = "!!bool" ]; then
         cancel="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"]" "$file" 2>/dev/null)"
       elif [ "$(yq ".jobs[\"$job\"].concurrency | has(\"cancel-in-progress\")" "$file" 2>/dev/null)" = "true" ]; then
         # cancel-in-progress is present but not a boolean — this is an error, mark with special value
         cancel="__NOT_BOOLEAN__"
       fi
       ;;
-    'null'|'') group="" ;;
+    'null'|'!!null'|'') group="" ;;
     *) group="$(yq ".jobs[\"$job\"].concurrency" "$file" 2>/dev/null)" ;;
   esac
   printf '%s\x1f%s\n' "${group//$'\n'/ }" "$cancel"
