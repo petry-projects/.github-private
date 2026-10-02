@@ -110,6 +110,35 @@ readonly ADVISORY_CUBIC_LOGIN='cubic-dev-ai'
 # shellcheck disable=SC2034
 readonly ADVISORY_CUBIC_RATE_LIMIT_RE='cubic.{0,40}(trial|free trial) (ended|expired)'
 
+# Section-aware rate-limit scope for CodeRabbit (#2008). Its ONE summary comment,
+# edited in place, holds two independently throttled outputs: the code review (a
+# `rate limited by coderabbit.ai` block) and the Security Architecture Review (not
+# throttled with it; it can carry findings, PR #2000). jq def `rl_scope` (input
+# {bot, body}) returns only what the rate-limit regex may see: ONLY the rate-limited
+# block when present, even beside an architecture_review section, so a throttled
+# code review is still detected and retried; "" for any other CodeRabbit summary (a
+# walkthrough or a security section merely mentioning rate limits is no notice);
+# the whole body for everything else. A security section is evidence in its own
+# right: its findings are held by the maintainer gate and dispositioned through
+# reviewer_sources_finding_section_pattern, independently of this scope.
+# Shared by get_advisory_bot_states() and detect_advisory_rate_limit(), which also
+# order comments by lastEditedAt // createdAt (the summary is edited in place).
+# shellcheck disable=SC2034
+readonly _ADVISORY_RL_SCOPE_JQ='
+  def rl_scope:
+    (.body // "" | tostring) as $b
+    | ((.bot // "") | tostring | ascii_downcase | sub("\\[bot\\]$"; "")) as $who
+    | "<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->" as $rl_start
+    | "<!-- end of auto-generated comment: rate limited by coderabbit.ai -->" as $rl_end
+    | if $who == "coderabbitai"
+         and (($b | contains("<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"))
+              or ($b | contains($rl_start)))
+      then
+        if ($b | contains($rl_start)) then ($b | split($rl_start)[1] | split($rl_end)[0])
+        else "" end
+      else $b end;
+'
+
 # Gate classification alias — same canonical regex, so get_advisory_bot_states()
 # can never diverge from the sweep/scorecard detector.
 # shellcheck disable=SC2034
@@ -191,27 +220,41 @@ get_advisory_bot_states() {
     log_warn "gh pr view failed: $gh_output"
     return 2  # API error — distinct from "no bots yet" (1) so caller can fail-fast
   }
+  # gh pr view omits lastEditedAt; merge it in by node id so in-place edits (the
+  # CodeRabbit summary) are ordered by edit time (#2008). Best effort: on failure
+  # the snapshot is unchanged and ordering falls back to createdAt.
+  if ! declare -f maintainer_gate_merge_edit_times >/dev/null 2>&1; then
+    # shellcheck source=scripts/lib/maintainer-comment-gate.sh
+    source "$(dirname "${BASH_SOURCE[0]}")/maintainer-comment-gate.sh" 2>/dev/null || true
+  fi
+  if declare -f maintainer_gate_merge_edit_times >/dev/null 2>&1; then
+    gh_output=$(maintainer_gate_merge_edit_times "$PR_URL" "$gh_output" 2>/dev/null) || true
+  fi
+
   check_runs=$(_advisory_check_run_states "$gh_output" "$bot_array")
   [[ -n "$check_runs" ]] || check_runs='[]'
 
   echo "$gh_output" | jq -c --argjson bots "$bot_array" --arg markers "$RATE_LIMIT_MARKERS" \
     --arg cubic "$ADVISORY_CUBIC_LOGIN" --arg cubicre "$ADVISORY_CUBIC_RATE_LIMIT_RE" \
-    --argjson checkruns "$check_runs" '
+    --argjson checkruns "$check_runs" "$_ADVISORY_RL_SCOPE_JQ"'
     # Collect all bot submissions with their state. A comment whose body matches a
     # known rate-limit/usage-limit marker is classified RATE_LIMITED (the bot is out
     # of quota and cannot submit a real review); all other comments are COMMENTED.
     # The author-scoped cubic clause is applied ONLY to cubic'"'"'s own comments so a
     # different reviewer discussing cubic'"'"'s trial is never misclassified (#1903).
+    # The regex sees only the section-aware rl_scope of each body (#2008).
     # Clean check-run passes at the current head (#2005) join as COMMENTED.
     (
       $checkruns +
       [(.reviews // [])[] | select([.author.login] | inside($bots)) | {bot: .author.login, state: .state, time: .submittedAt}] +
-      [(.comments // [])[] | select([.author.login] | inside($bots)) | {
+      [(.comments // [])[] | select([.author.login] | inside($bots))
+        | ({bot: .author.login, body: (.body // "")} | rl_scope) as $scoped
+        | {
         bot: .author.login,
-        state: (if (((.body // "") | test($markers; "i"))
-                    or (((.author.login // "") | ascii_downcase) == $cubic and ((.body // "") | test($cubicre; "i"))))
+        state: (if (($scoped | test($markers; "i"))
+                    or (((.author.login // "") | ascii_downcase) == $cubic and ($scoped | test($cubicre; "i"))))
                 then "RATE_LIMITED" else "COMMENTED" end),
-        time: .createdAt
+        time: (.lastEditedAt // .createdAt)
       }]
     ) |
     # Group by bot, sort by time within each group, keep latest submission per bot
@@ -334,7 +377,9 @@ _advisory_cubic_login() {
 #   Returns 0 when a known advisory/review bot's LATEST submission body matches
 #   the rate-limit pattern; 1 otherwise. Only the latest submission per bot is
 #   considered, so a newer real review supersedes an older rate-limit notice
-#   (and vice versa). Non-bot authors are ignored.
+#   (and vice versa). Non-bot authors are ignored. "Latest" uses a comment's
+#   lastEditedAt when present, and the pattern sees only the section-aware
+#   rl_scope of the body (#2008, see _ADVISORY_RL_SCOPE_JQ).
 detect_advisory_rate_limit() {
   local json="${1:-}"
   [[ -z "$json" ]] && return 1
@@ -345,14 +390,18 @@ detect_advisory_rate_limit() {
   cubic_pattern=$(_advisory_cubic_rate_limit_pattern)
 
   matched=$(jq -r --argjson bots "$bot_array" --arg pat "$pattern" \
-    --arg cubic "$ADVISORY_CUBIC_LOGIN" --arg cubicre "$cubic_pattern" '
+    --arg cubic "$ADVISORY_CUBIC_LOGIN" --arg cubicre "$cubic_pattern" "$_ADVISORY_RL_SCOPE_JQ"'
     (
       [(.reviews // [])[]  | {bot: .author.login, time: .submittedAt, body: (.body // "")}] +
-      [(.comments // [])[] | {bot: .author.login, time: .createdAt,   body: (.body // "")}]
+      # A comment edited in place (CodeRabbit summary) is ordered by its last edit (#2008).
+      [(.comments // [])[] | {bot: .author.login, time: (.lastEditedAt // .createdAt), body: (.body // "")}]
     )
     | map(select(.bot as $b | $bots | any(. == $b)))
     | group_by(.bot)
     | map(sort_by(.time) | last)
+    # Section-aware (#2008): the regex sees only the rate-limited block of a
+    # CodeRabbit summary, whether or not it also carries a security review.
+    | map(.body = rl_scope)
     # Generic markers match any bot; the cubic clause only cubic'"'"'s own notice (#1903).
     | map(select((.body | test($pat; "i"))
                  or (((.bot // "") | ascii_downcase) == $cubic and (.body | test($cubicre; "i")))))
