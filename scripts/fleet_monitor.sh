@@ -14,6 +14,9 @@
 #   GH_PAT_FALLBACK — optional secondary token if primary lacks org-level access
 #   ORG             — GitHub org to scan (default: petry-projects)
 #   LOOKBACK_DAYS   — days of history to consider (default: 1)
+#   BUDGET_POLLER_REPO        — repo whose budget-poller-log artifact is read
+#                               (default: petry-projects/.github-private, #2029)
+#   BUDGET_POLLER_STALE_HOURS — warn when the last OK poll is older (default: 3)
 #   GITHUB_ENV      — written by Actions runner
 #   GITHUB_STEP_SUMMARY — written by Actions runner (1 MB hard limit per job)
 
@@ -26,6 +29,8 @@ source "${SCRIPT_DIR}/fleet_report.sh"
 source "${SCRIPT_DIR}/fleet_stub_drift.sh"
 # shellcheck source=scripts/lib/run-attribution.sh
 source "${SCRIPT_DIR}/lib/run-attribution.sh"
+# shellcheck source=scripts/lib/budget-poller.sh
+source "${SCRIPT_DIR}/lib/budget-poller.sh"
 
 ORG="${ORG:-petry-projects}"
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
@@ -573,6 +578,23 @@ for repo in "${repos[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 2f. Dry-run budget poller liveness (#2029, slice 2 of #1565)
+# Read the newest `budget-poller-log` artifact the hourly Budget Poller uploads
+# and report the age of the last OK telemetry record, the dry-run decision (which
+# window, what percent), and the burn rate. A last OK record older than
+# BUDGET_POLLER_STALE_HOURS (default 3) — or none at all — raises a `::warning::`
+# so a silently dead feed is visible. Best-effort and read-only: a missing
+# artifact or API error renders "no OK record", never fails the monitor.
+# ---------------------------------------------------------------------------
+budget_poller_log_file=$(mktemp)
+if ! bp_download_latest_log "${BUDGET_POLLER_REPO:-petry-projects/.github-private}" "$budget_poller_log_file"; then
+  echo "::notice::budget-poller: no readable ${BUDGET_POLLER_ARTIFACT} artifact — reporting no OK record"
+  : > "$budget_poller_log_file"
+fi
+budget_poller_now=$(date +%s)
+bp_staleness_warning "$budget_poller_log_file" "$budget_poller_now"
+
+# ---------------------------------------------------------------------------
 # 3. Generate reports
 # ---------------------------------------------------------------------------
 report_header() {
@@ -637,16 +659,23 @@ ingress_attribution_section() {
   rm -f "$attr_tsv" "$combined_attr_file"
 }
 
+# budget_poller_section — appends the dry-run budget poller liveness block
+# (#2029): last OK record age (STALE past the window), decision window + percent.
+budget_poller_section() {
+  printf '\n'
+  bp_fleet_section "$budget_poller_log_file" "$budget_poller_now"
+}
+
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
 # GitHub Step Summary has a 1 MB hard limit per job. At ~200 bytes per row
 # this supports ~5 000 workflows before truncation.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; ingress_attribution_section; stub_drift_section; } \
+  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; ingress_attribution_section; stub_drift_section; budget_poller_section; } \
     >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Report file — full report with Mermaid charts (used as Issue body)
-{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; ingress_attribution_section; stub_drift_section; } \
+{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; ingress_attribution_section; stub_drift_section; budget_poller_section; } \
   > "$REPORT_FILE"
 
 # ---------------------------------------------------------------------------
@@ -716,7 +745,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   [ "$persona_optout_incomplete_count" -gt 0 ] && echo "HAS_PERSONA_OPTOUT_DRIFT=true" >> "$GITHUB_ENV"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file" "$persona_optout_file" "$ingress_attr_file" "$legacy_attr_file"
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file" "$persona_optout_file" "$ingress_attr_file" "$legacy_attr_file" "$budget_poller_log_file"
 [ ${#stub_drift_files[@]} -gt 0 ] && rm -f "${stub_drift_files[@]}"
 
 # ---------------------------------------------------------------------------
