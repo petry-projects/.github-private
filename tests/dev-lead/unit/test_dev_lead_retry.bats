@@ -225,3 +225,37 @@ _sweep_nodes() {
   grep -q 'stale_disposition_needs_dispatch' "$RETRY_SCRIPT"
   grep -q 'lastEditedAt' "$RETRY_SCRIPT"
 }
+
+# _scan_with_hold <reset_iso>: run scan_pr_for_rate_limits on a PR whose only
+# marker is a fix-reviews hold resetting at <reset_iso>, with a stale-edited bot
+# comment waiting (the #2008 re-dispatch would fire if nothing else stopped it).
+_scan_with_hold() {
+  local reset="$1"
+  export HOLD_RESET="$reset"
+  gh() {
+    case "$*" in
+      *"/pulls/2000"*) echo '{"state":"open","head":{"sha":"abc"},"labels":[]}' ;;
+      *"/comments"*) jq -cn --arg r "$HOLD_RESET" '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=rate-limited reason=rate-limited reset=\($r) -->"]' ;;
+      *) echo '[]' ;;
+    esac
+  }
+  pr_resume_suppressed() { return 1; }
+  post_dispatch_guard() { :; }
+  fetch_pr_comment_nodes() { echo '[{"id":"IC_cr"}]'; }
+  stale_disposition_needs_dispatch() { return 0; }
+  dispatch_reviews_retry() { echo "DISPATCH intent=$4" >&2; }
+  run scan_pr_for_rate_limits "petry-projects/.github-private" 2000
+}
+
+@test "sweep(#2008): an active rate-limit hold also holds the edit re-dispatch" {
+  _scan_with_hold "2026-06-19T05:00:00Z"
+  [ "${lines[-1]}" = "0" ]
+  [[ "$output" != *"DISPATCH"* ]]
+  [[ "$output" != *"stale-disposition"* ]]
+}
+
+@test "sweep(#2008): once the hold has reset, the retry dispatch covers the edit (one run)" {
+  _scan_with_hold "2026-06-18T23:00:00Z"
+  [ "${lines[-1]}" = "1" ]
+  [ "$(grep -c 'DISPATCH' <<< "$output")" -eq 1 ]
+}

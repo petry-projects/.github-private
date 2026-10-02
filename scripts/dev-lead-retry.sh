@@ -368,6 +368,9 @@ scan_pr_for_rate_limits() {
   local guard_posted=0
 
   local dispatched=0
+  # Set when a rate-limit hold has not reset yet. A pass dispatched now would hit
+  # the same limit, so the #2008 edit re-dispatch below waits for the reset too.
+  local held=0
 
   # ── Check for fix-ci rate-limited marker on current HEAD SHA ──────────────
   local ci_pattern="${CI_MARKER_PREFIX}${head_sha} status=rate-limited"
@@ -376,11 +379,12 @@ scan_pr_for_rate_limits() {
     local reset_time
     reset_time=$(echo "$comments_json" | jq -r \
       --arg pat "$ci_pattern" \
-      '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?P<r>[0-9T:Z-]+)") | .r // ""' \
+      '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?<r>[0-9T:Z-]+)") | .r // ""' \
       2>/dev/null || true)
 
     if is_reset_in_future "$reset_time"; then
       echo "  [skip] fix-ci rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
+      held=1
     else
       # Skip if a terminal marker was already posted for this SHA (prior retry succeeded)
       local terminal_pattern="${CI_MARKER_PREFIX}${head_sha} status=(applied|failed|no-changes)"
@@ -390,7 +394,7 @@ scan_pr_for_rate_limits() {
         local check_name="CI failure"
         check_name=$(echo "$comments_json" | jq -r \
           --arg pat "$ci_pattern" \
-          '[.[] | select(. | test($pat))] | .[0] | capture("check=(?P<c>[^\\s\"<>]+)") | .c // "CI failure"' \
+          '[.[] | select(. | test($pat))] | .[0] | capture("check=(?<c>[^\\s\"<>]+)") | .c // "CI failure"' \
           2>/dev/null || echo "CI failure")
         if [ "$guard_posted" -eq 0 ]; then
           post_dispatch_guard "$repo" "$pr_number" "$head_sha"
@@ -415,11 +419,12 @@ scan_pr_for_rate_limits() {
       local reset_time
       reset_time=$(echo "$comments_json" | jq -r \
         --arg pat "$reviews_pattern" \
-        '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?P<r>[0-9T:Z-]+)") | .r // ""' \
+        '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?<r>[0-9T:Z-]+)") | .r // ""' \
         2>/dev/null || true)
 
       if is_reset_in_future "$reset_time"; then
         echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
+        held=1
         continue
       fi
 
@@ -451,9 +456,10 @@ scan_pr_for_rate_limits() {
   # ── #2008: a bot comment edited after its dev-lead disposition ─────────────
   # dev-lead never sees comment edits, so re-dispatch a fix-reviews pass to
   # re-disposition the current body. This runs only when nothing else was
-  # dispatched (that pass would see the edit too), and is deduplicated
-  # against fix-reviews runs that already ran after the edit.
-  if [ "$dispatched" -eq 0 ]; then
+  # dispatched (that pass would see the edit too) and no rate-limit hold is still
+  # active, and is deduplicated against fix-reviews runs that already ran after
+  # the edit.
+  if [ "$dispatched" -eq 0 ] && [ "$held" -eq 0 ]; then
     local comment_nodes
     comment_nodes=$(fetch_pr_comment_nodes "$repo" "$pr_number")
     if [ -n "$comment_nodes" ] && stale_disposition_needs_dispatch "$comment_nodes" "$pr_number"; then
