@@ -44,6 +44,14 @@ set -euo pipefail
 #   These intents fetch all needed context (open threads, PR metadata) fresh
 #   from the GitHub API at run time, so a re-dispatch has full fidelity.
 #
+# It ALSO re-dispatches fix-reviews for a bot comment EDITED after its dev-lead
+# disposition (#2008). CodeRabbit edits one summary comment in place, for example
+# to append a Security Architecture finding, and dev-lead only fires on CREATED
+# comments. The caller stub's `on:` is standards-owned, so this sweep is the
+# trigger. It is deduplicated: a successful fix-reviews run marker posted
+# at/after the edit means a pass already saw the edited body, so CodeRabbit's
+# frequent progress edits don't each spawn a run (stale_disposition_needs_dispatch).
+#
 # NOT retried automatically: on-mention, fix-bot-comment
 #   These intents require USER_INSTRUCTION / COMMENT_BODY from the original
 #   triggering event, which cannot be reconstructed from the PR's current
@@ -53,6 +61,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Escalation gate (#946): pr_has_escalation_label / NEEDS_HUMAN_REVIEW_LABEL.
 # shellcheck source=lib/pr-automation-budget.sh
 source "$SCRIPT_DIR/lib/pr-automation-budget.sh"
+# Stale-disposition detector (#2008): maintainer_gate_stale_dispositions.
+# shellcheck source=lib/maintainer-comment-gate.sh
+source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh"
 
 TARGET_ORG="${TARGET_ORG:-petry-projects}"
 DELEGATION_ORGS="${DELEGATION_ORGS:-}"
@@ -244,6 +255,66 @@ dispatch_issue_retry() {
   fi
 }
 
+# fetch_pr_comment_nodes <repo> <pr_number>
+#   Echo a JSON array of the PR's issue-comment nodes with the fields the #2008
+#   stale-disposition check needs, including lastEditedAt, which the REST comments
+#   API does not expose. Paginated GraphQL. Echoes nothing on any API failure, so
+#   the caller never dispatches on a guess.
+fetch_pr_comment_nodes() {
+  local repo="$1" pr_number="$2" page nodes all="[]" has_next="true" cursor="" pages=0
+  local -a cursor_args=()
+  # shellcheck disable=SC2016  # GraphQL variables, not shell
+  local q='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id author{login __typename} authorAssociation body createdAt isMinimized minimizedReason lastEditedAt}}}}}'
+  while [ "$has_next" = "true" ]; do
+    pages=$((pages + 1))
+    [ "$pages" -le 50 ] || return 0
+    page=$(gh api graphql -f query="$q" -F owner="${repo%%/*}" -F repo="${repo##*/}" \
+      -F pr="$pr_number" "${cursor_args[@]}" 2>/dev/null) || return 0
+    nodes=$(jq -c '.data.repository.pullRequest.comments.nodes // empty' <<< "$page" 2>/dev/null) || return 0
+    [ -n "$nodes" ] || return 0
+    all=$(jq -cn --argjson a "$all" --argjson b "$nodes" '$a + $b' 2>/dev/null) || return 0
+    has_next=$(jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage // false' <<< "$page" 2>/dev/null || echo false)
+    cursor=$(jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor // ""' <<< "$page" 2>/dev/null || echo "")
+    [ -n "$cursor" ] || has_next="false"
+    cursor_args=(-f "cursor=${cursor}")
+  done
+  printf '%s' "$all"
+}
+
+# stale_disposition_needs_dispatch <comment_nodes_json> <pr_number>
+#   0 when a fix-reviews pass should be dispatched for the #2008 edit re-open:
+#   some bot comment was edited strictly after its latest dev-lead disposition
+#   (maintainer_gate_stale_dispositions), AND no successful fix-reviews run marker
+#   for THIS PR (`<!-- dev-lead-fix-reviews pr=<N> … intent=fix-reviews
+#   status=applied|no-changes`) was posted at/after the latest such edit. The
+#   marker check is the dedup. A pass that already ran after the edit saw the
+#   current body, so a burst of CodeRabbit progress edits costs one run, not one per
+#   edit. A pass counts from when it STARTED (the marker's read_at=, a lower bound
+#   on when it read the comments), not when its marker was posted: a pass that
+#   began before the edit and finished after it never saw the edited body. A
+#   legacy marker without read_at= falls back to its createdAt.
+#   A failed pass does not count, so its comment is retried. Only a marker
+#   from a trusted author (OWNER/MEMBER/COLLABORATOR, as dev-lead's own markers
+#   are) counts, so an outside commenter pasting a success-shaped marker cannot
+#   suppress the re-dispatch. 1 otherwise, including unreadable input (never
+#   dispatch on a guess). Pure apart from reading the reviewer registry.
+stale_disposition_needs_dispatch() {
+  local nodes="$1" pr_number="$2" stale latest_edit later_runs
+  [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+  stale=$(maintainer_gate_stale_dispositions "$nodes" "${BOT_USER:-donpetry-bot}") || return 1
+  latest_edit=$(jq -r 'map(.lastEditedAt) | max // ""' <<< "$stale" 2>/dev/null) || return 1
+  [ -n "$latest_edit" ] || return 1
+  later_runs=$(jq -r --arg e "$latest_edit" \
+    --arg re "<!-- dev-lead-fix-reviews pr=${pr_number} [^>]*intent=fix-reviews status=(applied|no-changes)" '
+      [ .[] | objects
+        | select((.authorAssociation // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
+        | select((.body // "") | test($re))
+        | (.createdAt // "") as $posted
+        | ([(.body // "") | capture("read_at=(?<r>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)") | .r] | first // $posted) as $seen
+        | select($seen >= $e) ] | length' <<< "$nodes" 2>/dev/null) || return 1
+  [ "$later_runs" = "0" ]
+}
+
 # scan_pr_for_rate_limits <repo> <pr_number>
 # Checks the PR's comments for rate-limited markers and dispatches retries.
 # Prints only a single integer (retries dispatched) to stdout; all other
@@ -303,6 +374,9 @@ scan_pr_for_rate_limits() {
   local guard_posted=0
 
   local dispatched=0
+  # Set when a rate-limit hold has not reset yet. A pass dispatched now would hit
+  # the same limit, so the #2008 edit re-dispatch below waits for the reset too.
+  local held=0
 
   # ── Check for fix-ci rate-limited marker on current HEAD SHA ──────────────
   local ci_pattern="${CI_MARKER_PREFIX}${head_sha} status=rate-limited"
@@ -311,11 +385,12 @@ scan_pr_for_rate_limits() {
     local reset_time
     reset_time=$(echo "$comments_json" | jq -r \
       --arg pat "$ci_pattern" \
-      '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?P<r>[0-9T:Z-]+)") | .r // ""' \
+      '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?<r>[0-9T:Z-]+)") | .r // ""' \
       2>/dev/null || true)
 
     if is_reset_in_future "$reset_time"; then
       echo "  [skip] fix-ci rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
+      held=1
     else
       # Skip if a terminal marker was already posted for this SHA (prior retry succeeded)
       local terminal_pattern="${CI_MARKER_PREFIX}${head_sha} status=(applied|failed|no-changes)"
@@ -325,7 +400,7 @@ scan_pr_for_rate_limits() {
         local check_name="CI failure"
         check_name=$(echo "$comments_json" | jq -r \
           --arg pat "$ci_pattern" \
-          '[.[] | select(. | test($pat))] | .[0] | capture("check=(?P<c>[^\\s\"<>]+)") | .c // "CI failure"' \
+          '[.[] | select(. | test($pat))] | .[0] | capture("check=(?<c>[^\\s\"<>]+)") | .c // "CI failure"' \
           2>/dev/null || echo "CI failure")
         if [ "$guard_posted" -eq 0 ]; then
           post_dispatch_guard "$repo" "$pr_number" "$head_sha"
@@ -350,11 +425,12 @@ scan_pr_for_rate_limits() {
       local reset_time
       reset_time=$(echo "$comments_json" | jq -r \
         --arg pat "$reviews_pattern" \
-        '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?P<r>[0-9T:Z-]+)") | .r // ""' \
+        '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?<r>[0-9T:Z-]+)") | .r // ""' \
         2>/dev/null || true)
 
       if is_reset_in_future "$reset_time"; then
         echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
+        held=1
         continue
       fi
 
@@ -382,6 +458,26 @@ scan_pr_for_rate_limits() {
       dispatched=$(( dispatched + 1 ))
     fi
   done
+
+  # ── #2008: a bot comment edited after its dev-lead disposition ─────────────
+  # dev-lead never sees comment edits, so re-dispatch a fix-reviews pass to
+  # re-disposition the current body. This runs only when nothing else was
+  # dispatched (that pass would see the edit too) and no rate-limit hold is still
+  # active, and is deduplicated against fix-reviews runs that already ran after
+  # the edit.
+  if [ "$dispatched" -eq 0 ] && [ "$held" -eq 0 ]; then
+    local comment_nodes
+    comment_nodes=$(fetch_pr_comment_nodes "$repo" "$pr_number")
+    if [ -n "$comment_nodes" ] && stale_disposition_needs_dispatch "$comment_nodes" "$pr_number"; then
+      echo "  [stale-disposition] PR ${pr_number}: a bot comment was edited after its dev-lead disposition — re-dispatching fix-reviews (#2008)" >&2
+      if [ "$guard_posted" -eq 0 ]; then
+        post_dispatch_guard "$repo" "$pr_number" "$head_sha"
+        guard_posted=1
+      fi
+      dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "fix-reviews"
+      dispatched=$(( dispatched + 1 ))
+    fi
+  fi
 
   echo "$dispatched"
 }
