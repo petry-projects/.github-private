@@ -189,7 +189,7 @@ _mk_repo() {
 @test "ttg_scan_pass: same edit with a Test-Change-Justification trailer -> justified" {
   _mk_repo
   sed -i 's/= success/= SUCCESS/' tests/canary.bats
-  git commit -q -am $'fix: rename\n\nTest-Change-Justification: maintainer asked to upper-case the status token in review r4159678193'
+  git commit -q -am $'fix: rename\n\nTest-Change-Justification: maintainer asked to upper-case the status token in review #4159678193'
   run ttg_scan_pass "$BASE" HEAD
   [[ "$status" -eq 0 ]]
   [[ "$(printf '%s' "$output" | head -1)" == "justified" ]]

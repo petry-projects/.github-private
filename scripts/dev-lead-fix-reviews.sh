@@ -2269,10 +2269,10 @@ verify_push_landed() {
     return 0
   fi
   if [ "$remote_rc" -ne 0 ]; then
-    # `git push` itself succeeded; a failed read-back means "cannot verify", not
-    # "did not land". Warn and pass rather than abort and retract landed claims.
-    echo "::warning::push-landed check skipped — could not read the remote head back after a successful push (#2013)"
-    return 0
+    # Fail closed: an unreadable remote head is indeterminate, not "landed". Abort
+    # so the caller retracts this pass's claim replies (#2013).
+    echo "::error::push not verified (unknown): could not read the remote head back after the push (pre-pass head ${start}) — treating the push as failed (#2013)" >&2
+    return 1
   fi
   if [ -n "$remote" ] && [ -n "$pushed" ] && git merge-base --is-ancestor "$pushed" "$remote" 2>/dev/null; then
     on_remote=true
@@ -2294,9 +2294,10 @@ verify_push_landed() {
 # on the REMOTE head (acv_claim_in_pass); otherwise rewrite it with
 # cl_retract_body, which strips both markers so it can never resolve a thread.
 #
-# The reference head is the remote head. When it cannot be read: on an `ok`
-# outcome (no upstream, or a read-back failure after a successful push), the local HEAD is what was pushed; in every other case
-# nothing verifiably landed, so the pre-pass base is used and every claim fails.
+# The reference head is the remote head. When there is no upstream (rc 1) on an
+# `ok` outcome, the local HEAD is what was pushed; in every other case — including
+# a failed read-back (rc 2), which is indeterminate — nothing verifiably landed, so
+# the pre-pass base is used and every claim fails.
 # Idempotent: a retracted reply carries no marker and is never selected again.
 retract_unlanded_claims() {
   local intent="$1" outcome="${2:-ok}"
@@ -2314,7 +2315,7 @@ retract_unlanded_claims() {
   local ref="" ref_rc=0
   ref=$(cl_remote_head) || ref_rc=$?
   if [ -z "$ref" ]; then
-    if [ "$ref_rc" -ne 0 ] && [ "$outcome" = "ok" ]; then
+    if [ "$ref_rc" -eq 1 ] && [ "$outcome" = "ok" ]; then
       ref="$(git rev-parse HEAD 2>/dev/null || true)"
     else
       ref="$base"
