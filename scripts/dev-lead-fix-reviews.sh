@@ -892,6 +892,21 @@ resolve_addressed_bot_threads() {
 # reply itself), so our replies are never themselves treated as findings. The pass
 # is idempotent — an already-minimized comment is filtered out — and every decision
 # is delegated to the pure cdv_*/acv_* verifiers so it fails closed on any ambiguity.
+# fbc_target_resolved: prints "yes" when the comment this fix-bot-comment pass was
+# dispatched for (COMMENT_NODE_ID) is now minimized RESOLVED, "no" when it is not,
+# and "unknown" when its state cannot be read. A pass that ends without a verified
+# disposition for its comment must not post a terminal marker: the #2017 retry
+# reads that marker as "this pass completed on the comment" and would never
+# re-dispatch it, stranding the comment at the maintainer gate.
+fbc_target_resolved() {
+  [[ "${COMMENT_NODE_ID:-}" =~ ^[-A-Za-z0-9_+/=]+$ ]] || { echo "unknown"; return 0; }
+  gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{isMinimized minimizedReason}}}' \
+    -f id="$COMMENT_NODE_ID" 2>/dev/null \
+    | jq -r 'if (.data.node.isMinimized | type) != "boolean" then "unknown"
+             elif .data.node.isMinimized and ((.data.node.minimizedReason // "") | ascii_downcase) == "resolved" then "yes"
+             else "no" end' 2>/dev/null || echo "unknown"
+}
+
 resolve_dispositioned_comments() {
   local intent="$1"
   # $2 = "failed" when called from a failed/timed-out pass. On that path a
@@ -2343,6 +2358,12 @@ case "$INTENT_TYPE" in
       if [ "${RDC_STATE_UNKNOWN:-0}" = "1" ]; then
         echo "::warning::fix-bot-comment: a comment's current state could not be confirmed — withholding the terminal marker so the bot-comment retry can re-dispatch (#2017)"
         _fbc_terminal=""
+      elif [ -n "$_fbc_terminal" ] && [ -n "${COMMENT_NODE_ID:-}" ] && [ "${DEV_LEAD_DRY_RUN:-false}" != "true" ]; then
+        _fbc_resolved=$(fbc_target_resolved)
+        if [ "$_fbc_resolved" != "yes" ]; then
+          echo "::warning::fix-bot-comment: comment ${COMMENT_NODE_ID} has no verified disposition after this pass (state: ${_fbc_resolved}) — withholding the terminal marker so the bot-comment retry can re-dispatch within its attempt limits (#2017)"
+          _fbc_terminal=""
+        fi
       fi
       case "$_fbc_terminal" in
         applied)    post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed." ;;

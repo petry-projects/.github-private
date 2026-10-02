@@ -5017,3 +5017,40 @@ _expire_with() {
   [ "$status" -eq 0 ]
   [ "$(grep -x 'DELETED [0-9]*' <<< "$output" | tr '\n' ' ')" = "DELETED 1 DELETED 2 DELETED 3 " ]
 }
+
+# _target_state <graphql-response> [node_id]: run fbc_target_resolved against a
+# stubbed node query.
+_target_state() {
+  run bash -c "
+    eval \"\$(sed -n '/^fbc_target_resolved()/,/^}/p' '$FIX_REVIEWS_SCRIPT')\"
+    gh() { printf '%s' '$1'; }
+    export COMMENT_NODE_ID='${2-IC_kwDOabc123}'
+    fbc_target_resolved
+  "
+}
+
+@test "fix-reviews: fbc_target_resolved reads the dispatched comment's RESOLVED state (#2017)" {
+  _target_state '{"data":{"node":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}'
+  [ "$output" = "yes" ]
+  _target_state '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'
+  [ "$output" = "no" ]
+  _target_state '{"data":{"node":{"isMinimized":true,"minimizedReason":"OUTDATED"}}}'
+  [ "$output" = "no" ]
+  _target_state '{"errors":[{"message":"x"}]}'
+  [ "$output" = "unknown" ]
+  _target_state '{"data":{"node":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}' 'bad id;x'
+  [ "$output" = "unknown" ]
+}
+
+@test "fix-reviews: fix-bot-comment withholds its terminal marker unless its comment ended RESOLVED (#2017)" {
+  local block
+  block="$(sed -n '/build_and_run "fix-bot-comment"/,/try_enable_auto_merge/p' "$FIX_REVIEWS_SCRIPT")"
+  local resolver check terminal
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  check=$(grep -n 'fbc_target_resolved' <<< "$block" | head -1 | cut -d: -f1)
+  terminal=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
+  [ -n "$resolver" ] && [ -n "$check" ] && [ -n "$terminal" ]
+  [ "$resolver" -lt "$check" ]
+  [ "$check" -lt "$terminal" ]
+  grep -q '"$_fbc_resolved" != "yes"' <<< "$block"
+}
