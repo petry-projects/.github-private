@@ -289,7 +289,11 @@ fetch_pr_comment_nodes() {
 #   status=applied|no-changes`) was posted at/after the latest such edit. The
 #   marker check is the dedup. A pass that already ran after the edit saw the
 #   current body, so a burst of CodeRabbit progress edits costs one run, not one per
-#   edit. A failed pass does not count, so its comment is retried. Only a marker
+#   edit. A pass counts from when it STARTED (the marker's read_at=, a lower bound
+#   on when it read the comments), not when its marker was posted: a pass that
+#   began before the edit and finished after it never saw the edited body. A
+#   legacy marker without read_at= falls back to its createdAt.
+#   A failed pass does not count, so its comment is retried. Only a marker
 #   from a trusted author (OWNER/MEMBER/COLLABORATOR, as dev-lead's own markers
 #   are) counts, so an outside commenter pasting a success-shaped marker cannot
 #   suppress the re-dispatch. 1 otherwise, including unreadable input (never
@@ -305,7 +309,9 @@ stale_disposition_needs_dispatch() {
       [ .[] | objects
         | select((.authorAssociation // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
         | select((.body // "") | test($re))
-        | select((.createdAt // "") >= $e) ] | length' <<< "$nodes" 2>/dev/null) || return 1
+        | (.createdAt // "") as $posted
+        | ([(.body // "") | capture("read_at=(?<r>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)") | .r] | first // $posted) as $seen
+        | select($seen >= $e) ] | length' <<< "$nodes" 2>/dev/null) || return 1
   [ "$later_runs" = "0" ]
 }
 

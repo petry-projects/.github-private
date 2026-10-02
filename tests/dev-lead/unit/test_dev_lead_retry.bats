@@ -169,9 +169,9 @@ _marker() {
 # fix-reviews run marker posted at/after the edit means a pass already saw the
 # edited body, so CodeRabbit's frequent progress edits don't each spawn a run.
 
-# _sweep_nodes <lastEditedAt> <disposition_createdAt> [run_marker_createdAt] [run_marker_association]
+# _sweep_nodes <lastEditedAt> <disposition_createdAt> [run_marker_createdAt] [run_marker_association] [run_marker_read_at]
 _sweep_nodes() {
-  jq -cn --arg e "$1" --arg d "$2" --arg r "${3:-}" --arg ra "${4:-OWNER}" '
+  jq -cn --arg e "$1" --arg d "$2" --arg r "${3:-}" --arg ra "${4:-OWNER}" --arg rr "${5:-}" '
     [ {id:"IC_cr", author:{login:"coderabbitai", __typename:"Bot"}, authorAssociation:"NONE",
        body:"summary", createdAt:"2026-10-01T19:12:40Z", isMinimized:true, minimizedReason:"RESOLVED",
        lastEditedAt:$e},
@@ -180,7 +180,7 @@ _sweep_nodes() {
        createdAt:$d, isMinimized:false, minimizedReason:null, lastEditedAt:null} ]
     + (if $r == "" then [] else [
       {id:"IC_run", author:{login:"don-petry", __typename:"User"}, authorAssociation:$ra,
-       body:"<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=no-changes -->",
+       body:("<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=no-changes" + (if $rr == "" then "" else " read_at=\($rr)" end) + " -->"),
        createdAt:$r, isMinimized:false, minimizedReason:null, lastEditedAt:null} ] end)'
 }
 
@@ -213,6 +213,17 @@ _sweep_nodes() {
   run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z CONTRIBUTOR)" 2000
   [ "$status" -eq 0 ]
   run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z MEMBER)" 2000
+  [ "$status" -eq 1 ]
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z COLLABORATOR)" 2000
+  [ "$status" -eq 1 ]
+}
+
+@test "sweep(#2008): a pass that STARTED before the edit does not suppress the dispatch, even if it finished after" {
+  # Marker posted after the edit (20:36:15) by a pass that read the comments at 20:30.
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z OWNER 2026-10-01T20:30:00Z)" 2000
+  [ "$status" -eq 0 ]
+  # A pass that started after the edit does suppress it.
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z OWNER 2026-10-01T20:35:30Z)" 2000
   [ "$status" -eq 1 ]
 }
 

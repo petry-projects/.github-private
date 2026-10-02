@@ -5003,3 +5003,21 @@ _resolved_bot_comment() {
   [ ! -s "$MINLOG" ]
   [[ "$output" == *"predates the last edit"* ]]
 }
+
+@test "fix-reviews: terminal markers carry read_at= (when the pass started) for the #2008 stale-edit dedup" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true PASS_STARTED_AT=2026-10-02T21:00:00Z
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC_kwDOabc123'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"intent=fix-bot-comment status=no-changes read_at=2026-10-02T21:00:00Z -->"* ]]
+}
