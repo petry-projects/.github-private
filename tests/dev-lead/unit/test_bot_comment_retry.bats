@@ -282,6 +282,38 @@ ok')")"
   ! grep -q '/dispatches' "$GH_LOG"
 }
 
+@test "sweep: a lost run's expired attempt-1 marker does not block the attempt-2 retry" {
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=1 at=2026-10-01T22:00:00Z -->' 2026-10-01T22:00:00Z)")"
+  # The PR still carries the expired attempt-1 marker (id 100, older than ours).
+  # Only a listing scoped to attempt=2 sees our new marker (777) alone.
+  cat > "$MOCK_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in
+  *"/dispatches"*) cat > "$GH_LOG.payload"; exit 0 ;;
+  *"api graphql"*) printf '%s' "$GRAPHQL_RESPONSE" ;;
+  *"--method POST"*"/comments"*) echo "777" ;;
+  *"comments?per_page"*"attempt=2 "*) echo "777" ;;
+  *"comments?per_page"*"dev-lead-bot-comment-retry id="*) printf '100\n777\n' ;;
+  *"/pulls/"*) printf '%s' "$PR_JSON" ;;
+  *) echo "[]" ;;
+esac
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 0 ]
+  [ "${lines[-1]}" = "1" ]
+  [ "$(grep -c '/dispatches' "$GH_LOG")" -eq 1 ]
+  grep -q 'dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=2' "$GH_LOG"
+  ! grep -q -- '-X DELETE' "$GH_LOG"
+}
+
 @test "sweep: a closed PR is never swept" {
   export PR_JSON='{"state":"closed","head":{"sha":"abc","ref":"dev-lead/issue-1-x"},"user":{"login":"don-petry"},"labels":[]}'
   _setup_sweep

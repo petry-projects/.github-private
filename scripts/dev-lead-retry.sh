@@ -542,10 +542,12 @@ scan_pr_for_undispositioned_bot_comments() {
       echo "0"; return 0
     fi
     # Two concurrent scans can both have seen no marker. Keep only the earliest
-    # marker for this comment version; the loser withdraws and does not dispatch.
+    # marker for this comment version AND attempt; the loser withdraws and does
+    # not dispatch. Scoped to the attempt so a lost run's expired attempt-N marker
+    # never wins against the attempt-N+1 retry that replaces it.
     local first_marker
     first_marker=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-      --jq '.[] | select((.body // "") | contains("dev-lead-bot-comment-retry id='"${cid}"' version='"${version}"' ")) | .id' \
+      --jq '.[] | select((.body // "") | contains("dev-lead-bot-comment-retry id='"${cid}"' version='"${version}"' attempt='"${attempt}"' ")) | .id' \
       2>/dev/null | sort -n | head -n1) || first_marker=""
     if [ -n "$first_marker" ] && [ "$first_marker" != "$marker_id" ]; then
       echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent scan already recorded a retry" >&2
