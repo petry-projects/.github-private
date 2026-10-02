@@ -17,7 +17,9 @@
 #   ts, epoch                  — poll time (UTC ISO-8601, epoch seconds)
 #   poll                       — "ok" | "degraded"
 #   reason                     — degraded cause (transport-error | http-<s> |
-#                                malformed-body | public-library-unavailable), else null
+#                                malformed-body | public-library-unavailable |
+#                                telemetry-publish-failed | weekly-glide-arm-failed),
+#                                else null
 #   http_status, retry_after   — from the envelope (never the token)
 #   session_pct, weekly_all_pct, session_resets_at, weekly_all_resets_at
 #                              — via the public library's own extractors
@@ -64,7 +66,7 @@ bp_now() {
 bp_stale_hours() {
   local v="${BUDGET_POLLER_STALE_HOURS:-}"
   if [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -gt 0 ]; then
-    printf '%s' "$v"
+    printf '%s' "$((10#$v))"
   else
     printf '%s' "$BUDGET_POLLER_STALE_HOURS_DEFAULT"
   fi
@@ -116,6 +118,8 @@ bp_build_record() {
   local now="$1" http="$2" retry="$3" s_pct="$4" w_pct="$5" s_reset="$6" w_reset="$7"
   local s_dec="$8" g_dec="$9" g_enabled="${10}" reason_override="${11}" prev="${12:-}"
   [ -n "$prev" ] && jq -e 'type == "object"' <<<"$prev" >/dev/null 2>&1 || prev='null'
+  # A malformed clock must not abort the record (`--argjson` would fail under set -e).
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
 
   jq -cn \
     --argjson now "$now" \
@@ -144,7 +148,7 @@ bp_build_record() {
     | ( if $reason_override != "" then $reason_override
         elif $status == 0 then "transport-error"
         elif $status != 200 then "http-\($status)"
-        elif $sp == null or $wp == null then "malformed-body"
+        elif $sp == null or $wp == null or $wr == null then "malformed-body"
         else null end ) as $reason
     | (if $reason == null then "ok" else "degraded" end) as $poll
     | ( [ (if $s_dec == "defer" then "session" else empty end),
@@ -173,6 +177,7 @@ bp_build_record() {
         weekly_glide_decision: $g_dec,
         weekly_glide_config_enabled: ($g_enabled == "true"),
         would_pause: (($tripped | length) > 0),
+        indeterminate: (($tripped | length) == 0 and ($s_dec == "unavailable" or $g_dec == "unavailable")),
         decision_window: $window,
         decision_pct: $dpct,
         burn_session_pph: $bs,
@@ -199,6 +204,8 @@ bp_decision_text() {
       "would pause on `\(.decision_window)`"
       + (if .decision_pct != null then " at \(.decision_pct)%" else "" end)
       + " (dry-run — nothing was set)"
+    elif .indeterminate == true then
+      "indeterminate — a gate was unavailable (session=\(.session_decision // "n/a"), weekly_glide=\(.weekly_glide_decision // "n/a")); nothing was set"
     else
       "would allow (session=\(pct(.session_pct)), weekly_all=\(pct(.weekly_all_pct)))"
     end' <<<"$1" 2>/dev/null || printf 'unknown'
@@ -211,10 +218,11 @@ bp_decision_text() {
 bp_append_record() {
   local log="$1" record="$2" max="${3:-720}" tmp
   [[ "$max" =~ ^[0-9]+$ ]] && [ "$max" -gt 0 ] || max=720
-  printf '%s\n' "$record" >> "$log"
+  # Fail-open: a write failure warns and returns 0 rather than aborting a `set -e` caller.
+  printf '%s\n' "$record" >> "$log" || { bp_log "warning: failed to append the poll record to ${log}"; return 0; }
   tmp="$(mktemp "${log}.XXXXXX")" || { bp_log "warning: failed to create temp file for log pruning"; return 0; }
   if tail -n "$max" "$log" > "$tmp"; then
-    mv -f "$tmp" "$log"
+    mv -f "$tmp" "$log" || rm -f "$tmp"
   else
     rm -f "$tmp"
   fi
@@ -312,15 +320,20 @@ bp_fleet_section() {
 # ---------------------------------------------------------------------------
 # bp_download_latest_log <repo> <dest_file> — fetch the newest unexpired
 # `$BUDGET_POLLER_ARTIFACT` artifact from <repo> (read-only `gh api`) and write
-# its JSONL log to <dest_file>. Returns 0 on success, 1 when none is available
-# (first-ever poll, expired, or an API error) — callers treat 1 as "no previous
-# log", never as fatal.
+# its JSONL log to <dest_file>. Only artifacts produced by runs on the repo's
+# default branch are trusted (any other run could otherwise plant a same-named
+# artifact). Returns 0 on success, 1 when none is available (first-ever poll or
+# expired), 2 on an API error — callers treat 1 as "no previous log" and must NOT
+# overwrite the durable log on 2 (the history still exists, it just was not read).
 # ---------------------------------------------------------------------------
 bp_download_latest_log() {
-  local repo="$1" dest="$2" ids id workdir found
-  ids="$(gh api "repos/${repo}/actions/artifacts?name=${BUDGET_POLLER_ARTIFACT}&per_page=10" \
-    --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[].id' \
-    2>/dev/null || printf '')"
+  local repo="$1" dest="$2" ids id workdir found branch
+  branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || printf '')"
+  # `gh --jq` takes no --arg, so the branch is interpolated: allow-list its charset.
+  [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]] || branch="main"
+  ids="$(gh api "repos/${repo}/actions/artifacts?name=${BUDGET_POLLER_ARTIFACT}&per_page=30" \
+    --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"${branch}\")] | sort_by(.created_at) | reverse | .[].id" \
+    2>/dev/null)" || return 2
   # Newest first; fall through to older artifacts when one is unreadable/malformed.
   for id in $ids; do
     [[ "$id" =~ ^[0-9]+$ ]] || continue

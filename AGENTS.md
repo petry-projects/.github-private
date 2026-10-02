@@ -800,7 +800,7 @@ pending the pause-vs-degrade decision.
 - **How to read it:** each record carries `ts`, `http_status`, `retry_after`,
   `session_pct`, `weekly_all_pct`, both windows' `*_resets_at`, `session_decision`,
   `weekly_glide_decision` (`allow`/`defer`/`unavailable`), `would_pause`,
-  `decision_window` (`session` / `weekly_all` / `transport-429` / `none`),
+  `decision_window` (`session` / `weekly_all` / `session,weekly_all` / `transport-429` / `none`),
   `decision_pct`, and `burn_session_pph` / `burn_weekly_all_pph`. The burn fields
   are percentage points per hour against the previous OK record and are logged only.
   They are `null` on the first-ever poll or when the window reset in between, and
