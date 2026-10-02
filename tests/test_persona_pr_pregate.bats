@@ -44,19 +44,19 @@ case "$jqf" in
   '[.[][].filename]')  printf '%s\n' "${STUB_FILES:-[]}";  exit "${STUB_FILES_RC:-0}"  ;;
   '.changed_files')    printf '%s\n' "${STUB_CHANGED:-0}"; exit "${STUB_CHANGED_RC:-0}" ;;
   '[.labels[]?.name]') printf '%s\n' "${STUB_LABELS:-[]}"; exit "${STUB_LABELS_RC:-0}" ;;
-  '.[].body')          printf '%s' "${STUB_COMMENT_BODIES:-}"; exit "${STUB_COMMENTS_RC:-0}" ;;
+  'if type == "array" then .[].body else error("expected comments array") end') printf '%s' "${STUB_COMMENT_BODIES:-}"; exit "${STUB_COMMENTS_RC:-0}" ;;
   '')
     # gather_pr_automation_events raw calls (no --jq, piped to jq -s downstream)
     case "$url" in
       *"/issues/"*"/comments"*) printf '%s\n' "${STUB_RAW_COMMENTS:-[]}" ;;
       *"/commits"*)             printf '%s\n' "${STUB_RAW_COMMITS:-[]}" ;;
       *"/reviews"*)             printf '%s\n' "${STUB_RAW_REVIEWS:-[]}" ;;
-      *)                        printf '[]\n' ;;
+      *) echo "::error::gh stub: unhandled url '$url'" >&2; exit 42 ;;
     esac
     exit "${STUB_GATHER_RC:-0}"
     ;;
 esac
-printf '[]\n'
+echo "::error::gh stub: unhandled --jq filter '$jqf'" >&2; exit 42
 STUB
   chmod +x "$STUB_BIN/gh"
   PATH="$STUB_BIN:$PATH"

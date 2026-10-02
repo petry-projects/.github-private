@@ -41,7 +41,7 @@ persona_generic_already_advised_gate() {
   local persona="$1" repo="$2" item="$3" marker bodies
   marker="$(pr_agent_marker "$persona")"
   if ! bodies="$(gh api --paginate \
-      "repos/${repo}/issues/${item}/comments" --jq '.[].body')"; then
+      "repos/${repo}/issues/${item}/comments" --jq 'if type == "array" then .[].body else error("expected comments array") end')"; then
     echo "::error::persona pull_request pre-gate: existing-advisory scan unavailable for ${repo}#${item} — failing closed (skip)" >&2
     printf 'skip:signal-unavailable\n'
     return 1

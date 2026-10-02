@@ -101,7 +101,7 @@ qa_lead_pr_gather_and_decide() {
   # recursion marker. A comment API failure is indistinguishable from "no marker",
   # so failing open here would risk a duplicate advisory — fail closed instead.
   if ! comment_bodies="$(gh api --paginate \
-      "repos/${repo}/issues/${pr}/comments" --jq '.[].body')"; then
+      "repos/${repo}/issues/${pr}/comments" --jq 'if type == "array" then .[].body else error("expected comments array") end')"; then
     _qa_lead_pr_gate_fail_closed "$repo" "$pr" "existing-advisory scan unavailable"
     return 1
   fi

@@ -211,6 +211,14 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
+            # Policy skips stay green; an unreadable signal / malformed dispatch
+            # must be a retryable failure, not a silently lost advisory.
+            case "$decision" in
+              skip:signal-unavailable | skip:unknown-surface | "")
+                echo "::error::persona pre-gate could not decide (${decision:-no decision})"
+                exit 1
+                ;;
+            esac
           fi
 
       - name: Resolve the persona's posting identity from its manifest
