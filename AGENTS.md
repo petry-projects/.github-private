@@ -143,6 +143,15 @@ at all (this was the deadlock reported in #1911). Two changes close this:
   **before** the original is minimized `RESOLVED`. It **still refuses another *human's* comment** —
   that restriction is exactly why #1910 was self-scoped — and fails closed if it cannot read the
   registry, the comment's author, or the invoking viewer.
+- **A notice never clears findings, and edits re-open a bot's comment (#2008).** CodeRabbit puts
+  outputs that are throttled independently into ONE summary comment and edits it in place. A
+  rate-limit block can sit beside a Security Architecture Review that reports real findings.
+  - No `info_status_pattern`, maintainer-resolve bot path, or `informational` disposition clears a body
+    with a finding-bearing section (`reviewer_sources_finding_section_pattern`).
+  - A `RESOLVED` registered-bot comment edited after its latest covering disposition blocks again.
+    Its `lastEditedAt` is compared with the disposition's `createdAt`, and an unreadable edit time
+    fails closed. The comment stays blocked until a fresh disposition covers the current body. See
+    `docs/pr-review-agent/maintainer-comment-gate.md`.
 
 ### The org automation-PR cap is real and near-silent
 

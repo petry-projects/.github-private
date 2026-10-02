@@ -438,3 +438,50 @@ SHIM
   [ ! -f "$BATS_TEST_TMPDIR/gh-reply.log" ]
   [ ! -f "$BATS_TEST_TMPDIR/gh-min.log" ]
 }
+
+# ────────────────────────────────────────────────────────────────────
+# #2008 — a rate-limit notice must never clear findings. CodeRabbit's live summary
+# (PR #2000, comment 5938681830) carries the OSS rate-limit block AND a Security
+# Architecture Review with a Medium finding in ONE comment; the bot path must
+# refuse it, and the finding-section guard must refuse any finding-bearing body
+# even when a registered pattern would otherwise match it.
+# ────────────────────────────────────────────────────────────────────
+
+_mrc_fake_gh_file() {
+  # $1 = author __typename, $2 = author login, $3 = file holding the RAW body.
+  local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
+  jq -cn --arg t "$1" --arg l "$2" --rawfile b "$3" \
+    '{data:{viewer:{login:"don-petry"},node:{author:{__typename:$t,login:$l},body:$b,isMinimized:false,minimizedReason:null,url:"https://github.com/o/r/pull/1#issuecomment-1"}}}' \
+    > "$BATS_TEST_TMPDIR/node.json"
+  cat > "$bin/gh" <<SHIM
+#!/usr/bin/env bash
+if [[ "\$*" == *"viewer{login}"* ]]; then
+  cat "$BATS_TEST_TMPDIR/node.json"
+  exit 0
+fi
+echo "\$*" >> "$BATS_TEST_TMPDIR/gh-writes.log"
+printf '%s' '{"data":{}}'
+SHIM
+  chmod +x "$bin/gh"
+  export PATH="$bin:$PATH"
+}
+
+@test "#2008: PR #2000's CodeRabbit summary (rate-limit block + security finding) is refused on the bot path (exit 3, no write)" {
+  _mrc_fake_gh_file Bot coderabbitai "$BATS_TEST_DIRNAME/../../fixtures/coderabbit/pr2000-ratelimited-with-security-finding.md"
+  run bash "$MRC" "IC_kwDOfake1" --reason "rate-limit notice only"
+  [ "$status" -eq 3 ]
+  echo "$output" | grep -qi "refusing to resolve"
+  [ ! -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
+}
+
+@test "#2008: mrc_bot_body_matches refuses a finding-bearing body even when the pattern matches" {
+  local pats body
+  # A deliberately permissive pattern: the section guard, not the pattern, must refuse.
+  pats=$'coderabbitai\tReview limit reached'
+  body=$'Review limit reached\n<!-- architecture_review_start -->\n**Retained concerns**\n- **Medium · security · inferred:** real finding.\n<!-- architecture_review_end -->'
+  run bash -c "source '$MRC'; mrc_bot_body_matches coderabbitai \"\$2\" \"\$1\"" _ "$pats" "$body"
+  [ "$status" -eq 1 ]
+  # The same permissive pattern on a finding-free body is still authorized.
+  run bash -c "source '$MRC'; mrc_bot_body_matches coderabbitai 'Review limit reached' \"\$1\"" _ "$pats"
+  [ "$status" -eq 0 ]
+}
