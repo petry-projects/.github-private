@@ -141,16 +141,22 @@ build_and_run() {
 # intent on subsequent runs when the SHA hasn't changed.
 #
 # A fix-bot-comment marker also names the comment the pass processed
-# (` comment=<node id>`, #2017): the undispositioned bot-comment retry in
-# dev-lead-retry.sh reads it as "a pass already ENDED on this comment version" and
-# does not re-dispatch one that finished without a disposition. Only a well-formed
-# node id is stamped, so a malformed value can never break out of the marker.
+# (` comment=<node id>`, #2017) and the VERSION of the body it read
+# (` version=<ISO-8601>`, the comment's lastEditedAt // createdAt): the
+# undispositioned bot-comment retry in dev-lead-retry.sh reads it as "a pass
+# already ENDED on this comment version" and does not re-dispatch one that
+# finished without a disposition — while an edit made during the pass stays open.
+# Only a well-formed node id / timestamp is stamped, so a malformed value can
+# never break out of the marker.
 post_reviews_terminal() {
   local intent="$1" status="${2:-applied}" summary="${3:-}"
   local sha_part="" comment_part=""
   [ -n "${HEAD_SHA:-}" ] && sha_part=" sha=${HEAD_SHA}"
   if [ "$intent" = "fix-bot-comment" ] && [[ "${COMMENT_NODE_ID:-}" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
     comment_part=" comment=${COMMENT_NODE_ID}"
+    if [[ "${COMMENT_VERSION:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]]; then
+      comment_part="${comment_part} version=${COMMENT_VERSION}"
+    fi
   fi
   local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_part} intent=${intent} status=${status}${comment_part} -->"
 
@@ -1648,7 +1654,7 @@ post_reviews_rate_limited() {
       fix-bot-comment)
         # #2017: the cron's undispositioned bot-comment scan re-dispatches the pass
         # (re-reading the comment by node id) while it still lacks a disposition.
-        retry_msg="The retry cron will re-attempt automatically while the bot comment still lacks a disposition."
+        retry_msg="The retry cron will re-attempt automatically after the rate limit resets, while the bot comment still lacks a disposition."
         ;;
       on-mention)
         retry_msg="Please re-trigger manually (re-mention \`@dev-lead\`) when the rate limit clears — the original request cannot be reconstructed automatically."
@@ -2175,16 +2181,22 @@ case "$INTENT_TYPE" in
   fix-bot-comment)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" COMMENT_BODY="${COMMENT_BODY:-}" COMMENT_NODE_ID="${COMMENT_NODE_ID:-}" HEAD_SHA
+    export COMMENT_VERSION="${COMMENT_VERSION:-}"
     fetch_pr_context
     rc=0
     build_and_run "fix-bot-comment" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
     if [ "$rc" -eq 0 ]; then
       cp_rc=0
+      # The terminal marker reads as "this pass ENDED on the comment" to the
+      # bot-comment retry (#2017), so it is posted only AFTER the disposition
+      # resolver below has run: a pass cancelled (or a resolver that dies) before
+      # then leaves no marker, and the retry re-dispatches instead of stalling.
+      _fbc_terminal=""
       commit_and_push "fix-bot-comment" || cp_rc=$?
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
-        post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
+        _fbc_terminal="applied"
       elif [ "$cp_rc" -eq 3 ]; then
         # No-op guard (#1340): the fix nets base…head to zero — already flagged
         # for a human, auto-merge disabled. Post no terminal marker and do not
@@ -2194,19 +2206,20 @@ case "$INTENT_TYPE" in
         notify_coderabbit_resolve
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — fix-bot-comment is not retried automatically; posting terminal marker"
-          post_no_changes "fix-bot-comment"
         elif has_tier1_blockers; then
           echo "::warning::Unresolved bot review threads remain — fix-bot-comment is not automatically retried; posting no-changes terminal marker"
-          post_no_changes "fix-bot-comment"
-        else
-          post_no_changes "fix-bot-comment"
         fi
+        _fbc_terminal="no-changes"
       fi
       # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
       # Outside the review-thread resolution gate for the same reason as fix-reviews:
       # each disposition is independently verified, so a non-`fixed` disposition
       # needs no head advance. Runs on every successful pass, net-zero included.
       resolve_dispositioned_comments "fix-bot-comment"
+      case "$_fbc_terminal" in
+        applied)    post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed." ;;
+        no-changes) post_no_changes "fix-bot-comment" ;;
+      esac
       if [ "$cp_rc" -ne 3 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).

@@ -207,7 +207,7 @@ matches_info_status_pattern() {
 # read or does not belong to this PR.
 classify_bot_comment_retry() {
   local pr_number="$1"
-  local node_id node login typename body pr_of state head_ref pr_author minimized reason
+  local node_id node login typename body pr_of pr_repo state cross_repo pr_author minimized reason version
   node_id=$(jq -r '.client_payload.comment_node_id // empty' "$EVENT_PATH" 2>/dev/null || true)
   # Same well-formed-node-id rule the workflow applies before exporting it.
   if [[ ! "$node_id" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
@@ -218,7 +218,7 @@ classify_bot_comment_retry() {
   # shellcheck disable=SC2016  # $id is a GraphQL variable placeholder, not shell
   node=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{
       id author{login __typename} body createdAt lastEditedAt isMinimized minimizedReason
-      pullRequest{number state headRefName author{login}} }}}' \
+      pullRequest{number state isCrossRepository author{login} repository{nameWithOwner}} }}}' \
     -f id="$node_id" 2>/dev/null | jq -ce '.data.node | objects | select(.id != null)' 2>/dev/null) || node=""
   if [ -z "$node" ]; then
     emit_skip "bot-comment-retry-fetch-failed"
@@ -228,13 +228,17 @@ classify_bot_comment_retry() {
   typename=$(jq -r '.author.__typename // ""' <<< "$node")
   body=$(jq -r '.body // ""' <<< "$node")
   pr_of=$(jq -r '.pullRequest.number // ""' <<< "$node")
+  pr_repo=$(jq -r '.pullRequest.repository.nameWithOwner // ""' <<< "$node")
   state=$(jq -r '.pullRequest.state // ""' <<< "$node")
-  head_ref=$(jq -r '.pullRequest.headRefName // ""' <<< "$node")
+  # Only an explicit `false` is a same-repository head; missing data fails closed.
+  cross_repo=$(jq -r 'if .pullRequest.isCrossRepository == false then "false" else "true" end' <<< "$node")
   pr_author=$(jq -r '.pullRequest.author.login // ""' <<< "$node")
+  version=$(jq -r '.lastEditedAt // .createdAt // ""' <<< "$node")
   minimized=$(jq -r 'if .isMinimized == true then (.minimizedReason // "" | ascii_downcase) else "" end' <<< "$node")
 
-  # The comment must be on THIS PR — a payload cannot aim a pass at another PR's comment.
-  if [ "$pr_of" != "$pr_number" ]; then
+  # The comment must be on THIS PR of THIS repository — a payload cannot aim a pass
+  # at another PR's comment, nor at a same-numbered PR in another repository.
+  if [ "$pr_of" != "$pr_number" ] || [ -z "$pr_repo" ] || [ "$pr_repo" != "${GITHUB_REPOSITORY:-}" ]; then
     emit_skip "bot-comment-retry-pr-mismatch"
     return 0
   fi
@@ -244,19 +248,18 @@ classify_bot_comment_retry() {
   fi
   # GraphQL reports a bot's login without the [bot] suffix the webhook uses.
   login="${login%"[bot]"}"
-  if [ -z "$login" ] || [ "$typename" = "User" ] || ! is_trusted_bot "${login}[bot]"; then
+  # Only a genuine Bot author: a missing or unknown type fails closed.
+  if [ -z "$login" ] || [ "$typename" != "Bot" ] || ! is_trusted_bot "${login}[bot]"; then
     emit_skip "bot-comment-retry-untrusted-author"
     return 0
   fi
-  # Authorship gate (#1311), from the PR the comment belongs to.
-  case "$head_ref" in
-    dev-lead/issue-*) : ;;
-    *)
-      if [ -z "$pr_author" ] || [ "$pr_author" != "$BOT_USER" ]; then
-        emit_skip "not-dev-lead-authored"
-        return 0
-      fi ;;
-  esac
+  # Authorship gate (#1311), from the PR the comment belongs to: dev-lead must be
+  # the PR's AUTHOR and the head must live in this repository. The branch name is
+  # never evidence of ownership — any contributor (or fork) can choose it.
+  if [ -z "$pr_author" ] || [ "$pr_author" != "$BOT_USER" ] || [ "$cross_repo" != "false" ]; then
+    emit_skip "not-dev-lead-authored"
+    return 0
+  fi
   if [ "$minimized" = "resolved" ]; then
     emit_skip "bot-comment-already-resolved"
     return 0
@@ -269,29 +272,40 @@ classify_bot_comment_retry() {
   # Cheap no-op when the work is already done: a covering disposition (or a
   # completed fix-bot-comment pass) on the comment's current version — e.g. the
   # original event-driven run finished while this retry was queued behind it.
-  # Best-effort: if the PR's comments cannot be read, run the pass anyway; the
-  # fix-bot-comment prompt re-checks for an existing disposition itself.
+  # Fails closed: when the PR's disposition state cannot be read, skip rather than
+  # run a remediation pass blind. The sweep's retry marker stays pending, so the
+  # next attempt follows after the pending window.
   reason=$(
     # shellcheck source=scripts/lib/bot-comment-retry.sh
-    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bot-comment-retry.sh" 2>/dev/null || exit 0
-    comments=$(bcr_fetch_pr_comments "$GITHUB_REPOSITORY" "$pr_number") || exit 0
-    bcr_retry_decisions "$comments" "$TRUSTED_BOTS" '{}' "$(date -u +%s)" 2>/dev/null \
-      | jq -r --arg id "$node_id" 'first(.[] | select(.id == $id)) | .reason // ""' 2>/dev/null || true
-  ) || reason=""
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bot-comment-retry.sh" 2>/dev/null \
+      || { echo "state-unreadable"; exit 0; }
+    comments=$(bcr_fetch_pr_comments "$GITHUB_REPOSITORY" "$pr_number") \
+      || { echo "state-unreadable"; exit 0; }
+    # Dispositions and pass markers are dev-lead's own (BOT_USER) — no other
+    # author's marker may suppress the pass.
+    decisions=$(bcr_retry_decisions "$comments" "$TRUSTED_BOTS" '{}' "$(date -u +%s)" "$BOT_USER" 2>/dev/null) \
+      || { echo "state-unreadable"; exit 0; }
+    jq -r --arg id "$node_id" 'first(.[] | select(.id == $id)) | .reason // ""' <<< "$decisions" 2>/dev/null \
+      || echo "state-unreadable"
+  ) || reason="state-unreadable"
   case "$reason" in
-    dispositioned)  emit_skip "bot-comment-already-dispositioned"; return 0 ;;
-    pass-completed) emit_skip "bot-comment-pass-completed"; return 0 ;;
+    dispositioned)    emit_skip "bot-comment-already-dispositioned"; return 0 ;;
+    pass-completed)   emit_skip "bot-comment-pass-completed"; return 0 ;;
+    state-unreadable) emit_skip "bot-comment-retry-state-unreadable"; return 0 ;;
   esac
 
   # Same context shape as the issue_comment path: no head_sha, so the pass
   # resolves the PR's CURRENT head at run time rather than the sweep-time one.
+  # comment_version is the version of THIS body — the pass stamps it on its
+  # terminal marker, so an edit made while it runs is not mistaken as processed.
   local context
   context=$(jq -nc \
     --argjson pr_number "$pr_number" \
     --arg actor "${login}[bot]" \
     --arg body "$body" \
     --arg comment_node_id "$node_id" \
-    '{"pr_number":$pr_number,"actor":$actor,"body":$body,"comment_node_id":$comment_node_id}')
+    --arg comment_version "$version" \
+    '{"pr_number":$pr_number,"actor":$actor,"body":$body,"comment_node_id":$comment_node_id,"comment_version":$comment_version}')
   emit_intent "fix-bot-comment" "bot-comment-retry-dispatch" "$context"
 }
 
@@ -569,6 +583,9 @@ case "$EVENT_NAME" in
     # The triggering comment's GraphQL node id — fix-bot-comment targets its
     # disposition by id instead of re-matching the raw body in a shell command.
     comment_node_id=$(jq -r '.comment.node_id // empty' "$EVENT_PATH" 2>/dev/null || true)
+    # The version of the body this event carries (#2017): fix-bot-comment stamps it
+    # on its terminal marker so the bot-comment retry knows which edit was processed.
+    comment_version=$(jq -r '.comment.updated_at // .comment.created_at // empty' "$EVENT_PATH" 2>/dev/null || true)
 
     # Rebase sentinel check (highest priority, before bot-skip)
     if echo "$comment_body" | grep -qF "<!-- auto-rebase-conflict:"; then
@@ -588,7 +605,8 @@ case "$EVENT_NAME" in
       --arg actor "${commenter:-}" \
       --arg body "${comment_body:-}" \
       --arg comment_node_id "${comment_node_id:-}" \
-      '{"pr_number":$pr_number,"actor":$actor,"body":$body,"comment_node_id":$comment_node_id}')
+      --arg comment_version "${comment_version:-}" \
+      '{"pr_number":$pr_number,"actor":$actor,"body":$body,"comment_node_id":$comment_node_id,"comment_version":$comment_version}')
 
     if is_trusted_bot "$commenter"; then
       # Authorship gate (#1311): a bot comment only drives dev-lead's auto-fix/

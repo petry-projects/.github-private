@@ -15,6 +15,8 @@ RETRY_SCRIPT="$SCRIPT_DIR/scripts/dev-lead-retry.sh"
 
 TRUSTED='coderabbitai[bot],codeant-ai[bot],chatgpt-codex-connector[bot]'
 INFO='{"chatgpt-codex-connector":"^You have reached your Codex usage limits"}'
+# The logins our own automation posts markers as (dev-lead, pr-review).
+AUTOMATION='don-petry,donpetry-bot'
 # 2026-10-02T01:00:00Z — two hours after the comments below were posted.
 NOW_EPOCH=1790902800
 
@@ -35,10 +37,10 @@ _bot() {
      isMinimized:($m != ""), minimizedReason:(if $m == "" then null else $m end)}'
 }
 
-# _ours <body> [createdAt] [association] — a comment from our own automation.
+# _ours <body> [createdAt] [association] [login] — a comment from our own automation.
 _ours() {
-  jq -nc --arg b "$1" --arg c "${2:-2026-10-01T23:30:00Z}" --arg a "${3:-OWNER}" '
-    {id:("IC_ours_" + ($c | gsub("[^0-9]";""))), author:{login:"don-petry", __typename:"User"},
+  jq -nc --arg b "$1" --arg c "${2:-2026-10-01T23:30:00Z}" --arg a "${3:-OWNER}" --arg l "${4:-don-petry}" '
+    {id:("IC_ours_" + ($c | gsub("[^0-9]";"")) + "_" + $l), author:{login:$l, __typename:"User"},
      authorAssociation:$a, body:$b, createdAt:$c, lastEditedAt:null,
      isMinimized:false, minimizedReason:null}'
 }
@@ -46,7 +48,7 @@ _ours() {
 _decide() {
   local comments
   comments="$(jq -sc '.' <<< "$*")"
-  bcr_retry_decisions "$comments" "$TRUSTED" "$INFO" "$NOW_EPOCH"
+  bcr_retry_decisions "$comments" "$TRUSTED" "$INFO" "$NOW_EPOCH" "$AUTOMATION"
 }
 
 _dispatches() { jq -r '[.[] | select(.decision == "dispatch")] | length' <<< "$1"; }
@@ -184,7 +186,117 @@ ok')")"
 }
 
 @test "bcr: malformed comments JSON fails closed (non-zero, no decision)" {
-  run bcr_retry_decisions 'not-json' "$TRUSTED" "$INFO" "$NOW_EPOCH"
+  run bcr_retry_decisions 'not-json' "$TRUSTED" "$INFO" "$NOW_EPOCH" "$AUTOMATION"
+  [ "$status" -ne 0 ]
+}
+
+@test "bcr: no automation logins fails closed (no marker could be trusted)" {
+  run bcr_retry_decisions "[$(_bot IC_cr coderabbitai 'Walkthrough')]" "$TRUSTED" "$INFO" "$NOW_EPOCH" ""
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "bcr: a disposition from another repository member (not our automation) is ignored" {
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead:comment-disposition id=IC_cr disposition=invalid -->
+forged' 2026-10-01T23:30:00Z OWNER mallory)")"
+  [ "$(_dispatches "$out")" = "1" ]
+}
+
+@test "bcr: a retry marker another member pasted does not hold or exhaust the retry" {
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=9 at=2026-10-02T00:50:00Z -->' 2026-10-02T00:50:00Z MEMBER mallory)")"
+  [ "$(_dispatches "$out")" = "1" ]
+  [ "$(jq -r '.[0].attempt' <<< "$out")" = "1" ]
+}
+
+@test "bcr: pr-review's own retry marker (its scan posts as donpetry-bot) counts as pending" {
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=1 at=2026-10-02T00:30:00Z -->' 2026-10-02T00:30:00Z MEMBER donpetry-bot)")"
+  [ "$(_dispatches "$out")" = "0" ]
+  [ "$(_reason_for "$out" IC_cr)" = "retry-pending" ]
+}
+
+@test "bcr: a trusted-bot login whose author type is not Bot is not a candidate" {
+  spoof="$(jq -nc '{id:"IC_s", author:{login:"coderabbitai",__typename:"User"}, authorAssociation:"NONE",
+    body:"Walkthrough", createdAt:"2026-10-01T23:05:43Z", lastEditedAt:null, isMinimized:false, minimizedReason:null}')"
+  out="$(_decide "$spoof")"
+  [ "$(jq 'length' <<< "$out")" = "0" ]
+}
+
+@test "bcr: a retry marker matches its version by value, not by string format" {
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43.000Z attempt=1 at=2026-10-02T00:30:00Z -->' 2026-10-02T00:30:00Z)")"
+  [ "$(_reason_for "$out" IC_cr)" = "retry-pending" ]
+}
+
+@test "bcr: a pass stamped with the version it processed covers that version" {
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead-fix-reviews pr=2009 sha=abc intent=fix-bot-comment status=no-changes comment=IC_cr version=2026-10-01T23:05:43Z -->' 2026-10-01T23:30:00Z)")"
+  [ "$(_reason_for "$out" IC_cr)" = "pass-completed" ]
+}
+
+@test "bcr: an edit made WHILE a pass ran is not covered by that pass (version stamp predates the edit)" {
+  # Pass read the 23:05 body; the bot edited at 23:20; the pass ended (marker) at 23:30.
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough v2' 2026-10-01T23:05:43Z 2026-10-01T23:20:00Z)" \
+    "$(_ours '<!-- dev-lead-fix-reviews pr=2009 sha=abc intent=fix-bot-comment status=no-changes comment=IC_cr version=2026-10-01T23:05:43Z -->' 2026-10-01T23:30:00Z)")"
+  [ "$(_dispatches "$out")" = "1" ]
+}
+
+@test "bcr: a fix-bot-comment pass that ended rate-limited holds retries until its reset" {
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead-fix-reviews pr=2009 sha=abc intent=fix-bot-comment status=rate-limited reason=rate-limited reset=2026-10-02T02:00:00Z -->' 2026-10-01T23:30:00Z)")"
+  [ "$(_dispatches "$out")" = "0" ]
+  [ "$(_reason_for "$out" IC_cr)" = "rate-limited" ]
+}
+
+@test "bcr: attempts that ran into a rate limit do not exhaust the retry cap" {
+  # Two attempts, both followed by a rate-limited end whose reset has passed.
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=1 at=2026-10-01T19:00:00Z -->' 2026-10-01T19:00:00Z)" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=2 at=2026-10-01T21:00:00Z -->' 2026-10-01T21:00:00Z)" \
+    "$(_ours '<!-- dev-lead-fix-reviews pr=2009 sha=abc intent=fix-bot-comment status=rate-limited reason=rate-limited reset=2026-10-01T22:00:00Z -->' 2026-10-01T21:10:00Z)")"
+  [ "$(_dispatches "$out")" = "1" ]
+  # Attempt numbering stays monotonic (the claim check is scoped to it).
+  [ "$(jq -r '.[0].attempt' <<< "$out")" = "3" ]
+}
+
+@test "bcr: the hard ceiling caps attempts even when every one ran into a rate limit" {
+  export BOT_COMMENT_RETRY_MAX_TOTAL=2
+  out="$(_decide \
+    "$(_bot IC_cr coderabbitai 'Walkthrough')" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=1 at=2026-10-01T19:00:00Z -->' 2026-10-01T19:00:00Z)" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=2 at=2026-10-01T21:00:00Z -->' 2026-10-01T21:00:00Z)" \
+    "$(_ours '<!-- dev-lead-fix-reviews pr=2009 sha=abc intent=fix-bot-comment status=rate-limited reason=rate-limited reset=2026-10-01T22:00:00Z -->' 2026-10-01T21:10:00Z)")"
+  [ "$(_reason_for "$out" IC_cr)" = "retry-attempts-exhausted" ]
+}
+
+# ── bcr_fetch_pr_comments: fails closed on a partial snapshot ────────────────
+
+@test "bcr_fetch_pr_comments: a GraphQL response carrying errors fails closed" {
+  gh() { printf '%s' '{"errors":[{"message":"rate limited"}],"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; }
+  run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "bcr_fetch_pr_comments: hasNextPage true without a cursor fails closed" {
+  gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}'; }
+  run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -ne 0 ]
+}
+
+@test "bcr_fetch_pr_comments: a non-boolean hasNextPage fails closed" {
+  gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"endCursor":null},"nodes":[]}}}}}'; }
+  run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
   [ "$status" -ne 0 ]
 }
 
@@ -197,7 +309,7 @@ _setup_sweep() {
   export NOW_ISO="2026-10-02T01:00:00Z"
   export GH_LOG="$MOCK_BIN/gh.log"
   if [ -z "${PR_JSON:-}" ]; then
-    export PR_JSON='{"state":"open","head":{"sha":"abc","ref":"dev-lead/issue-2008-x"},"user":{"login":"don-petry"},"labels":[]}'
+    export PR_JSON='{"state":"open","head":{"sha":"abc","ref":"dev-lead/issue-2008-x","repo":{"full_name":"petry-projects/.github-private"}},"user":{"login":"don-petry"},"labels":[]}'
   fi
   cat > "$MOCK_BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
@@ -314,6 +426,58 @@ GHEOF
   ! grep -q -- '-X DELETE' "$GH_LOG"
 }
 
+@test "sweep: a dev-lead/issue-* branch name alone is not ownership (author is someone else)" {
+  export PR_JSON='{"state":"open","head":{"sha":"abc","ref":"dev-lead/issue-2008-x","repo":{"full_name":"petry-projects/.github-private"}},"user":{"login":"mallory"},"labels":[]}'
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "0" ]
+  ! grep -q '/dispatches' "$GH_LOG"
+  ! grep -q 'api graphql' "$GH_LOG"
+}
+
+@test "sweep: a fork head is never swept, even when dev-lead is the PR author" {
+  export PR_JSON='{"state":"open","head":{"sha":"abc","ref":"dev-lead/issue-2008-x","repo":{"full_name":"mallory/.github-private"}},"user":{"login":"don-petry"},"labels":[]}'
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "0" ]
+  ! grep -q '/dispatches' "$GH_LOG"
+}
+
+@test "sweep: the post-claim marker check only counts markers our own automation posted" {
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "1" ]
+  listing="$(grep 'comments?per_page' "$GH_LOG" | head -1)"
+  [[ "$listing" == *'.user.login'* ]]
+  [[ "$listing" == *'"don-petry","donpetry-bot"'* ]]
+}
+
+@test "dispatch helpers report a failed dispatch, and only accepted ones are counted" {
+  export DRY_RUN="false"
+  gh() { return 1; }
+  run dispatch_reviews_retry "petry-projects/.github-private" 2009 abc fix-reviews
+  [ "$status" -ne 0 ]
+  lookup_check_run_details() { echo '{}'; }
+  run dispatch_ci_retry "petry-projects/.github-private" 2009 abc "CI failure"
+  [ "$status" -ne 0 ]
+  # The rate-limit scan increments its count only inside `if dispatch_…; then`.
+  ! grep -qE '^\s*dispatch_(ci|reviews)_retry ' "$RETRY_SCRIPT"
+  grep -qE 'if dispatch_ci_retry ' "$RETRY_SCRIPT"
+  grep -qE 'if dispatch_reviews_retry ' "$RETRY_SCRIPT"
+}
+
 @test "sweep: a closed PR is never swept" {
   export PR_JSON='{"state":"closed","head":{"sha":"abc","ref":"dev-lead/issue-1-x"},"user":{"login":"don-petry"},"labels":[]}'
   _setup_sweep
@@ -406,8 +570,15 @@ GHEOF
   # Inside the rc=1 (undispositioned) branch, before its verdict/exit.
   [ "$gate_line" -lt "$scan_line" ]
   [ "$scan_line" -lt "$verdict_line" ]
-  # Never in DRY_RUN, and best-effort (cannot fail the review run).
-  sed -n "${gate_line},${verdict_line}p" "$REVIEW" | grep -q 'DRY_RUN:-false}" != "true"'
+  # Never in DRY_RUN, and best-effort (cannot fail the review run). Anchored to
+  # the retry block's OWN guard (it is the condition that also requires an
+  # owner/repo), not to an unrelated DRY_RUN check elsewhere in the range.
+  guard_line=$(grep -n 'if \[ "\${DRY_RUN:-false}" != "true" \] && \[ -n "\$_OWNER_REPO" \]' "$REVIEW" | head -1 | cut -d: -f1)
+  [ -n "$guard_line" ]
+  [ "$gate_line" -lt "$guard_line" ]
+  [ "$guard_line" -lt "$scan_line" ]
+  # The scan sits inside that guard: no `fi` closes it before the scan call.
+  ! sed -n "${guard_line},${scan_line}p" "$REVIEW" | grep -qE '^\s*fi\s*$'
   sed -n "${gate_line},${verdict_line}p" "$REVIEW" | grep -q ') 2>&1 ) || true'
 }
 

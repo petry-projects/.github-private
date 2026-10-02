@@ -31,7 +31,9 @@ case "$*" in
   *"api graphql"*"node(id"*) printf '%s' "$NODE_JSON" ;;
   *"api graphql"*) jq -nc --argjson n "$COMMENTS_JSON" \
        '{data:{repository:{pullRequest:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:$n}}}}}' ;;
-  *) exit 0 ;;
+  # Any other call is unexpected in the classify path — fail it so a new API
+  # call surfaces as a test failure instead of silently returning empty data.
+  *) exit 1 ;;
 esac
 GHEOF
   chmod +x "$MOCK_BIN/gh"
@@ -68,21 +70,28 @@ _event() {
                      + (if $b == "" then {} else {body:$b} end))}' > "$EVENT_FILE"
 }
 
-# _node <login> <body> [minimizedReason] [pr_number] [head_ref] [state] [lastEditedAt]
+# _node <login> <body> [minimizedReason] [pr_number] [pr_author] [state] [lastEditedAt]
+#       [author_typename] [isCrossRepository] [repo]
 _node() {
   NODE_JSON="$(jq -nc --arg l "$1" --arg b "$2" --arg m "${3:-}" \
-    --argjson pr "${4:-2009}" --arg ref "${5:-dev-lead/issue-2008-x}" --arg st "${6:-OPEN}" \
-    --arg e "${7:-}" '
-    {data:{node:{id:"IC_cr", author:{login:$l}, body:$b,
+    --argjson pr "${4:-2009}" --arg pa "${5:-don-petry}" --arg st "${6:-OPEN}" \
+    --arg e "${7:-}" --arg ty "${8-Bot}" --argjson cross "${9:-false}" \
+    --arg repo "${10:-petry-projects/.github-private}" '
+    {data:{node:{id:"IC_cr", author:({login:$l} + (if $ty == "" then {} else {__typename:$ty} end)), body:$b,
       createdAt:"2026-10-01T23:05:43Z", lastEditedAt:(if $e == "" then null else $e end),
       isMinimized:($m != ""), minimizedReason:(if $m == "" then null else $m end),
-      pullRequest:{number:$pr, state:$st, headRefName:$ref, author:{login:"don-petry"}}}}}')"
+      pullRequest:{number:$pr, state:$st, isCrossRepository:$cross, author:{login:$pa},
+                   repository:{nameWithOwner:$repo}}}}}')"
   export NODE_JSON
 }
 
+# The PR's own copy of the bot comment, as the disposition check reads it.
+CR_NODE='{"id":"IC_cr","author":{"login":"coderabbitai","__typename":"Bot"},"authorAssociation":"NONE",
+    "body":"Walkthrough","createdAt":"2026-10-01T23:05:43Z","lastEditedAt":null,"isMinimized":false,"minimizedReason":null}'
+
 @test "bot-comment retry: re-fetches the comment by node id and routes to fix-bot-comment with its CURRENT body" {
   _event IC_cr "STALE PAYLOAD BODY"
-  _node coderabbitai "Edited walkthrough — current body" "" 2009 dev-lead/issue-2008-x OPEN 2026-10-01T23:40:00Z
+  _node coderabbitai "Edited walkthrough — current body" "" 2009 don-petry OPEN 2026-10-01T23:40:00Z
 
   run bash "$INTENT_SCRIPT"
   [ "$status" -eq 0 ]
@@ -90,6 +99,8 @@ _node() {
   [ "$(_get_env INTENT_REASON)" = "bot-comment-retry-dispatch" ]
   [ "$(_ctx body)" = "Edited walkthrough — current body" ]
   [ "$(_ctx comment_node_id)" = "IC_cr" ]
+  # The version of the body it read, for the pass's terminal marker.
+  [ "$(_ctx comment_version)" = "2026-10-01T23:40:00Z" ]
   [ "$(_ctx actor)" = "coderabbitai[bot]" ]
   [ "$(_ctx pr_number)" = "2009" ]
   # It asked for the node by id (not a body search) and read lastEditedAt.
@@ -136,7 +147,7 @@ _node() {
 @test "bot-comment retry: comment already carries a current disposition → skip" {
   _event IC_cr
   _node coderabbitai "Walkthrough"
-  export COMMENTS_JSON='[{"id":"IC_cr","author":{"login":"coderabbitai"},"authorAssociation":"NONE",
+  export COMMENTS_JSON='[{"id":"IC_cr","author":{"login":"coderabbitai","__typename":"Bot"},"authorAssociation":"NONE",
     "body":"Walkthrough","createdAt":"2026-10-01T23:05:43Z","lastEditedAt":null,"isMinimized":false,"minimizedReason":null},
     {"id":"IC_d","author":{"login":"don-petry","__typename":"User"},"authorAssociation":"OWNER",
     "body":"<!-- dev-lead:comment-disposition id=IC_cr disposition=informational -->\nok",
@@ -176,7 +187,7 @@ _node() {
 
 @test "bot-comment retry: PR is closed → skip" {
   _event IC_cr
-  _node coderabbitai "Walkthrough" "" 2009 dev-lead/issue-2008-x MERGED
+  _node coderabbitai "Walkthrough" "" 2009 don-petry MERGED
 
   run bash "$INTENT_SCRIPT"
   [ "$(_get_env INTENT_TYPE)" = "skip" ]
@@ -185,20 +196,73 @@ _node() {
 
 @test "bot-comment retry: PR not dev-lead authored → skip" {
   _event IC_cr
-  NODE_JSON="$(jq -nc '{data:{node:{id:"IC_cr", author:{login:"coderabbitai"}, body:"x",
-    createdAt:"2026-10-01T23:05:43Z", lastEditedAt:null, isMinimized:false, minimizedReason:null,
-    pullRequest:{number:2009, state:"OPEN", headRefName:"feature/x", author:{login:"alice"}}}}}')"
-  export NODE_JSON
+  _node coderabbitai "x" "" 2009 alice
 
   run bash "$INTENT_SCRIPT"
   [ "$(_get_env INTENT_TYPE)" = "skip" ]
   [ "$(_get_env INTENT_REASON)" = "not-dev-lead-authored" ]
 }
 
+@test "bot-comment retry: a dev-lead/issue-* branch name alone is not ownership (author is someone else) → skip" {
+  _event IC_cr
+  # The query no longer even reads the branch name: ownership is author + same-repo head.
+  _node coderabbitai "x" "" 2009 mallory
+
+  run bash "$INTENT_SCRIPT"
+  [ "$(_get_env INTENT_REASON)" = "not-dev-lead-authored" ]
+  ! grep -q 'headRefName' "$GH_LOG"
+}
+
+@test "bot-comment retry: a cross-repository (fork) head → skip, even when dev-lead is the author" {
+  _event IC_cr
+  _node coderabbitai "x" "" 2009 don-petry OPEN "" Bot true
+
+  run bash "$INTENT_SCRIPT"
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "not-dev-lead-authored" ]
+}
+
+@test "bot-comment retry: a same-numbered PR in ANOTHER repository → skip (pr-mismatch)" {
+  _event IC_cr
+  _node coderabbitai "x" "" 2009 don-petry OPEN "" Bot false "someone/else"
+
+  run bash "$INTENT_SCRIPT"
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "bot-comment-retry-pr-mismatch" ]
+}
+
+@test "bot-comment retry: a trusted-bot login with author type User → skip" {
+  _event IC_cr
+  _node coderabbitai "x" "" 2009 don-petry OPEN "" User
+
+  run bash "$INTENT_SCRIPT"
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "bot-comment-retry-untrusted-author" ]
+}
+
+@test "bot-comment retry: a missing author type → skip (fail closed)" {
+  _event IC_cr
+  _node coderabbitai "x" "" 2009 don-petry OPEN "" ""
+
+  run bash "$INTENT_SCRIPT"
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "bot-comment-retry-untrusted-author" ]
+}
+
+@test "bot-comment retry: a bot login carrying the [bot] suffix is normalized and routed" {
+  _event IC_cr
+  _node "coderabbitai[bot]" "Walkthrough"
+  export COMMENTS_JSON="[${CR_NODE}]"
+
+  run bash "$INTENT_SCRIPT"
+  [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]
+  [ "$(_ctx actor)" = "coderabbitai[bot]" ]
+}
+
 @test "bot-comment retry: a fix-bot-comment pass already completed on this version → skip" {
   _event IC_cr
   _node coderabbitai "Walkthrough"
-  export COMMENTS_JSON='[{"id":"IC_cr","author":{"login":"coderabbitai"},"authorAssociation":"NONE",
+  export COMMENTS_JSON='[{"id":"IC_cr","author":{"login":"coderabbitai","__typename":"Bot"},"authorAssociation":"NONE",
     "body":"Walkthrough","createdAt":"2026-10-01T23:05:43Z","lastEditedAt":null,"isMinimized":false,"minimizedReason":null},
     {"id":"IC_t","author":{"login":"don-petry"},"authorAssociation":"OWNER",
     "body":"<!-- dev-lead-fix-reviews pr=2009 sha=abc intent=fix-bot-comment status=no-changes comment=IC_cr -->",
@@ -209,10 +273,23 @@ _node() {
   [ "$(_get_env INTENT_REASON)" = "bot-comment-pass-completed" ]
 }
 
-@test "bot-comment retry: unreadable PR comment list still runs the pass (prompt re-checks idempotency)" {
+@test "bot-comment retry: unreadable PR comment list → skip (fail closed; never a blind pass)" {
   _event IC_cr
   _node coderabbitai "Walkthrough"
   export COMMENTS_JSON='null'
+
+  run bash "$INTENT_SCRIPT"
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "bot-comment-retry-state-unreadable" ]
+}
+
+@test "bot-comment retry: a disposition from another member (not dev-lead) does not suppress the pass" {
+  _event IC_cr
+  _node coderabbitai "Walkthrough"
+  export COMMENTS_JSON="[${CR_NODE},
+    {\"id\":\"IC_m\",\"author\":{\"login\":\"mallory\",\"__typename\":\"User\"},\"authorAssociation\":\"MEMBER\",
+    \"body\":\"<!-- dev-lead:comment-disposition id=IC_cr disposition=invalid -->\",
+    \"createdAt\":\"2026-10-01T23:30:00Z\",\"lastEditedAt\":null,\"isMinimized\":false,\"minimizedReason\":null}]"
 
   run bash "$INTENT_SCRIPT"
   [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]

@@ -4890,6 +4890,62 @@ _orig_comment() {
   [[ "$output" == *"intent=fix-bot-comment status=no-changes comment=IC_kwDOabc123 -->"* ]]
 }
 
+@test "fix-reviews: fix-bot-comment terminal marker stamps the processed comment version (#2017)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC_kwDOabc123' COMMENT_VERSION='2026-10-01T23:40:00Z'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"intent=fix-bot-comment status=no-changes comment=IC_kwDOabc123 version=2026-10-01T23:40:00Z -->"* ]]
+}
+
+@test "fix-reviews: a malformed COMMENT_VERSION is never stamped into the marker (#2017)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC_kwDOabc123' COMMENT_VERSION='2026-10-01 --> x'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"comment=IC_kwDOabc123 -->"* ]]
+  [[ "$output" != *"version="* ]]
+}
+
+@test "fix-reviews: fix-bot-comment posts its terminal marker only AFTER the disposition resolver (#2017)" {
+  # The marker reads as "this pass ended" to the bot-comment retry, so a pass
+  # cancelled before the resolver must leave none (the retry then re-dispatches).
+  local start end block
+  start=$(grep -n '^  fix-bot-comment)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
+  end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
+  [ -n "$start" ] && [ -n "$end" ]
+  block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  applied=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
+  nochg=$(grep -n 'post_no_changes "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  [ -n "$resolver" ] && [ -n "$applied" ] && [ -n "$nochg" ]
+  [ "$resolver" -lt "$applied" ]
+  [ "$resolver" -lt "$nochg" ]
+  # Exactly one of each terminal post in the success path (no early duplicate).
+  [ "$(grep -c 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block")" -eq 1 ]
+  [ "$(grep -c 'post_no_changes "fix-bot-comment"' <<< "$block")" -eq 1 ]
+}
+
 @test "fix-reviews: a malformed COMMENT_NODE_ID is never stamped into the marker (#2017)" {
   local tmpdir
   tmpdir="$(mktemp -d)"

@@ -195,6 +195,7 @@ dispatch_ci_retry() {
     }')
   if ! echo "$payload" | gh api --method POST "repos/${repo}/dispatches" --input - >/dev/null 2>&1; then
     echo "  [warn] dispatch failed for PR ${pr_number} in ${repo}" >&2
+    return 1
   fi
 }
 
@@ -224,6 +225,7 @@ dispatch_reviews_retry() {
     }')
   if ! echo "$payload" | gh api --method POST "repos/${repo}/dispatches" --input - >/dev/null 2>&1; then
     echo "  [warn] dispatch failed for PR ${pr_number} in ${repo}" >&2
+    return 1
   fi
 }
 
@@ -344,8 +346,12 @@ scan_pr_for_rate_limits() {
           post_dispatch_guard "$repo" "$pr_number" "$head_sha"
           guard_posted=1
         fi
-        dispatch_ci_retry "$repo" "$pr_number" "$head_sha" "$check_name"
-        dispatched=$(( dispatched + 1 ))
+        # Count only a dispatch that was accepted: the caller gives a PR with no
+        # dispatch this scan to the bot-comment retry (#2017), so a failed call must
+        # not read as "this PR's one dispatch is used".
+        if dispatch_ci_retry "$repo" "$pr_number" "$head_sha" "$check_name"; then
+          dispatched=$(( dispatched + 1 ))
+        fi
       fi
     fi
   fi
@@ -392,8 +398,9 @@ scan_pr_for_rate_limits() {
         post_dispatch_guard "$repo" "$pr_number" "$head_sha"
         guard_posted=1
       fi
-      dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "$dispatch_intent"
-      dispatched=$(( dispatched + 1 ))
+      if dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "$dispatch_intent"; then
+        dispatched=$(( dispatched + 1 ))
+      fi
     fi
   done
 
@@ -448,6 +455,30 @@ dev_lead_identity() {
   printf '%s' "$DEV_LEAD_USER"
 }
 
+# pr_review_identity: pr-review's acting login (it posts this scan's retry markers
+# when its gate verdict runs the scan, #2017). PR_REVIEW_USER overrides;
+# donpetry-bot is the pr-review workflow's own fallback.
+pr_review_identity() {
+  if [ -z "${PR_REVIEW_USER:-}" ]; then
+    PR_REVIEW_USER=$(bash "$SCRIPT_DIR/lib/resolve-persona-identity.sh" pr-review \
+      "$SCRIPT_DIR/../personas" account 2>/dev/null || true)
+    PR_REVIEW_USER="${PR_REVIEW_USER:-donpetry-bot}"
+  fi
+  printf '%s' "$PR_REVIEW_USER"
+}
+
+# bcr_automation_logins: the comma-separated logins whose markers the bot-comment
+# retry trusts — only our own automation. Each must be a plain GitHub login
+# (it is also spliced into a --jq filter); anything else is dropped.
+bcr_automation_logins() {
+  local l out=""
+  for l in "$(dev_lead_identity)" "$(pr_review_identity)"; do
+    [[ "$l" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$ ]] || continue
+    out="${out:+${out},}${l}"
+  done
+  printf '%s' "$out"
+}
+
 # scan_pr_for_undispositioned_bot_comments <repo> <pr_number>
 # Finds registered reviewer-bot issue comments on an open dev-lead PR that have
 # no covering disposition and are not cleared by info_status_pattern, and
@@ -465,10 +496,10 @@ scan_pr_for_undispositioned_bot_comments() {
 
   local pr_obj
   pr_obj=$(gh api "repos/${repo}/pulls/${pr_number}" 2>/dev/null || echo '{}')
-  local pr_state head_sha head_ref pr_author
+  local pr_state head_sha head_repo pr_author
   pr_state=$(jq -r '.state // empty' <<< "$pr_obj" 2>/dev/null || true)
   head_sha=$(jq -r '.head?.sha // empty' <<< "$pr_obj" 2>/dev/null || true)
-  head_ref=$(jq -r '.head?.ref // empty' <<< "$pr_obj" 2>/dev/null || true)
+  head_repo=$(jq -r '.head?.repo?.full_name // empty' <<< "$pr_obj" 2>/dev/null || true)
   pr_author=$(jq -r '.user?.login // empty' <<< "$pr_obj" 2>/dev/null || true)
   if [ "$pr_state" != "open" ]; then
     echo "  [skip] bot-comment retry: PR ${pr_number} in ${repo} is ${pr_state:-unknown}" >&2
@@ -476,13 +507,13 @@ scan_pr_for_undispositioned_bot_comments() {
   fi
   # Authorship gate (#1311), mirrored from dev-lead-intent.sh (which re-checks it
   # on the retried event): fix-bot-comment only acts on PRs dev-lead authored.
-  case "$head_ref" in
-    dev-lead/issue-*) : ;;
-    *)
-      if [ -z "$pr_author" ] || [ "$pr_author" != "$(dev_lead_identity)" ]; then
-        echo "0"; return 0
-      fi ;;
-  esac
+  # Ownership is the PR's AUTHOR plus a same-repository head — never the branch
+  # name, which any contributor can choose (a fork's `dev-lead/issue-*` branch
+  # must not buy write-capable automation).
+  if [ -z "$pr_author" ] || [ "$pr_author" != "$(dev_lead_identity)" ] \
+     || [ "$head_repo" != "$repo" ]; then
+    echo "0"; return 0
+  fi
   local labels_json
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
   if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
@@ -507,9 +538,11 @@ scan_pr_for_undispositioned_bot_comments() {
     echo "0"; return 0
   fi
 
+  local automation
+  automation=$(bcr_automation_logins)
   local decisions
   if ! decisions=$(bcr_retry_decisions "$comments" "$trusted" \
-       "$(_maintainer_gate_info_patterns_json)" "$(get_now_epoch)"); then
+       "$(_maintainer_gate_info_patterns_json)" "$(get_now_epoch)" "$automation"); then
     echo "  [warn] bot-comment retry: could not evaluate PR ${pr_number} comments — skipping (fail closed)" >&2
     echo "0"; return 0
   fi
@@ -544,10 +577,14 @@ scan_pr_for_undispositioned_bot_comments() {
     # Two concurrent scans can both have seen no marker. Keep only the earliest
     # marker for this comment version AND attempt; the loser withdraws and does
     # not dispatch. Scoped to the attempt so a lost run's expired attempt-N marker
-    # never wins against the attempt-N+1 retry that replaces it.
-    local first_marker
+    # never wins against the attempt-N+1 retry that replaces it, and to markers
+    # our own automation posted (the same authors bcr_retry_decisions trusts), so
+    # a commenter pasting matching text cannot make every scan back off.
+    local first_marker logins_jq
+    logins_jq=$(jq -cn --arg a "$automation" '$a | split(",")')
     first_marker=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-      --jq '.[] | select((.body // "") | contains("dev-lead-bot-comment-retry id='"${cid}"' version='"${version}"' attempt='"${attempt}"' ")) | .id' \
+      --jq '.[] | select((.user.login // "") as $l | '"${logins_jq}"' | index($l) != null)
+            | select((.body // "") | contains("dev-lead-bot-comment-retry id='"${cid}"' version='"${version}"' attempt='"${attempt}"' ")) | .id' \
       2>/dev/null | sort -n | head -n1) || first_marker=""
     if [ -n "$first_marker" ] && [ "$first_marker" != "$marker_id" ]; then
       echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent scan already recorded a retry" >&2
