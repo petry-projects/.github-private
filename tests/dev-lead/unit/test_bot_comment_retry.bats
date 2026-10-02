@@ -206,7 +206,9 @@ args="$*"
 case "$args" in
   *"/dispatches"*) cat > "$GH_LOG.payload"; exit 0 ;;
   *"api graphql"*) printf '%s' "$GRAPHQL_RESPONSE" ;;
-  *"--method POST"*"/comments"*) exit 0 ;;
+  *"--method POST"*"/comments"*) echo "777" ;;
+  # The post-write marker listing (concurrency check) sees only our own marker.
+  *"comments?per_page"*"dev-lead-bot-comment-retry id="*) echo "777" ;;
   *"/pulls/"*) printf '%s' "$PR_JSON" ;;
   *) echo "[]" ;;
 esac
@@ -346,6 +348,7 @@ case "$*" in
   *"/dispatches"*) exit 1 ;;
   *"api graphql"*) printf '%s' "$GRAPHQL_RESPONSE" ;;
   *"--method POST"*"/comments"*) echo "777" ;;
+  *"comments?per_page"*"dev-lead-bot-comment-retry id="*) echo "777" ;;
   *"/pulls/"*) printf '%s' "$PR_JSON" ;;
   *) echo "[]" ;;
 esac
@@ -354,6 +357,9 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
+  # It reached (and failed) the dispatch — not the concurrent-scan back-off path.
+  grep -q '/dispatches' "$GH_LOG"
+  [[ "$output" != *"a concurrent scan already recorded a retry"* ]]
   grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/777' "$GH_LOG"
 }
 
