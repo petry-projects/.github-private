@@ -62,8 +62,8 @@ summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true; }
 # rebase intent. A PAT is required for the dispatch to trigger the workflow.
 if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
   case "${PR_NUMBER}" in
-    ''|*[!0-9]*)
-      echo "::warning::workflow_dispatch invoked with an invalid or missing pr_number '${PR_NUMBER}' — must be a positive integer"
+    ''|*[!0-9]*|0|0[0-9]*)
+      echo "::warning::workflow_dispatch invoked with an invalid or missing pr_number '${PR_NUMBER}' — must be a positive integer (>0, no leading zeros)"
       exit 0
       ;;
   esac
