@@ -895,6 +895,11 @@ resolve_dispositioned_comments() {
   # locally without the commit ever reaching the PR (commit_and_push did not
   # run), so a local-HEAD check could clear the gate for an unpushed fix.
   local pass_outcome="${2:-ok}"
+  # Set to 1 when a candidate's current state could not be confirmed at re-check.
+  # The fix-bot-comment caller then withholds its terminal marker (#2017): that
+  # marker reads as "this pass ended on the comment", so posting it over an
+  # unconfirmed state would suppress the bot-comment retry.
+  RDC_STATE_UNKNOWN=0
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
     echo "[dry-run] would resolve dispositioned PR issue comments on PR #${PR_NUMBER}"
     return 0
@@ -981,8 +986,12 @@ resolve_dispositioned_comments() {
       -f id="$cid" 2>/dev/null \
       | jq -r 'if .data.node.isMinimized == null then "unknown"
                elif .data.node.isMinimized then "true" else "false" end' 2>/dev/null || echo "unknown")
-    if [ "$cur_minimized" != "false" ]; then
-      echo "::notice::skipping comment ${cid} — already minimized or state unknown at re-check (${cur_minimized})"
+    if [ "$cur_minimized" = "unknown" ]; then
+      echo "::warning::skipping comment ${cid} — its current state could not be confirmed at re-check"
+      RDC_STATE_UNKNOWN=1
+      continue
+    elif [ "$cur_minimized" != "false" ]; then
+      echo "::notice::skipping comment ${cid} — already minimized at re-check"
       continue
     fi
 
@@ -2216,6 +2225,10 @@ case "$INTENT_TYPE" in
       # each disposition is independently verified, so a non-`fixed` disposition
       # needs no head advance. Runs on every successful pass, net-zero included.
       resolve_dispositioned_comments "fix-bot-comment"
+      if [ "${RDC_STATE_UNKNOWN:-0}" = "1" ]; then
+        echo "::warning::fix-bot-comment: a comment's current state could not be confirmed — withholding the terminal marker so the bot-comment retry can re-dispatch (#2017)"
+        _fbc_terminal=""
+      fi
       case "$_fbc_terminal" in
         applied)    post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed." ;;
         no-changes) post_no_changes "fix-bot-comment" ;;

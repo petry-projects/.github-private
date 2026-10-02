@@ -4946,6 +4946,26 @@ _orig_comment() {
   [ "$(grep -c 'post_no_changes "fix-bot-comment"' <<< "$block")" -eq 1 ]
 }
 
+@test "fix-reviews: an unconfirmed comment state withholds the fix-bot-comment terminal marker (#2017)" {
+  # The resolver flags (never silently passes) a re-check it cannot confirm, and
+  # the fix-bot-comment path then posts no terminal marker, so the bot-comment
+  # retry is not suppressed by a pass whose outcome is unknown.
+  local fn block
+  fn=$(awk '/^resolve_dispositioned_comments\(\) \{/,/^}/' "$FIX_REVIEWS_SCRIPT")
+  grep -q 'RDC_STATE_UNKNOWN=0' <<< "$fn"
+  grep -A3 'if \[ "\$cur_minimized" = "unknown" \]' <<< "$fn" | grep -q 'RDC_STATE_UNKNOWN=1'
+  start=$(grep -n '^  fix-bot-comment)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
+  end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
+  block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  guard=$(grep -n 'RDC_STATE_UNKNOWN:-0}" = "1"' <<< "$block" | head -1 | cut -d: -f1)
+  post=$(grep -n 'case "\$_fbc_terminal" in' <<< "$block" | head -1 | cut -d: -f1)
+  [ -n "$resolver" ] && [ -n "$guard" ] && [ -n "$post" ]
+  [ "$resolver" -lt "$guard" ]
+  [ "$guard" -lt "$post" ]
+  sed -n "${guard},${post}p" <<< "$block" | grep -q '_fbc_terminal=""'
+}
+
 @test "fix-reviews: a malformed COMMENT_NODE_ID is never stamped into the marker (#2017)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
