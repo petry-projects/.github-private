@@ -196,6 +196,10 @@ usage_telemetry_fetch() {
   fi
   rm -f "$hdrfile"
 
+  if [ "$status" != "200" ]; then
+    usage_telemetry_log "usage endpoint returned HTTP ${status} (non-200; library fails safe)"
+  fi
+
   usage_telemetry_envelope "$status" "$retry_after" "$now" "$body"
 }
 

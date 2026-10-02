@@ -9,6 +9,8 @@
 # mock `curl` so no live network is touched, and cover 200 / 429-with-retry-after /
 # other-non-200 / malformed / missing-window / missing-token.
 
+bats_require_minimum_version 1.5.0
+
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 LIB="$SCRIPT_DIR/scripts/lib/usage-telemetry.sh"
 
@@ -129,6 +131,31 @@ JSON
   run usage_telemetry_user_agent
   [ "$status" -eq 0 ]
   [ "$output" = "claude-code/9.9.9" ]
+}
+
+@test "fetch sends the User-Agent header to curl" {
+  local argfile="$BATS_TEST_TMPDIR/curl-args"
+  local wrapper="$BATS_TEST_TMPDIR/curl-capture.sh"
+  cat > "$wrapper" <<WRAP
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$argfile"
+exec "$MOCK_CURL" "\$@"
+WRAP
+  chmod +x "$wrapper"
+  export USAGE_TELEMETRY_CURL="$wrapper"
+  export MOCK_STATUS=200
+  export MOCK_BODY="$(_ok_body)"
+  run usage_telemetry_fetch
+  [ "$status" -eq 0 ]
+  grep -qxF 'User-Agent: claude-code/9.9.9' "$argfile"
+}
+
+@test "non-200 status (e.g. 401) is logged to stderr" {
+  export MOCK_STATUS=401
+  export MOCK_BODY='{}'
+  run --separate-stderr usage_telemetry_fetch
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"HTTP 401"* ]]
 }
 
 @test "publish_file writes the envelope and exports the library seam" {

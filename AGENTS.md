@@ -647,7 +647,7 @@ deleting the variable or setting it to anything other than `true`. If the
 secret is genuinely missing while unpaused, the reusable's "Engine token
 preflight" step fails with a single actionable error naming the secret.
 
-**Automatic budget pause (companion, #1565).** The same `AGENTS_PAUSED` switch can
+**Planned automatic budget pause (companion, #1565; poller not yet implemented — only the telemetry adapter ships today).** The same `AGENTS_PAUSED` switch can
 be flipped automatically from the Claude subscription usage budget. The transport
 half — `scripts/lib/usage-telemetry.sh` — reads the OAuth usage endpoint and emits
 the envelope the org token-budget breaker consumes; the scheduled poller that acts
