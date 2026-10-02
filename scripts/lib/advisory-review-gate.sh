@@ -148,26 +148,62 @@ log_success() {
   echo -e "${GREEN}[advisory-gate] $*${NC}" >&2
 }
 
+# _advisory_check_run_states <pr_snapshot_json> <bots_json_array>
+#   Echo a JSON array of {bot, state:"COMMENTED", time} — one per completed,
+#   conclusion=success check run on the PR's CURRENT head SHA whose name is an
+#   advisory bot's registry check_run_name (#2005). Graphite reports a clean pass
+#   ONLY as that check run, so without this a clean PR could never reach quorum and
+#   always waited out the head-age timeout. Failed/neutral/pending runs and runs on
+#   a stale SHA are not clean. Names come only from the registry (no hard-coding).
+#   Best-effort: no registry, no reporter, no head SHA, or a failed fetch → "[]"
+#   (reviews/comments are still counted exactly as before; never an API error).
+_advisory_check_run_states() {
+  local sha reporters runs
+  sha=$(jq -r '.headRefOid // empty' <<< "$1" 2>/dev/null) || sha=""
+  if [[ -z "$sha" || ! "$PR_URL" =~ ^https?://[^/]+/([^/]+/[^/]+)/pull/ ]] \
+      || ! declare -F reviewer_sources_check_run_reporters >/dev/null; then
+    echo '[]'; return 0
+  fi
+  reporters=$(reviewer_sources_check_run_reporters 2>/dev/null | jq -Rn --argjson bots "$2" '
+    [inputs | split("\t") | select(length == 2 and (.[0] as $l | $bots | any(. == $l))) | {(.[1]): .[0]}]
+    | add // {}') || reporters='{}'
+  [[ "$reporters" == "{}" ]] && { echo '[]'; return 0; }
+  runs=$(gh api --paginate "repos/${BASH_REMATCH[1]}/commits/${sha}/check-runs?per_page=100" 2>/dev/null) || {
+    log_warn "check-run fetch failed at head ${sha:0:8} — counting reviews/comments only (#2005)"
+    echo '[]'; return 0
+  }
+  jq -cs --argjson names "$reporters" --arg sha "$sha" '
+    [.[].check_runs[]?
+     | select(.head_sha == $sha and .status == "completed" and .conclusion == "success"
+              and $names[.name // ""] != null)
+     | {bot: $names[.name // ""], state: "COMMENTED", time: .completed_at}]' <<< "$runs" 2>/dev/null || echo '[]'
+}
+
 # Query which advisory bots have reviewed/commented on this PR
 get_advisory_bot_states() {
   # Build JSON array of bot names from ADVISORY_BOTS keys — single source of truth
   local bot_array
   bot_array=$(printf '%s\n' "${!ADVISORY_BOTS[@]}" | jq -R . | jq -s .)
 
-  local gh_output
-  gh_output=$(gh pr view "$PR_URL" --json reviews,comments 2>&1) || {
+  local gh_output check_runs
+  gh_output=$(gh pr view "$PR_URL" --json reviews,comments,headRefOid 2>&1) || {
     log_warn "gh pr view failed: $gh_output"
     return 2  # API error — distinct from "no bots yet" (1) so caller can fail-fast
   }
+  check_runs=$(_advisory_check_run_states "$gh_output" "$bot_array")
+  [[ -n "$check_runs" ]] || check_runs='[]'
 
   echo "$gh_output" | jq -c --argjson bots "$bot_array" --arg markers "$RATE_LIMIT_MARKERS" \
-    --arg cubic "$ADVISORY_CUBIC_LOGIN" --arg cubicre "$ADVISORY_CUBIC_RATE_LIMIT_RE" '
+    --arg cubic "$ADVISORY_CUBIC_LOGIN" --arg cubicre "$ADVISORY_CUBIC_RATE_LIMIT_RE" \
+    --argjson checkruns "$check_runs" '
     # Collect all bot submissions with their state. A comment whose body matches a
     # known rate-limit/usage-limit marker is classified RATE_LIMITED (the bot is out
     # of quota and cannot submit a real review); all other comments are COMMENTED.
     # The author-scoped cubic clause is applied ONLY to cubic'"'"'s own comments so a
     # different reviewer discussing cubic'"'"'s trial is never misclassified (#1903).
+    # Clean check-run passes at the current head (#2005) join as COMMENTED.
     (
+      $checkruns +
       [(.reviews // [])[] | select([.author.login] | inside($bots)) | {bot: .author.login, state: .state, time: .submittedAt}] +
       [(.comments // [])[] | select([.author.login] | inside($bots)) | {
         bot: .author.login,
