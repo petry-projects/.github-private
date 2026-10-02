@@ -41,11 +41,16 @@ ic_noise_pattern() {
 # repository write access (#1800: only author_association OWNER/MEMBER/COLLABORATOR
 # is trusted — a drive-by CONTRIBUTOR/NONE commenter must not redirect the
 # implementation), dev-lead automation comments (ic_noise_pattern), and empty
-# bodies. author_association comes from the GitHub API (not attacker-controlled)
-# and is always present on real comments; it is absent only in synthetic test
-# input, where it defaults to OWNER so the body-only degradation path is
-# unaffected. jq's `-s` slurps every page into one array; `[.[] | .[]?]` flattens
-# both the single-array and paginated (array-per-page) shapes, mirroring
+# bodies. The trust filter FAILS CLOSED (#1872): a missing, null, or empty
+# author_association is untrusted and the comment is dropped — absence of
+# evidence of trust is not evidence of trust. Real GitHub API comments always
+# carry the field; any caller that synthesizes comment objects must set it
+# explicitly at the construction site. Every trust drop is logged to STDERR
+# (login + reason, never the body), distinguishing "no author_association" from
+# an untrusted association, so an ingestion path that stops populating the field
+# surfaces as dropped comments rather than silently-trusted ones. jq's `-s`
+# slurps every page into one array; `[.[] | .[]?]` flattens both the
+# single-array and paginated (array-per-page) shapes, mirroring
 # count_prior_attempts in the driver.
 _ic_filter_human() {
   jq -s -r --arg noise "$(ic_noise_pattern)" '
@@ -53,16 +58,29 @@ _ic_filter_human() {
     | map(select(type == "object"))
     | map(select((.body // "") != ""))
     | map(select(((.user.type?) // "") != "Bot"))
-    | map(select(
-        (((.author_association?) // "OWNER") | ascii_upcase) as $aa
-        | ($aa == "OWNER" or $aa == "MEMBER" or $aa == "COLLABORATOR")))
-    | map(select((.body // "") | test($noise) | not))
     | .[]
-    | { login: (.user.login? // "unknown"),
-        created_at: (.created_at // ""),
-        body: (.body // "") }
-    | @base64
-  ' 2>/dev/null || true
+    | (.user.login? // "unknown") as $login
+    | ((.author_association? // "") | tostring | ascii_upcase) as $aa
+    # Drop records are tab/newline-delimited text, so control characters in the
+    # logged fields are neutralised — they must never be able to forge a K line.
+    | ($login | tostring | gsub("[[:cntrl:]]"; "?")) as $safe_login
+    | if $aa == "" then
+        "D\t\($safe_login)\tno author_association (treated as untrusted)"
+      elif ($aa == "OWNER" or $aa == "MEMBER" or $aa == "COLLABORATOR") | not then
+        "D\t\($safe_login)\tauthor_association=\($aa | gsub("[[:cntrl:]]"; "?")) (no write access)"
+      elif (.body // "") | test($noise) then
+        empty
+      else
+        "K\t" + ({ login: $login,
+                   created_at: (.created_at // ""),
+                   body: (.body // "") } | @base64)
+      end
+  ' 2>/dev/null | while IFS=$'\t' read -r tag a b; do
+    case "$tag" in
+      K) printf '%s\n' "$a" ;;
+      D) printf 'issue-comments: dropped comment by @%s: %s\n' "$a" "$b" >&2 ;;
+    esac
+  done || true
 }
 
 # render_issue_comments: read the paginated comments JSON on stdin; print the
