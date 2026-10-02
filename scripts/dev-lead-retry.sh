@@ -289,9 +289,11 @@ fetch_pr_comment_nodes() {
 #   status=applied|no-changes`) was posted at/after the latest such edit. The
 #   marker check is the dedup. A pass that already ran after the edit saw the
 #   current body, so a burst of CodeRabbit progress edits costs one run, not one per
-#   edit. A failed pass does not count, so its comment is retried. 1 otherwise,
-#   including unreadable input (never dispatch on a guess). Pure apart from reading
-#   the reviewer registry.
+#   edit. A failed pass does not count, so its comment is retried. Only a marker
+#   from a trusted author (OWNER/MEMBER/COLLABORATOR, as dev-lead's own markers
+#   are) counts, so an outside commenter pasting a success-shaped marker cannot
+#   suppress the re-dispatch. 1 otherwise, including unreadable input (never
+#   dispatch on a guess). Pure apart from reading the reviewer registry.
 stale_disposition_needs_dispatch() {
   local nodes="$1" pr_number="$2" stale latest_edit later_runs
   [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
@@ -301,6 +303,7 @@ stale_disposition_needs_dispatch() {
   later_runs=$(jq -r --arg e "$latest_edit" \
     --arg re "<!-- dev-lead-fix-reviews pr=${pr_number} [^>]*intent=fix-reviews status=(applied|no-changes)" '
       [ .[] | objects
+        | select((.authorAssociation // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
         | select((.body // "") | test($re))
         | select((.createdAt // "") >= $e) ] | length' <<< "$nodes" 2>/dev/null) || return 1
   [ "$later_runs" = "0" ]

@@ -169,9 +169,9 @@ _marker() {
 # fix-reviews run marker posted at/after the edit means a pass already saw the
 # edited body, so CodeRabbit's frequent progress edits don't each spawn a run.
 
-# _sweep_nodes <lastEditedAt> <disposition_createdAt> [run_marker_createdAt]
+# _sweep_nodes <lastEditedAt> <disposition_createdAt> [run_marker_createdAt] [run_marker_association]
 _sweep_nodes() {
-  jq -cn --arg e "$1" --arg d "$2" --arg r "${3:-}" '
+  jq -cn --arg e "$1" --arg d "$2" --arg r "${3:-}" --arg ra "${4:-OWNER}" '
     [ {id:"IC_cr", author:{login:"coderabbitai", __typename:"Bot"}, authorAssociation:"NONE",
        body:"summary", createdAt:"2026-10-01T19:12:40Z", isMinimized:true, minimizedReason:"RESOLVED",
        lastEditedAt:$e},
@@ -179,7 +179,7 @@ _sweep_nodes() {
        body:"notice\n<!-- dev-lead:comment-disposition id=IC_cr disposition=informational -->",
        createdAt:$d, isMinimized:false, minimizedReason:null, lastEditedAt:null} ]
     + (if $r == "" then [] else [
-      {id:"IC_run", author:{login:"don-petry", __typename:"User"}, authorAssociation:"OWNER",
+      {id:"IC_run", author:{login:"don-petry", __typename:"User"}, authorAssociation:$ra,
        body:"<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=no-changes -->",
        createdAt:$r, isMinimized:false, minimizedReason:null, lastEditedAt:null} ] end)'
 }
@@ -205,6 +205,15 @@ _sweep_nodes() {
 @test "sweep(#2008): a run marker for a DIFFERENT PR does not suppress the dispatch" {
   run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z)" 20
   [ "$status" -eq 0 ]
+}
+
+@test "sweep(#2008): a run marker from an untrusted author does not suppress the dispatch" {
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z NONE)" 2000
+  [ "$status" -eq 0 ]
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z CONTRIBUTOR)" 2000
+  [ "$status" -eq 0 ]
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z MEMBER)" 2000
+  [ "$status" -eq 1 ]
 }
 
 @test "sweep(#2008): unreadable comment data never dispatches (no guessing)" {
