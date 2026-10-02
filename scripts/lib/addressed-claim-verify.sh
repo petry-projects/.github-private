@@ -450,9 +450,12 @@ acv_gather_commit_facts() {
     if git merge-base --is-ancestor "$sha" "$ref" 2>/dev/null; then
       on_head=true
     fi
-    if [[ -n "$base" ]] && git cat-file -e "${base}^{commit}" 2>/dev/null \
-       && ! git merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then
-      in_base=false
+    if [[ -n "$base" ]] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+      # Exit 1 means "not an ancestor"; any other status is an ancestry read error
+      # and leaves in_base=true (fail closed).
+      local mb_rc=0
+      git merge-base --is-ancestor "$sha" "$base" 2>/dev/null || mb_rc=$?
+      [[ "$mb_rc" -eq 1 ]] && in_base=false
     fi
     # Emit a Z-terminated UTC ISO-8601 instant (e.g. 2026-09-07T21:40:05Z), the
     # SAME shape GitHub's createdAt uses. `%cI` would emit a `+00:00` offset that

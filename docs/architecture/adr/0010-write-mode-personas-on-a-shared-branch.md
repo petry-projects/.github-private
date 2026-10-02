@@ -32,8 +32,9 @@ claim back. That breaks ADR-0004's "Fail Loud, Never Fake".
 
 ## Decision
 
-A write-mode persona sharing a branch follows four rules, each enforced by a
-pure classifier with bats tests (ADR-0004), not by prompt text alone:
+We will make every write-mode persona sharing a branch follow four rules, each
+enforced by harness checks with bats tests (pure classifiers where applicable,
+per ADR-0004), not by prompt text alone:
 
 1. **Incorporate or stand down, never force.** Before pushing, the persona
    reconciles with the *true* remote head. It rebases a foreign commit in, or

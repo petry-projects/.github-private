@@ -2220,9 +2220,12 @@ commit_and_push() {
         if [ "$ttg_rc" -eq 1 ]; then
           echo "::error::Test-tamper guard: the ${intent} pass changed or skipped existing test(s) [${ttg_files:-skip added}] with no Test-Change-Justification trailer — refusing to push (#2013)"
           flag_test_tamper "$intent" "${ttg_files:-a skip was added to a test file}"
-          return 3
-        elif [ "$ttg_rc" -eq 2 ]; then
-          echo "::warning::Test-tamper guard: pre-pass base unknown — could not check ${intent} for rewritten tests (#2013)"
+          return 4
+        elif [ "$ttg_rc" -ne 0 ]; then
+          # Fail closed: an unverifiable scan is not a clean scan.
+          echo "::error::Test-tamper guard: pre-pass base unknown — could not verify ${intent} for rewritten tests, refusing to push (#2013)"
+          flag_test_tamper "$intent" "(the tamper scan could not resolve the pre-pass head, so the pass could not be verified)"
+          return 4
         elif [ "$(printf '%s\n' "$ttg_out" | head -1)" = "justified" ]; then
           echo "::notice::Test-tamper guard: existing test(s) changed with a cited Test-Change-Justification: ${ttg_files:-skip added} (#2013)"
         fi
@@ -2233,6 +2236,7 @@ commit_and_push() {
     # rewritten branch, aborting if the remote moved beyond what we fetched.
     # A rejected push — or one the remote head does not reflect (#2013) — must not
     # leave this pass's "Fixed" replies standing: retract them before failing.
+    # (commit_and_push returns 3 for the no-op guard and 4 for the test-tamper guard.)
     push_no_clobber || {
       echo "::error::git push failed — check remote access and branch permissions" >&2
       retract_unlanded_claims "$intent" failed || true
@@ -2264,6 +2268,12 @@ verify_push_landed() {
     echo "::warning::push-landed check skipped — the branch has no upstream to read back (#2013)"
     return 0
   fi
+  if [ "$remote_rc" -ne 0 ]; then
+    # `git push` itself succeeded; a failed read-back means "cannot verify", not
+    # "did not land". Warn and pass rather than abort and retract landed claims.
+    echo "::warning::push-landed check skipped — could not read the remote head back after a successful push (#2013)"
+    return 0
+  fi
   if [ -n "$remote" ] && [ -n "$pushed" ] && git merge-base --is-ancestor "$pushed" "$remote" 2>/dev/null; then
     on_remote=true
   fi
@@ -2285,7 +2295,7 @@ verify_push_landed() {
 # cl_retract_body, which strips both markers so it can never resolve a thread.
 #
 # The reference head is the remote head. When it cannot be read: on an `ok`
-# outcome with no upstream, the local HEAD is what was pushed; in every other case
+# outcome (no upstream, or a read-back failure after a successful push), the local HEAD is what was pushed; in every other case
 # nothing verifiably landed, so the pre-pass base is used and every claim fails.
 # Idempotent: a retracted reply carries no marker and is never selected again.
 retract_unlanded_claims() {
@@ -2304,7 +2314,7 @@ retract_unlanded_claims() {
   local ref="" ref_rc=0
   ref=$(cl_remote_head) || ref_rc=$?
   if [ -z "$ref" ]; then
-    if [ "$ref_rc" -eq 1 ] && [ "$outcome" = "ok" ]; then
+    if [ "$ref_rc" -ne 0 ] && [ "$outcome" = "ok" ]; then
       ref="$(git rev-parse HEAD 2>/dev/null || true)"
     else
       ref="$base"
@@ -2318,7 +2328,10 @@ retract_unlanded_claims() {
   fi
 
   local rows retracted=0 failed=0 id sha facts on_ref in_base reason body new_body
-  rows=$(cl_select_pass_claims "$comments" "$bot_user" "$PASS_START_ISO")
+  if ! rows=$(cl_select_pass_claims "$comments" "$bot_user" "$PASS_START_ISO"); then
+    echo "::warning::retract_unlanded_claims: could not parse the review comments on PR #${PR_NUMBER} — this pass's claim replies were NOT verified (#2013)"
+    return 1
+  fi
   while IFS=$'\t' read -r id sha; do
     [ -z "$id" ] && continue
     if [ -z "$sha" ]; then
@@ -2611,6 +2624,8 @@ case "$INTENT_TYPE" in
         # for a human, auto-merge disabled. Post no applied/no-changes/retry
         # marker and do not re-enable auto-merge or resolve threads.
         echo "::warning::fix-reviews produced a net-zero diff — flagged for human, not pushed (#1340)"
+      elif [ "$cp_rc" -eq 4 ]; then
+        echo "::warning::fix-reviews was refused by the test-tamper guard — flagged for human, not pushed (#2013)"
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -2628,8 +2643,14 @@ case "$INTENT_TYPE" in
       # a tracking issue; invalid/answered/informational need a non-empty evidence
       # reply), so an answered/invalid disposition requires no head advance. Runs on
       # every successful pass, including a net-zero one where the model only replied.
-      resolve_dispositioned_comments "fix-reviews"
-      if [ "$cp_rc" -ne 3 ]; then
+      # A tamper-guard abort (rc 4) pushed nothing: a `fixed` disposition would cite a
+      # local commit that never landed, so treat it like a failed pass (#2013).
+      if [ "$cp_rc" -eq 4 ]; then
+        resolve_dispositioned_comments "fix-reviews" failed
+      else
+        resolve_dispositioned_comments "fix-reviews"
+      fi
+      if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
         if resolution_gate_open "$cp_rc"; then
@@ -2690,6 +2711,8 @@ case "$INTENT_TYPE" in
         # for a human, auto-merge disabled. Post no terminal marker and do not
         # re-enable auto-merge or resolve threads.
         echo "::warning::fix-bot-comment produced a net-zero diff — flagged for human, not pushed (#1340)"
+      elif [ "$cp_rc" -eq 4 ]; then
+        echo "::warning::fix-bot-comment was refused by the test-tamper guard — flagged for human, not pushed (#2013)"
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -2703,7 +2726,13 @@ case "$INTENT_TYPE" in
       # Outside the review-thread resolution gate for the same reason as fix-reviews:
       # each disposition is independently verified, so a non-`fixed` disposition
       # needs no head advance. Runs on every successful pass, net-zero included.
-      resolve_dispositioned_comments "fix-bot-comment"
+      # A tamper-guard abort (rc 4) pushed nothing: a `fixed` disposition would cite a
+      # local commit that never landed, so treat it like a failed pass (#2013).
+      if [ "$cp_rc" -eq 4 ]; then
+        resolve_dispositioned_comments "fix-bot-comment" failed
+      else
+        resolve_dispositioned_comments "fix-bot-comment"
+      fi
       if [ "${RDC_STATE_UNKNOWN:-0}" = "1" ]; then
         echo "::warning::fix-bot-comment: a comment's current state could not be confirmed — withholding the terminal marker so the bot-comment retry can re-dispatch (#2017)"
         _fbc_terminal=""
@@ -2718,7 +2747,7 @@ case "$INTENT_TYPE" in
         applied)    post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed." ;;
         no-changes) post_no_changes "fix-bot-comment" ;;
       esac
-      if [ "$cp_rc" -ne 3 ]; then
+      if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
         if resolution_gate_open "$cp_rc"; then

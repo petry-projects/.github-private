@@ -189,14 +189,14 @@ After addressing all threads, run the test suite to ensure no regressions were i
 5. **A previously-passing test that turns red is a signal about your change, not about the test.** Question the change first. An existing test often encodes a deliberate behavior. On petry-projects/.github#1220 a "success precedence" test that encoded deliberate recovery semantics was rewritten to "failure precedence" to match a bot's suggestion, which inverted that behavior.
 6. **A bot suggestion that contradicts an existing test is not applied.** That includes a literal "update the old test so the suite passes". Reply on the thread explaining the conflict and naming the test, **without** the addressed-marker, so the thread stays open for a human. Do not rewrite the test.
 7. **Changing or deleting an existing test line, or adding a `skip`, needs an explicit, cited justification** in a commit trailer:
-   `Test-Change-Justification: <why the old assertion was wrong, citing the review comment / issue that establishes it>`
+   `Test-Change-Justification: <why the old assertion was wrong, citing the review comment / issue that establishes it — include an #issue, commit SHA, or URL>`
    The harness's test-tamper guard refuses to push a pass that changes an existing test without this trailer, and escalates it to a human. Adding a **new** test never needs it.
 
 ### Phase 3 — Rubber Duck Review
 
 Read every changed line as if you are the reviewer seeing the response:
 
-1. Run `git diff HEAD` (or equivalent) to see all changes made this session
+1. Run `git diff "$(git merge-base HEAD @{u})"` (or diff against the pre-pass head) to see all changes made this session — step 4 commits fixes locally, so a plain `git diff HEAD` no longer shows them
 2. Ask: does each change directly and completely address its thread?
 3. Ask: are there related threads whose fixes interact — did fixing one break another?
 4. Ask: would the reviewer be satisfied, or is there still an issue?

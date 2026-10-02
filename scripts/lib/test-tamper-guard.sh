@@ -35,7 +35,7 @@ set -euo pipefail
 readonly _TTG_MIN_JUSTIFICATION_CHARS=20
 
 # Added lines that silence a test, across the frameworks the org uses.
-readonly _TTG_SKIP_RE='^\+[[:space:]]*(skip([[:space:]]|$|\()|@pytest\.mark\.(skip|xfail)|pytest\.(skip|xfail)\(|@unittest\.skip|@Disabled|@Ignore|#\[ignore\]|t\.Skip(Now|f)?\(|(it|test|describe)\.(skip|todo)\(|x(it|describe|test)\()'
+readonly _TTG_SKIP_RE='^\+[[:space:]]*(skip([[:space:]]|$|\()|@pytest\.mark\.(skip|xfail)|pytestmark[[:space:]]*=[[:space:]]*(\[[[:space:]]*)?pytest\.mark\.(skip|xfail)|pytest\.(skip|xfail|importorskip)\(|@unittest\.skip|@Disabled|@Ignore|#\[ignore\]|t\.Skip(Now|f)?\(|(it|test|describe)\.(skip|todo)\(|x(it|describe|test)\()'
 
 # ttg_is_test_path <path>
 #   0 when <path> is a test file: under a tests?/ / __tests__/ / spec/ directory, a
@@ -92,14 +92,17 @@ ttg_count_added_skips() {
 
 # ttg_has_justification <commit_messages>
 #   0 when some line is `Test-Change-Justification: <text>` with at least
-#   _TTG_MIN_JUSTIFICATION_CHARS of non-blank text. Pure.
+#   _TTG_MIN_JUSTIFICATION_CHARS of non-blank text AND a recognizable reference
+#   (an issue/PR `#123`, a 7-40 hex commit SHA, or a URL) to the review, issue, or
+#   commit that establishes the old test was wrong. Pure.
 ttg_has_justification() {
   local msgs="${1:-}" line text
   while IFS= read -r line; do
     [[ "$line" =~ ^[[:space:]]*Test-Change-Justification:[[:space:]]*(.*)$ ]] || continue
     text="${BASH_REMATCH[1]}"
     text="${text%"${text##*[![:space:]]}"}"
-    (( ${#text} >= _TTG_MIN_JUSTIFICATION_CHARS )) && return 0
+    (( ${#text} >= _TTG_MIN_JUSTIFICATION_CHARS )) || continue
+    [[ "$text" =~ (^|[^[:alnum:]])#[0-9]+ || "$text" =~ (^|[^[:alnum:]])[0-9a-fA-F]{7,40}($|[^[:alnum:]]) || "$text" =~ https?:// ]] && return 0
   done <<<"$msgs"
   return 1
 }
@@ -141,7 +144,7 @@ ttg_scan_pass() {
     return 2
   fi
   local numstat diff msgs touched skips justified=false verdict rc=0
-  numstat=$(git diff --numstat "$base" 2>/dev/null) || { echo "unknown"; return 2; }
+  numstat=$(git diff --no-renames --numstat "$base" 2>/dev/null) || { echo "unknown"; return 2; }
   diff=$(git diff --unified=0 "$base" 2>/dev/null) || { echo "unknown"; return 2; }
   msgs=$(git log --format=%B "${base}..${head}" 2>/dev/null || true)
   touched=$(ttg_touched_existing_tests "$numstat")

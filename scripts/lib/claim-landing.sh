@@ -94,7 +94,7 @@ cl_select_pass_claims() {
         | [(.id | tostring), ((.body // "") | @base64)]
         | @tsv
       else empty end
-    ' <<<"$comments_json" 2>/dev/null) || return 0
+    ' <<<"$comments_json" 2>/dev/null) || return 1
   [[ -z "$rows" ]] && return 0
 
   local id body_b64 body claim sha
@@ -123,15 +123,15 @@ cl_retract_body() {
   local stripped
   stripped=$(jq -Rsr --arg marker "$_DEV_LEAD_ADDRESSED_MARKER" '
       gsub($marker; "")
-      | gsub("<!--[[:space:]]*dev-lead:claim[^>]*-->"; "")
+      | gsub("<!--[[:space:]]*dev-lead:claim[^\\n]*-->"; "")
       | sub("\\s+$"; "")
     ' <<<"$body" 2>/dev/null) || stripped=""
   local quoted
   quoted=$(printf '%s\n' "$stripped" | sed 's/^/> /')
 
   printf '%s\n\n%s\n\n%s\n\n%s%s -->\n' \
-    "**⚠️ Retracted by the dev-lead harness (\`${reason}\`).** The fix this reply describes is **not** on the PR head: its commit was not produced and pushed by this pass, or the push did not land. The thread stays open; the next dev-lead pass re-verifies against the pushed diff." \
-    "Original reply, kept for the record (it does not describe the PR head):" \
+    "**⚠️ Retracted by the dev-lead harness (\`${reason}\`).** This reply's claim could not be verified as a fix produced and pushed by this pass (its commit was not produced by this pass, or the push did not land), so it no longer counts as addressed. The thread stays open; the next dev-lead pass re-verifies against the pushed diff." \
+    "Original reply, kept for the record (unverified — it does not count as a fix):" \
     "$quoted" \
     "$_CL_RETRACTED_PREFIX" "$reason"
 }

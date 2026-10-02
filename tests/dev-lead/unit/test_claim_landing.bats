@@ -268,7 +268,8 @@ _inject_foreign_commit() {
     echo H > f; git commit -q -am "human steering"; git push -q origin main )
 
   run push_no_clobber
-  [[ "$status" -eq 1 ]]
+  # The guard's documented STOP/escalate code for an un-incorporable foreign commit.
+  [[ "$status" -eq 2 ]]
 
   local remote
   remote="$(cl_remote_head)"

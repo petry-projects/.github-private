@@ -474,13 +474,18 @@ setup() {
   [[ "$status" -eq 0 ]]
   [[ "$(echo "$output" | jq -r .on_head)" == "true" ]]
   [[ "$(echo "$output" | jq -r .in_base)" == "true" ]]
-  run bash -c "source '$LIB' && acv_claim_in_pass '$a' true true"
+  local facts_a on_head in_base
+  facts_a="$output"
+  on_head="$(echo "$facts_a" | jq -r .on_head)"; in_base="$(echo "$facts_a" | jq -r .in_base)"
+  run bash -c "source '$LIB' && acv_claim_in_pass '$a' '$on_head' '$in_base'"
   [[ "$output" == "predates-pass" ]]
 
   # B — the commit this pass actually produced — is in-pass.
   run bash -c "cd '$repo' && source '$LIB' && acv_gather_commit_facts '$b' '$a'"
-  [[ "$(echo "$output" | jq -r .in_base)" == "false" ]]
-  [[ "$(echo "$output" | jq -r .on_head)" == "true" ]]
+  on_head="$(echo "$output" | jq -r .on_head)"; in_base="$(echo "$output" | jq -r .in_base)"
+  run bash -c "source '$LIB' && acv_claim_in_pass '$a' '$on_head' '$in_base'"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "in-pass" ]]
 }
 
 @test "acv_gather_commit_facts: an unresolvable base fails closed (in_base true)" {

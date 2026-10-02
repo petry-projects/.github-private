@@ -80,6 +80,13 @@ setup() {
   [[ "$output" == "2" ]]
 }
 
+@test "ttg_count_added_skips: recognizes the pytest, unittest, JUnit, Rust, Go and JS skip forms" {
+  local diff
+  diff=$'+++ b/tests/test_x.py\n+@pytest.mark.skip("x")\n+pytestmark = pytest.mark.skip("x")\n+pytest.skip("x")\n+pytest.importorskip("x")\n+@unittest.skip("x")\n+++ b/tests/FooTest.java\n+@Disabled\n+@Ignore\n+++ b/tests/x_test.rs\n+#[ignore]\n+++ b/tests/x_test.go\n+t.Skip("x")\n+t.SkipNow()\n+++ b/src/a.spec.js\n+xit("y", () => {})\n+it.todo("z")'
+  run ttg_count_added_skips "$diff"
+  [[ "$output" == "12" ]]
+}
+
 @test "ttg_count_added_skips: no skips -> 0" {
   run ttg_count_added_skips $'+++ b/tests/a.bats\n+@test "new" {\n+  run true\n+}'
   [[ "$output" == "0" ]]
@@ -100,6 +107,11 @@ setup() {
   run ttg_has_justification $'fix: x\n\nTest-Change-Justification:   '
   [[ "$status" -eq 1 ]]
   run ttg_has_justification $'fix: x\n\nTest-Change-Justification: so it passes'
+  [[ "$status" -eq 1 ]]
+}
+
+@test "ttg_has_justification: long prose with no issue/SHA/URL reference is not a justification" {
+  run ttg_has_justification $'fix: x\n\nTest-Change-Justification: the old test was simply wrong and needed changing'
   [[ "$status" -eq 1 ]]
 }
 
