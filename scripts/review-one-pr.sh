@@ -629,9 +629,14 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA
   #   fix-request        — `<!-- pr-review-agent v1 sha=<HEAD> -->` + `<!-- decision=fix-requested …`
   # FORCE_REVIEW (human break-glass) still bypasses unconditionally, verdict or not.
   VERDICT_AT_HEAD=false
-  if [[ "$LATEST_MARKER_BODY" =~ pr-review-agent\ v1\ sha=${PR_HEAD_SHA}[[:space:]]+decision=(approved|escalated) ]]; then
+  # Anchored on the full `<!-- pr-review-agent v1 sha=` opener and bounded after the
+  # decision word so prose that merely quotes the text, or `decision=approvedX`, is
+  # not a verdict.
+  verdict_re="<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]]+decision=(approved|escalated)([^[:alnum:]_]|$)"
+  fix_marker_re="<!-- pr-review-agent v1 sha=${PR_HEAD_SHA} -->"
+  if [[ "$LATEST_MARKER_BODY" =~ $verdict_re ]]; then
     VERDICT_AT_HEAD=true
-  elif [[ "$LATEST_MARKER_BODY" =~ pr-review-agent\ v1\ sha=${PR_HEAD_SHA}\ --\> ]] \
+  elif [[ "$LATEST_MARKER_BODY" =~ $fix_marker_re ]] \
        && [[ "$LATEST_MARKER_BODY" =~ decision=fix-requested ]]; then
     VERDICT_AT_HEAD=true
   fi
@@ -850,17 +855,13 @@ fi
 if [ "${DRY_RUN:-false}" != "true" ]; then
   PR_BUDGET_NUMBER=$(echo "$PR_URL" | sed -E 's|.*/pull/([0-9]+).*|\1|')
   PR_BUDGET_REPO=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
-  # Probe the dedupe marker BEFORE enforce_pr_budget: the run that performs the
-  # escalation exits 101 (counted `escalated`, #1754 AC1); later runs that only
-  # find the budget already exhausted are holds and keep exit 100.
-  PR_BUDGET_ALREADY_ESCALATED=false
-  if pr_automation_already_escalated "$PR_BUDGET_NUMBER" "$PR_BUDGET_REPO"; then
-    PR_BUDGET_ALREADY_ESCALATED=true
-  fi
+  # enforce_pr_budget reports (PR_AUTOMATION_NEWLY_ESCALATED) whether THIS run
+  # created the escalation: that run exits 101 (counted `escalated`, #1754 AC1);
+  # later runs that only find the budget already exhausted are holds and keep 100.
   if enforce_pr_budget "$PR_BUDGET_NUMBER" "$PR_BUDGET_REPO"; then
     echo "    cap: per-PR automation budget exhausted — halting automated review (escalated to human)"
     emit_verdict escalate automation-budget-exhausted "a human interaction (comment or approval) resets the per-PR automation budget"
-    if [ "$PR_BUDGET_ALREADY_ESCALATED" = "true" ]; then
+    if [ "${PR_AUTOMATION_NEWLY_ESCALATED:-false}" != "true" ]; then
       exit 100
     fi
     exit 101

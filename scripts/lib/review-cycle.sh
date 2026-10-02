@@ -44,11 +44,18 @@ _REVIEW_CYCLE_JQ_DEFS='
   # it carries a `reset=<ts>` stamp regenerated on each re-escalation. Prefer that
   # over .when so an in-place re-escalation resets the cap (#1754). Absent ⇒ null,
   # so callers fall back to .when.
-  def escalation_reset_ts:
-    (((.body // "") | capture("human-escalation reset=(?<ts>[^ ]+)").ts) // null);
+  # Only an automation-authored comment may stamp a reset: any contributor can
+  # post a comment body, so a user-supplied far-future `reset=` must be ignored.
   def is_bot_author($bots):
     (.author // "") as $login
     | ($login == "") or ($login | endswith("[bot]")) or (($bots | index($login)) != null);
+  def is_automation_author($bots):
+    (.author // "") as $login
+    | ($login != "") and (($login | endswith("[bot]")) or (($bots | index($login)) != null));
+  def escalation_reset_ts($bots):
+    if is_automation_author($bots)
+    then (((.body // "") | capture("human-escalation reset=(?<ts>[^ ]+)").ts) // null)
+    else null end;
   # A HUMAN approval is a review with state=APPROVED authored by a non-bot. This
   # is the ONLY approval that resets the cap — the cascade'\''s own approval marker
   # and machine approvals (repair-pr-approvals, bot approvals) do not.
@@ -74,7 +81,7 @@ compute_review_cycle() {
   count=$(jq -r --argjson bots "$bots_json" "$_REVIEW_CYCLE_JQ_DEFS"'
     map(select(.when != null and .when != ""))
     | ([.[] | select(is_human_approval($bots)) | .when] | max // "") as $last_approval
-    | ([.[] | select(is_escalation) | (escalation_reset_ts // .when)] | max // "") as $last_escalation
+    | ([.[] | select(is_escalation) | (escalation_reset_ts($bots) // .when)] | max // "") as $last_escalation
     | (if $last_approval > $last_escalation then $last_approval else $last_escalation end) as $reset
     | [.[] | select(has_marker and (is_approval | not) and (.when > $reset))]
     | length

@@ -138,7 +138,9 @@ ESCALATION_COMMENT_MARKER='<!-- pr-review-agent human-escalation v1 -->'
 # Post the escalation artifact if the marker is not yet present, otherwise edit
 # the existing marker-keyed comment in place. Best-effort: an API failure emits a
 # ::warning:: (so a silently-dropped artifact is visible) but never aborts the
-# escalation — the label + CODEOWNERS request still stand.
+# escalation — the label + CODEOWNERS request still stand. Returns 0 only when
+# the artifact is confirmed written (comment created or patched), 1 otherwise, so
+# the caller never reports an escalation that left nothing visible (#1754).
 upsert_escalation_comment() {
   local pr_url="$1" body="$2"
   local owner_repo pr_num comments_file existing_id bot_user
@@ -173,14 +175,17 @@ upsert_escalation_comment() {
       echo "::warning::escalation: failed to update human-escalation comment $existing_id on $pr_url — posting a fresh escalation note instead"
       if ! gh pr comment "$pr_url" --body "$body" >/dev/null 2>&1; then
         echo "::warning::escalation: also failed to post a fresh human-escalation comment on $pr_url — the PR carries only the label"
+        return 1
       fi
     fi
   else
     echo "  posting human-escalation comment"
     if ! gh pr comment "$pr_url" --body "$body" >/dev/null 2>&1; then
       echo "::warning::escalation: failed to post human-escalation comment on $pr_url — the PR carries only the label"
+      return 1
     fi
   fi
+  return 0
 }
 
 # mark_prior_agent_items_obsolete <pr_url>
@@ -365,6 +370,43 @@ ensure_hold_label_absent() {
   return 1
 }
 
+# hold_label_is_automated <pr_url> — exit 0 only when the LATEST `labeled` event
+# for needs-human-review was made by automation (a `[bot]` App, BOT_USER, or an
+# AUTOMATION_BOT_LOGINS account). A human-set hold is deliberate and re-engagement
+# is human-gated (#926/#1754), so anything else — a human actor, no event found,
+# or an unreadable timeline — is treated as NOT automated (fail closed: the hold
+# is left alone).
+hold_label_is_automated() {
+  local pr_url="$1" owner_repo pr_num actor bot_logins
+  owner_repo=$(echo "$pr_url" | sed -E 's|.*/([^/]+)/([^/]+)/pull/.*|\1/\2|')
+  pr_num=$(echo "$pr_url" | sed -E 's|.*/([0-9]+)$|\1|')
+  actor=$(gh api --paginate "repos/$owner_repo/issues/$pr_num/events?per_page=100" 2>/dev/null \
+    | jq -s -r 'flatten
+        | map(select(.event == "labeled" and .label.name == "needs-human-review"))
+        | (last.actor.login // "")' 2>/dev/null) || return 1
+  [ -n "$actor" ] || return 1
+  bot_logins="${AUTOMATION_BOT_LOGINS:-donpetry-bot github-actions[bot] repair-pr-approvals} ${BOT_USER:-donpetry-bot}"
+  case "$actor" in *"[bot]") return 0 ;; esac
+  case " $bot_logins " in *" $actor "*) return 0 ;; esac
+  return 1
+}
+
+# clear_automated_hold_label <pr_url> — remove needs-human-review (confirmed) only
+# when it is absent already or was set by automation; a human-set hold is left in
+# place. Returns non-zero only if an automated hold could not be confirmed removed.
+clear_automated_hold_label() {
+  local pr_url="$1" present
+  present=$(read_hold_label "$pr_url") || present="unknown"
+  if [ "$present" = "false" ]; then
+    return 0
+  fi
+  if ! hold_label_is_automated "$pr_url"; then
+    echo "  needs-human-review not provably automation-set (human actor or undeterminable provenance) — leaving the hold in place (#926/#1754)"
+    return 0
+  fi
+  ensure_hold_label_absent "$pr_url"
+}
+
 if [ "$DRY_RUN" = "true" ]; then
   echo "=== DRY RUN: Would post review ==="
   echo "Decision: $DECISION"
@@ -415,7 +457,7 @@ if [ "$DECISION" = "approve" ]; then
   # decision within one marker (no `>` between them) therefore accepts only a
   # genuine approval and rejects a current-SHA fix-request or a decision-less
   # body from reaching `gh pr review --approve`.
-  approval_pattern="pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]][^>]*decision=approved"
+  approval_pattern="<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]][^>]*decision=approved[^>]*-->"
   if ! [[ "$BODY" =~ $approval_pattern ]]; then
     echo "::error::approve verdict body lacks a complete approval marker (sha=$PR_HEAD_SHA with decision=approved in one marker) — refusing to submit (fail closed, #1754)"
     exit 1
@@ -534,8 +576,12 @@ if [ "$DECISION" = "approve" ]; then
     fi
   fi
 
-  # Clean up label
-  gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
+  # Clean up an automation-set hold label, confirming the removal (a stale label
+  # would keep review-one-pr.sh on hold while this run reports success, #1754).
+  if ! clear_automated_hold_label "$PR_URL"; then
+    echo "::error::approve: could not confirm needs-human-review removed from $PR_URL after $LABEL_MAX_ATTEMPTS attempts — failing rather than reporting a false success (#1754)"
+    exit 1
+  fi
 
   echo "Review posted"
 
@@ -594,20 +640,27 @@ $REARM_FOOTER
 COMMENT_END
 
     echo "Posting fix-request comment..."
-    gh pr comment "$PR_URL" --body "$(cat "$COMMENT_FILE")" || true
+    # The hold is cleared only after the fix request is CONFIRMED posted: a failed
+    # comment must not re-enable a held PR with no fix request on it.
+    if ! gh pr comment "$PR_URL" --body "$(cat "$COMMENT_FILE")"; then
+      rm -f "$COMMENT_FILE"
+      echo "::error::fix-request: failed to post the fix-request comment on $PR_URL — leaving needs-human-review untouched and failing so the run is retried (#1754)"
+      exit 1
+    fi
     rm -f "$COMMENT_FILE"
 
     # Supersede prior agent reviews/comments now that the newest fix-request
     # has landed. A new fix-request also invalidates any prior approval.
     mark_prior_agent_items_obsolete "$PR_URL"
 
-    # A fix-request re-engages the cascade, so clear any prior human hold — a PR
-    # left carrying needs-human-review while the author works is a stale hold
-    # that also exempts it from the stuck-review sweep. CONFIRM the removal
+    # A fix-request re-engages the cascade, so clear a prior AUTOMATION-set hold —
+    # a PR left carrying needs-human-review while the author works is a stale hold
+    # that also exempts it from the stuck-review sweep. A hold a human set
+    # deliberately is left alone (provenance check). CONFIRM the removal
     # (retrying reads+mutations): a stale label left behind would keep
     # review-one-pr.sh on hold while this branch reports success (#1754). Fail
     # rather than report a false success so the run is retried.
-    if ! ensure_hold_label_absent "$PR_URL"; then
+    if ! clear_automated_hold_label "$PR_URL"; then
       echo "::error::fix-request: could not confirm needs-human-review removed from $PR_URL after $LABEL_MAX_ATTEMPTS attempts — failing rather than reporting a false success (#1754)"
       exit 1
     fi
@@ -654,10 +707,19 @@ Why: the cascade could neither approve the PR nor auto-request fixes, so it requ
 _This note is updated in place on re-escalation; it is not re-posted._
 ESC_END
 )
-    upsert_escalation_comment "$PR_URL" "$ESC_BODY"
+    ESC_ARTIFACT_OK=true
+    upsert_escalation_comment "$PR_URL" "$ESC_BODY" || ESC_ARTIFACT_OK=false
 
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     bash "$SCRIPT_DIR/request-codeowners-review.sh" "$PR_URL" || true
+
+    # Only report an escalation when its visible artifact is confirmed. A bare
+    # label with no comment leaves nothing for compute_review_cycle to reset on,
+    # so downgrade to the no-op 100 rather than overstate the escalated count.
+    if [ "$ESC_ARTIFACT_OK" != "true" ]; then
+      echo "::error::escalation: no human-escalation comment could be confirmed on $PR_URL (label + CODEOWNERS request only) — exiting 100 (no-op) so the escalated count is not overstated (#1754)"
+      exit 100
+    fi
 
     # Escalation has its own exit status (issue #1754 AC1): distinct from 0
     # (review posted) and 100 (no-op). review-one-pr.sh propagates it and

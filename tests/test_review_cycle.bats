@@ -198,7 +198,7 @@ items() {  # items <item-json>...
   # (createdAt still T1, reset=T4) → fix(T5). Only the fix AFTER the latest reset
   # (T5) counts; the pre-re-escalation fixes (T2, T3) must not.
   local esc j
-  esc=$(jq -n '{when:"2026-06-07T01:00:00Z", body:"<!-- pr-review-agent human-escalation v1 -->\n<!-- pr-review-agent human-escalation reset=2026-06-07T04:00:00Z -->\n\n## Automated review — escalated to human"}')
+  esc=$(jq -n '{when:"2026-06-07T01:00:00Z", author:"donpetry-bot", body:"<!-- pr-review-agent human-escalation v1 -->\n<!-- pr-review-agent human-escalation reset=2026-06-07T04:00:00Z -->\n\n## Automated review — escalated to human"}')
   j=$(items \
     "$esc" \
     "$(fix_request 2026-06-07T02:00:00Z aaa111)" \
@@ -206,6 +206,19 @@ items() {  # items <item-json>...
     "$(fix_request 2026-06-07T05:00:00Z ccc333)")
   run compute_review_cycle "$j"
   [ "$output" = "1" ]
+}
+
+@test "a reset= stamp from a NON-automation author is ignored (falls back to createdAt)" {
+  # A contributor posting both markers with a far-future reset= must not exclude
+  # later fix markers from the cap count.
+  local esc j
+  esc=$(jq -n '{when:"2026-06-07T01:00:00Z", author:"some-contributor", body:"<!-- pr-review-agent human-escalation v1 -->\n<!-- pr-review-agent human-escalation reset=2099-01-01T00:00:00Z -->"}')
+  j=$(items \
+    "$esc" \
+    "$(fix_request 2026-06-07T02:00:00Z aaa111)" \
+    "$(fix_request 2026-06-07T03:00:00Z bbb222)")
+  run compute_review_cycle "$j"
+  [ "$output" = "2" ]
 }
 
 @test "an escalation comment without a reset= stamp falls back to createdAt (#1754)" {

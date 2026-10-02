@@ -36,6 +36,8 @@ setup() {
   echo '[]' > "$POSTED_REVIEWS_FILE"
 
   export LABELS_FILE="$TEST_DIR/labels.json"
+  export LABEL_EVENTS_FILE="$TEST_DIR/label_timeline.json"
+  echo '[]' > "$LABEL_EVENTS_FILE"
 
   cat > "$TEST_DIR/bin/gh" <<'GHEOF'
 #!/bin/bash
@@ -74,6 +76,9 @@ if [ "$sub1" = "api" ]; then
         cat "${EXISTING_COMMENTS_FILE:-/dev/null}"
       fi
       exit 0 ;;
+    */issues/*/events*)
+      cat "${LABEL_EVENTS_FILE:-/dev/null}"
+      exit 0 ;;
     */pulls/*/reviews)
       if [ "$slurp" = "true" ]; then
         jq -s '.' "${POSTED_REVIEWS_FILE:-/dev/null}"
@@ -102,6 +107,7 @@ if [ "$sub1" = "pr" ] && [ "$sub2" = "review" ]; then
 fi
 
 if [ "$sub1" = "pr" ] && [ "$sub2" = "comment" ]; then
+  [ -n "${COMMENT_FAILS:-}" ] && exit 1
   prev=""; for a in "$@"; do
     [ "$prev" = "--body" ] && printf '%s' "$a" > "${COMMENT_OUT:-/dev/null}"
     prev="$a"
@@ -186,8 +192,11 @@ write_approve_verdict() {
   cat "$COMMENT_OUT" >&2
   [ "$status" -eq 101 ]
   grep -q '<!-- pr-review-agent human-escalation v1 -->' "$COMMENT_OUT"
-  grep -qi 'escalat' "$COMMENT_OUT"
+  grep -q 'escalated to human' "$COMMENT_OUT"
   grep -q '3/3' "$COMMENT_OUT"
+  grep -q '\*\*Reviewer summary:\*\* needs a human' "$COMMENT_OUT"
+  grep -q 'remove the `needs-human-review` label to re-engage' "$COMMENT_OUT"
+  grep -q "$SHA" "$COMMENT_OUT"
 }
 
 @test "AC2: re-escalation updates the existing comment in place (no new comment)" {
@@ -202,6 +211,11 @@ write_approve_verdict() {
   [ "$status" -eq 101 ]
   # Updated in place: the PATCH body was captured and carries the marker.
   grep -q '<!-- pr-review-agent human-escalation v1 -->' "$PATCH_OUT"
+  # The patched body carries the CURRENT details, not the old note.
+  grep -q 'Reviewer summary' "$PATCH_OUT"
+  grep -q 'needs a human' "$PATCH_OUT"
+  grep -q '3/3' "$PATCH_OUT"
+  ! grep -q 'old escalation note' "$PATCH_OUT"
   # And NO brand-new comment was appended.
   [ ! -s "$COMMENT_OUT" ]
 }
@@ -265,6 +279,7 @@ write_approve_verdict() {
   echo "$output" >&2
   [ "$status" -eq 1 ]
   [ ! -s "$REVIEW_OUT" ]
+  [ "$(cat "$POSTED_REVIEWS_FILE")" = "[]" ]
 }
 
 @test "AC4: approve with a marker-less body fails closed and submits nothing" {
@@ -273,6 +288,7 @@ write_approve_verdict() {
   echo "$output" >&2
   [ "$status" -eq 1 ]
   [ ! -s "$REVIEW_OUT" ]
+  [ "$(cat "$POSTED_REVIEWS_FILE")" = "[]" ]
 }
 
 @test "AC4: approve with a marked, non-empty body is submitted" {
@@ -297,6 +313,7 @@ write_approve_verdict() {
   echo "$output" >&2
   [ "$status" -eq 1 ]
   [ ! -s "$REVIEW_OUT" ]
+  [ "$(cat "$POSTED_REVIEWS_FILE")" = "[]" ]
 }
 
 @test "AC4: approve with a current-SHA but decision-less marker fails closed (#1754)" {
@@ -309,4 +326,99 @@ write_approve_verdict() {
   echo "$output" >&2
   [ "$status" -eq 1 ]
   [ ! -s "$REVIEW_OUT" ]
+  [ "$(cat "$POSTED_REVIEWS_FILE")" = "[]" ]
+}
+
+@test "AC4: approve with a prose-quoted marker (no HTML comment) fails closed" {
+  local body="The agent wrote pr-review-agent v1 sha=${SHA} decision=approved in prose, not a marker."
+  local vf; vf=$(write_approve_verdict "$body")
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 1 ]
+  [ ! -s "$REVIEW_OUT" ]
+  [ "$(cat "$POSTED_REVIEWS_FILE")" = "[]" ]
+}
+
+@test "AC4: approve with a valid marker for a STALE sha fails closed before gh pr review" {
+  local old="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  local body="<!-- pr-review-agent v1 sha=${old} decision=approved risk=LOW -->
+
+## Automated review — APPROVED"
+  local vf; vf=$(write_approve_verdict "$body")
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"does not match PR_HEAD_SHA"* ]]
+  [ ! -s "$REVIEW_OUT" ]
+  [ "$(cat "$POSTED_REVIEWS_FILE")" = "[]" ]
+}
+
+@test "AC2: exit 100 (not 101) when no escalation comment can be confirmed" {
+  export COMMENT_FAILS=1
+  local vf; vf=$(write_escalate_verdict)
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 100 ]
+  [[ "$output" == *"::error::escalation: no human-escalation comment"* ]]
+}
+
+# ── fix-request hold provenance ─────────────────────────────────────────────
+fix_request_setup() {
+  export AI_DELEGATION_ENABLED="true"
+  export REVIEW_CYCLE="1"
+  export RISK="LOW"
+  export METADATA_ONLY="false"
+  export LABELS_JSON='{"labels":[{"name":"needs-human-review"}]}'
+}
+
+@test "fix-request clears an automation-set hold" {
+  fix_request_setup
+  echo '[{"event":"labeled","label":{"name":"needs-human-review"},"actor":{"login":"github-actions[bot]"}}]' > "$LABEL_EVENTS_FILE"
+  local vf; vf=$(write_escalate_verdict)
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 0 ]
+  grep -q 'REMOVE_LABEL' "$EVENTS"
+}
+
+@test "fix-request leaves a human-set hold in place" {
+  fix_request_setup
+  echo '[{"event":"labeled","label":{"name":"needs-human-review"},"actor":{"login":"a-maintainer"}}]' > "$LABEL_EVENTS_FILE"
+  local vf; vf=$(write_escalate_verdict)
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 0 ]
+  ! grep -q 'REMOVE_LABEL' "$EVENTS"
+}
+
+@test "fix-request with undeterminable hold provenance leaves the hold (fail closed)" {
+  fix_request_setup
+  local vf; vf=$(write_escalate_verdict)
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  [ "$status" -eq 0 ]
+  ! grep -q 'REMOVE_LABEL' "$EVENTS"
+}
+
+@test "fix-request does not clear the hold when the comment fails to post" {
+  fix_request_setup
+  echo '[{"event":"labeled","label":{"name":"needs-human-review"},"actor":{"login":"github-actions[bot]"}}]' > "$LABEL_EVENTS_FILE"
+  export COMMENT_FAILS=1
+  local vf; vf=$(write_escalate_verdict)
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 1 ]
+  ! grep -q 'REMOVE_LABEL' "$EVENTS"
+}
+
+@test "approve clears an automation-set hold with confirmation" {
+  export LABELS_JSON='{"labels":[{"name":"needs-human-review"}]}'
+  echo '[{"event":"labeled","label":{"name":"needs-human-review"},"actor":{"login":"donpetry-bot"}}]' > "$LABEL_EVENTS_FILE"
+  local body="<!-- pr-review-agent v1 sha=${SHA} decision=approved risk=LOW -->
+
+## Automated review — APPROVED"
+  local vf; vf=$(write_approve_verdict "$body")
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 0 ]
+  grep -q 'REMOVE_LABEL' "$EVENTS"
 }

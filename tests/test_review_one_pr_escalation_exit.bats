@@ -85,4 +85,5 @@ GHEOF
   [[ "$output" == *"max-cycles-reached"* ]]
   [ "$status" -eq 100 ]
   ! grep -q 'needs-human-review' "$GH_LOG"
+  ! grep -q 'pr comment' "$GH_LOG"
 }
