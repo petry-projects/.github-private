@@ -23,7 +23,8 @@
 #   declares at <ref> — ADR-0010's collision rule; nested caller and reusable
 #   groups would otherwise block or cancel each other.
 #   A ref that genuinely can't be resolved SOFT-PASSES with a logged `::warning::`
-#   — never silently. Cross-repo refs (reusables hosted in another repo, e.g.
+#   — never silently. Exception: a same-repo ref for an ingress job that declares a
+#   concurrency group FAILS closed, since the collision rule could not be checked. Cross-repo refs (reusables hosted in another repo, e.g.
 #   petry-projects/.github) are treated as unresolved here unless
 #   VCI_RESOLVE_CROSS_REPO=1 opts in; the warning keeps the skip visible.
 #
@@ -393,7 +394,9 @@ vci_scan_repo() {
       else
         echo "::warning::caller-inputs: could not resolve ${repo_slug}/${wf_path}@${ref} (referenced by $(basename "$wf")) — skipping; verify the forwarded inputs manually"
         warned=$((warned + 1))
-        if [ -n "$group" ]; then
+        # Fail closed only for a same-repo ref, which must be resolvable; cross-repo
+        # reusables stay soft-pass (see header) since they are never fetched by default.
+        if [ -n "$group" ] && [ "$repo_slug" = "${VCI_SELF_REPO:-petry-projects/.github-private}" ]; then
           echo "::error::caller-inputs: ingress job '${job}' declares a concurrency group but ${repo_slug}/${wf_path}@${ref} could not be resolved — the ADR-0010 collision rule cannot be checked"
           rc=1
         fi

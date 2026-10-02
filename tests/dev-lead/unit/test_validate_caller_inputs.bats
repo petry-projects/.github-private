@@ -218,6 +218,16 @@ YML
   [[ "$output" == *"collides"* ]]
 }
 
+@test "ingress concurrency: an unresolvable same-repo reusable FAILS closed" {
+  empty="$(mktemp -d)"
+  run env VCI_ROOT="$FIX/ingress-concurrency-ok" VCI_RESOLVE_DIR="$empty" bash "$SCRIPT"
+  rmdir "$empty"
+  echo "$output"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not be resolved"* ]]
+  [[ "$output" == *"::error::"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # --pair mode: validate a single caller against an explicit reusable file
 # ---------------------------------------------------------------------------

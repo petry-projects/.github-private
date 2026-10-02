@@ -250,7 +250,7 @@ viif_group_stems() {
   viif_group_exprs "$group" | awk '
     function skipws() { while (i <= n && substr(s, i, 1) ~ /[ \t]/) i++ }
     {
-      s = $0; n = length(s); i = 1; sp = 0; prev = "START"
+      s = $0; n = length(s); i = 1; sp = 0; prev = "START"; dead = 0
       while (i <= n) {
         c = substr(s, i, 1)
         if (c ~ /[ \t]/) { i++; continue }
@@ -267,7 +267,10 @@ viif_group_stems() {
           cand = 0
           if (calls == 0) cand = (prev != "CMP" && nx !~ /^(==|!=|<|>)/)
           else if (calls == 1 && st[sp] == "F" && prev == "FOPEN") cand = 1
-          if (cand) { p = index(lit, "{"); stem = p ? substr(lit, 1, p - 1) : lit; if (stem != "") print stem }
+          if (cand && !dead) { p = index(lit, "{"); stem = p ? substr(lit, 1, p - 1) : lit; if (stem != "") print stem }
+          # A non-empty top-level literal is truthy, so `lit || …` short-circuits:
+          # everything to its right is unreachable as a group result.
+          if (cand && lit != "" && nx ~ /^\|\|/) dead = 1
           prev = "LIT"; continue
         }
         two = substr(s, i, 2)
@@ -290,7 +293,7 @@ viif_group_stems() {
           calls = 0
           for (q = 1; q <= sp; q++) if (st[q] != "G") calls++
           nx = substr(s, i, 2)
-          if (calls == 0 && prev != "CMP" && nx !~ /^(==|!=|<|>|&&)/ && id !~ /^(true|false|null)$/) print "<dynamic>"
+          if (!dead && calls == 0 && prev != "CMP" && nx !~ /^(==|!=|<|>|&&)/ && id !~ /^(true|false|null)$/) print "<dynamic>"
           prev = "ID"; continue
         }
         prev = "OTHER"; i++
