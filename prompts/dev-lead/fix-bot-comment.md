@@ -81,11 +81,11 @@ gh api graphql -f query='
               ))))'
 ```
 
-For each thread you fixed, first **reply with the specific change** — name the file(s)/function(s) you touched and how the change addresses the finding (one or two concrete sentences; never just "done"). End the reply with **two** HTML comments: the addressed-marker `<!-- dev-lead:addressed -->` **and** a machine-readable claim `<!-- dev-lead:claim {…} -->` (#1692). The harness now verifies the claim against the pushed diff before resolving — a marker without a verifiable claim leaves the thread **unresolved**. Stamp both **only** on a genuine addressed reply, never on a skip note. Pass the body as a GraphQL variable so quotes and newlines are safe:
+For each thread you fixed, first **commit the fix locally** (`git add -A && git commit -m "fix(bot): <what>"`, never push), then **reply with the specific change** — name the file(s)/function(s) you touched and how the change addresses the finding (one or two concrete sentences; never just "done"). End the reply with **two** HTML comments: the addressed-marker `<!-- dev-lead:addressed -->` **and** a machine-readable claim `<!-- dev-lead:claim {…} -->` (#1692). The harness now verifies the claim against the pushed diff before resolving — a marker without a verifiable claim leaves the thread **unresolved**. Stamp both **only** on a genuine addressed reply, never on a skip note. Pass the body as a GraphQL variable so quotes and newlines are safe:
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the query above.
-# Get the full 40-char head SHA the fix rides on with: git rev-parse HEAD
+# Commit the fix FIRST, then read the SHA of that commit with: git rev-parse HEAD
 gh api graphql \
   -f query='mutation($tid: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \
   -f tid="THREAD_NODE_ID" \
@@ -95,7 +95,11 @@ gh api graphql \
 <!-- dev-lead:claim {\"v\":1,\"sha\":\"3cc4132fd4b4692aa20865f8b68ea8e21de604b8\",\"files\":[\"scripts/foo.sh\"]} -->"
 ```
 
-The claim payload is schema `v1` — one comment per reply, with a full 40-char `sha` (`git rev-parse HEAD`) and a non-empty JSON array of repo-relative `files` exactly as they appear in the diff. The normative schema and parser live in `scripts/lib/addressed-claim-verify.sh`.
+The claim payload is schema `v1` — one comment per reply, with a full 40-char `sha` and a non-empty JSON array of repo-relative `files` exactly as they appear in the diff. The normative schema and parser live in `scripts/lib/addressed-claim-verify.sh`.
+
+**Commit before you claim (#2013).** `sha` must be a commit **this pass produced**: run `git rev-parse HEAD` *after* you commit the fix. Citing the head you started from never verifies; it is the stale-claim defect from petry-projects/.github#1220. After the push, the harness checks the remote head. If the push was rejected or not incorporated, a guard refused it, or the pass failed, **every claim reply you posted this pass is retracted**. If you make no commit for a thread, post no addressed-marker or claim on it.
+
+**Never rewrite an existing test to make a bot suggestion pass (#2013).** Run the **full** test suite. A previously-passing test that turns red is a reason to question the change, not the test. A bot suggestion that contradicts an existing test is not applied, and that includes "update the older test so the suite can pass". Reply explaining the conflict, **without** the addressed-marker, and leave it for a human. Changing or deleting an existing test line, or adding a `skip`, requires a cited `Test-Change-Justification: <why, with a reference>` commit trailer. Without one, the harness's test-tamper guard refuses to push and escalates. Adding a new test never needs it.
 
 **Do not resolve the thread yourself.** You must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance — resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate. The harness resolves every bot thread you addressed with an our-account addressed-marker reply, plus any thread from this bot marked `isOutdated: true`. Your reply and its marker are your only lever on resolution.
 
@@ -203,7 +207,8 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
 - For every thread you fix, post a reply naming the specific change, ending with the addressed-marker — never reply-less
 - **Never resolve a thread yourself**: do not call the `resolveReviewThread` (or `unresolveReviewThread`) mutation. Resolution is the harness's job — it resolves the addressed and outdated threads from `${ACTOR}`; your only lever is the addressed-marker on your reply
 - Stay within the scope of the pull request's changed files where possible
-- Do not commit or push — the CI workflow handles git operations after you finish
+- Commit your fixes locally so your claims can cite them, but **never push**. The CI workflow pushes after you finish, verifies the push landed, and retracts any claim that did not land (#2013)
+- Never edit an existing test to match your change. A conflicting bot suggestion goes to a human. An existing-test change needs a `Test-Change-Justification:` trailer (#2013)
 
 ## Output Format
 

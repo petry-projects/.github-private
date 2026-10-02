@@ -409,3 +409,112 @@ setup() {
   [[ "$(echo "$output" | jq -r .on_head)" == "false" ]]
   [[ "$(echo "$output" | jq -c .own_files)" == "[]" ]]
 }
+
+# ---------------------------------------------------------------------------
+# acv_claim_in_pass — the claim SHA must be a commit THIS pass produced (#2013)
+# ---------------------------------------------------------------------------
+# The thread-resolution gate used to accept any commit on the head branch whose
+# <sha>^..HEAD range touched the claimed file, so a reply citing the PR's FIRST
+# commit (the pre-pass head the model read with `git rev-parse HEAD` before it
+# committed anything) passed trivially — the petry-projects/.github#1220 `571a3b8`
+# case. A claim now verifies only when its commit is on the reference head AND
+# is not already contained in the pre-pass base.
+
+@test "acv_claim_in_pass: on ref and not in the pre-pass base -> in-pass rc0" {
+  run acv_claim_in_pass "$SHA40" true false
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "in-pass" ]]
+}
+
+@test "acv_claim_in_pass: commit already in the pre-pass base (stale SHA) -> predates-pass rc1" {
+  run acv_claim_in_pass "$SHA40" true true
+  [[ "$status" -eq 1 ]]
+  [[ "$output" == "predates-pass" ]]
+}
+
+@test "acv_claim_in_pass: commit not on the reference head -> not-on-ref rc1" {
+  run acv_claim_in_pass "$SHA40" false false
+  [[ "$status" -eq 1 ]]
+  [[ "$output" == "not-on-ref" ]]
+}
+
+@test "acv_claim_in_pass: unknown pre-pass base -> unknown-base rc1 (fail closed)" {
+  run acv_claim_in_pass "" true false
+  [[ "$status" -eq 1 ]]
+  [[ "$output" == "unknown-base" ]]
+}
+
+@test "acv_claim_in_pass: any non-'true'/'false' fact fails closed" {
+  run acv_claim_in_pass "$SHA40" "" false
+  [[ "$status" -eq 1 ]]
+  [[ "$output" == "not-on-ref" ]]
+  run acv_claim_in_pass "$SHA40" true ""
+  [[ "$status" -eq 1 ]]
+  [[ "$output" == "predates-pass" ]]
+}
+
+@test "acv_gather_commit_facts: with a base, PR commit A cited after this pass pushed B -> in_base true (predates-pass)" {
+  # The QA fixture from #2013: the PR's own commit A touches F; this pass pushes B
+  # (also touching F). A claim {sha:A, files:[F]} passes the old on-head +
+  # intersection checks but must NOT verify as in-pass.
+  local repo="$BATS_TEST_TMPDIR/repo3"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  echo one > "$repo/F"
+  git -C "$repo" add F
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q -m A
+  local a
+  a="$(git -C "$repo" rev-parse HEAD)"
+  echo two >> "$repo/F"
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q -am B
+  local b
+  b="$(git -C "$repo" rev-parse HEAD)"
+
+  run bash -c "cd '$repo' && source '$LIB' && acv_gather_commit_facts '$a' '$a'"
+  [[ "$status" -eq 0 ]]
+  [[ "$(echo "$output" | jq -r .on_head)" == "true" ]]
+  [[ "$(echo "$output" | jq -r .in_base)" == "true" ]]
+  run bash -c "source '$LIB' && acv_claim_in_pass '$a' true true"
+  [[ "$output" == "predates-pass" ]]
+
+  # B — the commit this pass actually produced — is in-pass.
+  run bash -c "cd '$repo' && source '$LIB' && acv_gather_commit_facts '$b' '$a'"
+  [[ "$(echo "$output" | jq -r .in_base)" == "false" ]]
+  [[ "$(echo "$output" | jq -r .on_head)" == "true" ]]
+}
+
+@test "acv_gather_commit_facts: an unresolvable base fails closed (in_base true)" {
+  local repo="$BATS_TEST_TMPDIR/repo4"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  echo one > "$repo/a.txt"
+  git -C "$repo" add a.txt
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q -m c0
+  local h
+  h="$(git -C "$repo" rev-parse HEAD)"
+  run bash -c "cd '$repo' && source '$LIB' && acv_gather_commit_facts '$h' 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'"
+  [[ "$(echo "$output" | jq -r .in_base)" == "true" ]]
+  # No base given at all is also fail-closed.
+  run bash -c "cd '$repo' && source '$LIB' && acv_gather_commit_facts '$h'"
+  [[ "$(echo "$output" | jq -r .in_base)" == "true" ]]
+}
+
+@test "acv_gather_commit_facts: an explicit reference ref replaces HEAD for on_head" {
+  # The retraction sweep checks claims against the REMOTE head, not local HEAD:
+  # a commit that exists locally but never reached the remote is not on the ref.
+  local repo="$BATS_TEST_TMPDIR/repo5"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  echo one > "$repo/a.txt"
+  git -C "$repo" add a.txt
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q -m c0
+  local base
+  base="$(git -C "$repo" rev-parse HEAD)"
+  echo two >> "$repo/a.txt"
+  git -C "$repo" -c user.email=t@t -c user.name=T commit -q -am local-only
+  local local_only
+  local_only="$(git -C "$repo" rev-parse HEAD)"
+  run bash -c "cd '$repo' && source '$LIB' && acv_gather_commit_facts '$local_only' '$base' '$base'"
+  [[ "$(echo "$output" | jq -r .on_head)" == "false" ]]
+  [[ "$(echo "$output" | jq -r .in_base)" == "false" ]]
+}

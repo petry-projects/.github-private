@@ -1236,7 +1236,10 @@ case "\$ARGS" in
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"PullRequestReviewThread"*)
-    echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Applied in fix.txt: added the fix. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"${base_sha}\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
+    # The claim names the commit THIS pass produced (resolved at call time), not the
+    # pre-pass base_sha: since #2013 a pre-pass SHA is the stale-claim defect and
+    # never verifies (see the "#2013: … PRE-PASS head" case below).
+    echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Applied in fix.txt: added the fix. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"'"\$(git rev-parse HEAD)"'\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
   *"reviewThreads"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_addressed_bot","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
@@ -1491,8 +1494,10 @@ _1735_run_case() {
   git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
   base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
 
+  # The claim sha is resolved at stub call time to the commit THIS pass produced:
+  # since #2013 a claim naming the pre-pass base_sha never verifies.
   local marker_reply
-  marker_reply="Refuted — the pattern is intentional. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\\\"v\\\":1,\\\"sha\\\":\\\"${base_sha}\\\",\\\"files\\\":[\\\"fix.txt\\\"]} -->"
+  marker_reply="Refuted — the pattern is intentional. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\\\"v\\\":1,\\\"sha\\\":\\\"'\"\$(git rev-parse HEAD)\"'\\\",\\\"files\\\":[\\\"fix.txt\\\"]} -->"
 
   cat > "$STUB_BIN_DIR/gh" << GHEOF
 #!/usr/bin/env bash
@@ -1740,7 +1745,7 @@ case "\$ARGS" in
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"PullRequestReviewThread"*)
-    echo '{"data":{"node":{"isResolved":false,"path":"scripts/other.sh","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in scripts/other.sh. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"${base_sha}\",\"files\":[\"scripts/other.sh\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
+    echo '{"data":{"node":{"isResolved":false,"path":"scripts/other.sh","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in scripts/other.sh. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"'"\$(git rev-parse HEAD)"'\",\"files\":[\"scripts/other.sh\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
   *"reviewThreads"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_1044","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
@@ -1760,6 +1765,8 @@ GHEOF
   _run_claim_fix_reviews "$tmpdir" "$base_sha"
   [ "$status" -eq 0 ]
   [[ "$output" != *"resolution gate closed"* ]]
+  # Skipped by the file-level gate itself, not the #2013 in-pass gate.
+  [[ "$output" == *"no-file-intersection"* ]]
   run grep -q "PRRT_1044" "$mutations_file"
   [ "$status" -eq 1 ]
 }
@@ -1868,7 +1875,7 @@ case "\$ARGS" in
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"PullRequestReviewThread"*)
-    echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"a-maintainer","__typename":"User"},"body":"ACCEPTED — required before merge","createdAt":"2099-01-01T00:00:00Z"},{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in fix.txt. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"${base_sha}\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
+    echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"a-maintainer","__typename":"User"},"body":"ACCEPTED — required before merge","createdAt":"2099-01-01T00:00:00Z"},{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in fix.txt. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"'"\$(git rev-parse HEAD)"'\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
   *"reviewThreads"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_disposition","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
@@ -1887,6 +1894,8 @@ GHEOF
 
   _run_claim_fix_reviews "$tmpdir" "$base_sha"
   [ "$status" -eq 0 ]
+  # Skipped by the AC4 disposition gate itself, not the #2013 in-pass gate.
+  [[ "$output" == *"maintainer disposition (2099-01-01T00:00:00Z) is not postdated"* ]]
   run grep -q "PRRT_disposition" "$mutations_file"
   [ "$status" -eq 1 ]
 }
@@ -5208,4 +5217,173 @@ _target_state() {
   [ "$resolver" -lt "$check" ]
   [ "$check" -lt "$terminal" ]
   grep -q '"$_fbc_resolved" != "yes"' <<< "$block"
+}
+
+# ── #2013: claims must be produced by THIS pass and must have landed ─────────
+# On petry-projects/.github#1220 dev-lead posted "Fixed in …" replies whose claim
+# named the PR's FIRST commit (the pre-pass head the model read before it had
+# committed anything). The thread gate accepted it — the commit was on head and
+# <sha>^..HEAD touched the file — and a failed/aborted push left the reply
+# standing. These tests pin the harness side: the claim gate rejects a pre-pass
+# SHA, every unlanded claim reply this pass posted is retracted (REST PATCH), and
+# an unjustified rewrite of an existing test is never pushed.
+
+# _setup_2013 <thread_claim_sha|HEAD> <engine_script> — a real repo + a gh stub that
+# records resolveReviewThread mutations and PATCH (retraction) calls, and serves one
+# bot thread + one of our claim replies created "now" (2099, i.e. during this pass).
+# A claim sha of the literal `HEAD` is resolved at CALL time inside the stub, so it
+# names the commit the pass actually produced — what an honest model cites.
+_setup_2013() {
+  local claim_sha="$1" engine_body="$2"
+  T2013_DIR="$BATS_TEST_TMPDIR/workdir"
+  T2013_MUT="$BATS_TEST_TMPDIR/mutations"
+  T2013_PATCH="$BATS_TEST_TMPDIR/patches"
+  T2013_PUSH="$BATS_TEST_TMPDIR/pushes"
+  : > "$T2013_MUT"; : > "$T2013_PATCH"; : > "$T2013_PUSH"
+  mkdir -p "$T2013_DIR/tests"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  git -C "$T2013_DIR" init -q
+  echo "initial" > "$T2013_DIR/file.txt"
+  printf '@test "success precedence" {\n  [ ok = ok ]\n}\n' > "$T2013_DIR/tests/existing.bats"
+  git -C "$T2013_DIR" add .
+  git -C "$T2013_DIR" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$T2013_DIR" update-ref refs/remotes/origin/main "$(git -C "$T2013_DIR" rev-parse HEAD)"
+  T2013_BASE="$(git -C "$T2013_DIR" rev-parse HEAD)"
+  [ "$claim_sha" = "BASE" ] && claim_sha="$T2013_BASE"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+sha="${claim_sha}"
+[ "\$sha" = "HEAD" ] && sha="\$(git rev-parse HEAD)"
+reply="Fixed in fix.txt: added the fix. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\\\\\"v\\\\\":1,\\\\\"sha\\\\\":\\\\\"\${sha}\\\\\",\\\\\"files\\\\\":[\\\\\"fix.txt\\\\\"]} -->"
+case "\$ARGS" in
+  *"PATCH"*)
+    echo "\$*" >> "$T2013_PATCH"
+    echo '{}'
+    ;;
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$T2013_MUT"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"PullRequestReviewThread"*)
+    printf '%s\n' "{\"data\":{\"node\":{\"isResolved\":false,\"path\":\"fix.txt\",\"comments\":{\"nodes\":[{\"author\":{\"login\":\"donpetry-bot\",\"__typename\":\"User\"},\"body\":\"\${reply}\",\"createdAt\":\"2099-01-01T00:00:00Z\"}]}}}}"
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_2013","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"coderabbitai[bot]","__typename":"Bot"}}]}}]}}}}}'
+    ;;
+  *"pulls/54/comments"*)
+    printf '%s\n' "[{\"id\":777,\"user\":{\"login\":\"donpetry-bot\"},\"created_at\":\"2099-01-01T00:00:00Z\",\"body\":\"\${reply}\"}]"
+    ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${T2013_BASE}"},"auto_merge":null}' ;;
+  *"issues/"*"comments"*) echo '[]' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "PR_COMMENT: \$*" ;;
+  *"pr edit"*) echo "PR_EDIT: \$*" ;;
+  *"pr merge"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  printf '#!/usr/bin/env bash\necho "Addressed feedback."\n%s\n' "$engine_body" > "$STUB_BIN_DIR/claude"
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  # git stub: record pushes; T2013_PUSH_RC controls success. Everything else is real git.
+  cat > "$STUB_BIN_DIR/git" << GITEOF
+#!/usr/bin/env bash
+if [ "\$1" = "push" ]; then echo "push \$*" >> "$T2013_PUSH"; exit "\${T2013_PUSH_RC:-0}"; fi
+exec /usr/bin/git "\$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+}
+
+_run_2013() {
+  run bash -c "
+    cd '$T2013_DIR'
+    export INTENT_TYPE=\${1:-fix-reviews} DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$T2013_BASE REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='coderabbitai[bot]' COMMENT_BODY='finding'
+    export BOT_USER='donpetry-bot'
+    export T2013_PUSH_RC=\${T2013_PUSH_RC:-0}
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " _ "${1:-fix-reviews}" 2>&1
+}
+
+@test "#2013: a claim citing the PRE-PASS head leaves the thread unresolved and is retracted" {
+  _setup_2013 BASE "printf 'fixed\n' > fix.txt"
+  _run_2013 fix-reviews
+
+  # The thread gate rejects the stale SHA (the 571a3b8 case) …
+  [ ! -s "$T2013_MUT" ]
+  [[ "$output" == *"predates-pass"* ]]
+  # … and the false "Fixed" reply is retracted, not left standing.
+  grep -q "pulls/comments/777" "$T2013_PATCH"
+  grep -q "Retracted" "$T2013_PATCH"
+}
+
+@test "#2013: a claim citing the commit THIS pass produced resolves and is not retracted" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt"
+  _run_2013 fix-reviews
+
+  grep -q "PRRT_2013" "$T2013_MUT"
+  [ ! -s "$T2013_PATCH" ]
+}
+
+@test "#2013: a rejected push posts no applied marker and retracts this pass's claim reply" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt"
+  T2013_PUSH_RC=1 _run_2013 fix-reviews
+
+  [ "$status" -ne 0 ]
+  [ -s "$T2013_PUSH" ]
+  [[ "$output" != *"status=applied"* ]]
+  [ ! -s "$T2013_MUT" ]
+  grep -q "pulls/comments/777" "$T2013_PATCH"
+  grep -q "Retracted" "$T2013_PATCH"
+}
+
+@test "#2013: an engine failure retracts this pass's claim reply" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; git add -A; git -c user.email=t@t -c user.name=T commit -q -m wip; exit 1"
+  _run_2013 fix-reviews
+
+  [ "$status" -ne 0 ]
+  [ ! -s "$T2013_PUSH" ]
+  grep -q "pulls/comments/777" "$T2013_PATCH"
+}
+
+@test "#2013: an unjustified rewrite of an existing test is not pushed and is flagged for a human" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; sed -i 's/success precedence/failure precedence/' tests/existing.bats"
+  _run_2013 fix-reviews
+
+  # Never pushed …
+  [ ! -s "$T2013_PUSH" ]
+  [[ "$output" == *"Test-tamper guard"* ]]
+  [[ "$output" == *"tests/existing.bats"* ]]
+  # … flagged for a human, no thread resolved, the claim retracted.
+  [[ "$output" == *"needs-human-review"* ]]
+  [ ! -s "$T2013_MUT" ]
+  grep -q "pulls/comments/777" "$T2013_PATCH"
+}
+
+@test "#2013: fix-bot-comment applies the same test-tamper guard" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; sed -i 's/success precedence/failure precedence/' tests/existing.bats"
+  _run_2013 fix-bot-comment
+
+  [ ! -s "$T2013_PUSH" ]
+  [[ "$output" == *"Test-tamper guard"* ]]
+}
+
+@test "#2013: adding a NEW test alongside the fix is pushed normally" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; printf '@test \"new\" {\n  true\n}\n' >> tests/existing.bats"
+  _run_2013 fix-reviews
+
+  [ -s "$T2013_PUSH" ]
+  [[ "$output" != *"Test-tamper guard"* ]]
+  grep -q "PRRT_2013" "$T2013_MUT"
 }

@@ -395,11 +395,46 @@ _acv_is_iso8601() {
   jq -e -n --arg s "$s" '($s | fromdateiso8601)' >/dev/null 2>&1
 }
 
-# acv_gather_commit_facts <sha>
+# acv_claim_in_pass <base_sha> <on_ref> <in_base>
+#   The in-pass verdict (#2013). A claim verifies only when its commit was produced
+#   by THIS pass: reachable from the reference head (<on_ref> — the PR head at
+#   resolution time, or the REMOTE head when deciding whether a claim landed) and
+#   NOT already contained in the pre-pass base (<in_base>). Without it a reply citing
+#   the PR's FIRST commit — the head the model read with `git rev-parse HEAD` before
+#   committing anything — passed the on-head + intersection checks trivially (the
+#   petry-projects/.github#1220 `571a3b8` case). This is the thread-path parity of the
+#   issue-comment `fixed` check in resolve_dispositioned_comments (#1813).
+#   <on_ref>/<in_base> are the literal strings "true"/"false" from
+#   acv_gather_commit_facts; anything else fails closed. Echoes one token —
+#   in-pass | unknown-base | not-on-ref | predates-pass — and returns 0 only for
+#   in-pass. Pure — no gh/git/network.
+acv_claim_in_pass() {
+  local base="${1:-}" on_ref="${2:-}" in_base="${3:-}"
+  if [[ -z "$base" ]]; then
+    echo "unknown-base"
+    return 1
+  fi
+  if [[ "$on_ref" != "true" ]]; then
+    echo "not-on-ref"
+    return 1
+  fi
+  if [[ "$in_base" != "false" ]]; then
+    echo "predates-pass"
+    return 1
+  fi
+  echo "in-pass"
+  return 0
+}
+
+# acv_gather_commit_facts <sha> [base_sha] [ref]
 #   The SINGLE impure gatherer: all git access lives here so the verifier above stays
 #   pure. Echoes a JSON object:
-#     {"on_head":bool,"own_files":[...],"cumulative_files":[...],"commit_date":"iso"}
-#   - on_head: <sha> is reachable from HEAD (i.e. on the PR head branch).
+#     {"on_head":bool,"in_base":bool,"own_files":[...],"cumulative_files":[...],"commit_date":"iso"}
+#   - on_head: <sha> is reachable from <ref> (default HEAD — the PR head branch; the
+#     retraction sweep passes the REMOTE head so a local-only commit is not "on").
+#   - in_base: <sha> is contained in <base_sha> (the pre-pass head, #2013). Fails
+#     closed to true when <base_sha> is empty or does not resolve, so an unknowable
+#     base can never make a stale commit look like this pass's work.
 #   - own_files: files in <sha>'s own diff.
 #   - cumulative_files: files in `<sha>^..HEAD` (falls back to `<sha>..HEAD` when
 #     <sha> is a root commit with no parent).
@@ -408,12 +443,16 @@ _acv_is_iso8601() {
 #   never read an error as "verified". Runs in the current working directory (the PR
 #   worktree at resolution time).
 acv_gather_commit_facts() {
-  local sha="${1:-}"
-  local on_head=false own_files='[]' cumulative_files='[]' commit_date=""
+  local sha="${1:-}" base="${2:-}" ref="${3:-HEAD}"
+  local on_head=false in_base=true own_files='[]' cumulative_files='[]' commit_date=""
 
   if [[ -n "$sha" ]] && git cat-file -e "${sha}^{commit}" 2>/dev/null; then
-    if git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+    if git merge-base --is-ancestor "$sha" "$ref" 2>/dev/null; then
       on_head=true
+    fi
+    if [[ -n "$base" ]] && git cat-file -e "${base}^{commit}" 2>/dev/null \
+       && ! git merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then
+      in_base=false
     fi
     # Emit a Z-terminated UTC ISO-8601 instant (e.g. 2026-09-07T21:40:05Z), the
     # SAME shape GitHub's createdAt uses. `%cI` would emit a `+00:00` offset that
@@ -432,9 +471,10 @@ acv_gather_commit_facts() {
 
   jq -c -n \
     --argjson on_head "$on_head" \
+    --argjson in_base "$in_base" \
     --argjson own "$own_files" \
     --argjson cumulative "$cumulative_files" \
     --arg date "$commit_date" \
-    '{on_head: $on_head, own_files: $own, cumulative_files: $cumulative, commit_date: $date}' \
-    2>/dev/null || printf '{"on_head":false,"own_files":[],"cumulative_files":[],"commit_date":""}'
+    '{on_head: $on_head, in_base: $in_base, own_files: $own, cumulative_files: $cumulative, commit_date: $date}' \
+    2>/dev/null || printf '{"on_head":false,"in_base":true,"own_files":[],"cumulative_files":[],"commit_date":""}'
 }
