@@ -268,7 +268,7 @@ _inject_foreign_commit() {
     echo H > f; git commit -q -am "human steering"; git push -q origin main )
 
   run push_no_clobber
-  [[ "$status" -ne 0 ]]
+  [[ "$status" -eq 1 ]]
 
   local remote
   remote="$(cl_remote_head)"

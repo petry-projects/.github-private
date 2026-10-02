@@ -2235,11 +2235,11 @@ commit_and_push() {
     # leave this pass's "Fixed" replies standing: retract them before failing.
     push_no_clobber || {
       echo "::error::git push failed — check remote access and branch permissions" >&2
-      retract_unlanded_claims "$intent" failed
+      retract_unlanded_claims "$intent" failed || true
       exit 1
     }
     verify_push_landed || {
-      retract_unlanded_claims "$intent" failed
+      retract_unlanded_claims "$intent" failed || true
       exit 1
     }
   fi
@@ -2314,10 +2314,10 @@ retract_unlanded_claims() {
   local comments
   if ! comments=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" 2>/dev/null | jq -s 'add // []' 2>/dev/null); then
     echo "::warning::retract_unlanded_claims: could not list review comments on PR #${PR_NUMBER} — this pass's claim replies were NOT verified (#2013)"
-    return 0
+    return 1
   fi
 
-  local rows retracted=0 id sha facts on_ref in_base reason body new_body
+  local rows retracted=0 failed=0 id sha facts on_ref in_base reason body new_body
   rows=$(cl_select_pass_claims "$comments" "$bot_user" "$PASS_START_ISO")
   while IFS=$'\t' read -r id sha; do
     [ -z "$id" ] && continue
@@ -2339,9 +2339,13 @@ retract_unlanded_claims() {
       echo "::warning::retracted claim reply ${id} on PR #${PR_NUMBER} (${reason}; cited ${sha:-<none>}, remote head ${ref:-<unknown>}) (#2013)"
     else
       echo "::error::could not retract claim reply ${id} on PR #${PR_NUMBER} (${reason}) — a false 'Fixed' reply may remain (#2013)"
+      failed=1
     fi
   done <<< "$rows"
   echo "::notice::retract_unlanded_claims: retracted ${retracted} claim reply(ies) from this ${intent} pass on PR #${PR_NUMBER} (outcome=${outcome})"
+  # A listing or PATCH failure leaves a possibly-false claim standing: report it so
+  # callers do not treat the pass as clean (resolution gate closes).
+  [ "$failed" -eq 0 ]
 }
 
 # flag_test_tamper <intent> <files> — the test-tamper guard refused the push
@@ -2598,7 +2602,7 @@ case "$INTENT_TYPE" in
       commit_and_push "fix-reviews" || cp_rc=$?
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
-      retract_unlanded_claims "fix-reviews" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)"
+      retract_unlanded_claims "fix-reviews" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         finalize_review_application "fix-reviews"
@@ -2655,7 +2659,7 @@ case "$INTENT_TYPE" in
       # posting + duplicate recovery above.)
       resolve_dispositioned_comments "fix-reviews" failed
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
-      retract_unlanded_claims "fix-reviews" failed
+      retract_unlanded_claims "fix-reviews" failed || true
     fi
     exit "$rc"
     ;;
@@ -2677,7 +2681,7 @@ case "$INTENT_TYPE" in
       commit_and_push "fix-bot-comment" || cp_rc=$?
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
-      retract_unlanded_claims "fix-bot-comment" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)"
+      retract_unlanded_claims "fix-bot-comment" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         _fbc_terminal="applied"
@@ -2733,7 +2737,7 @@ case "$INTENT_TYPE" in
       # fix-reviews failure branch above for why running the resolver here is safe.
       resolve_dispositioned_comments "fix-bot-comment" failed
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
-      retract_unlanded_claims "fix-bot-comment" failed
+      retract_unlanded_claims "fix-bot-comment" failed || true
     fi
     exit "$rc"
     ;;
@@ -2794,7 +2798,7 @@ case "$INTENT_TYPE" in
       commit_and_push "review-changes" || cp_rc=$?
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
-      retract_unlanded_claims "review-changes" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)"
+      retract_unlanded_claims "review-changes" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
       # No-op guard (#1786): a review-changes pass whose net diff to base is empty
       # was already flagged by flag_noop_pr (needs-human label + auto-merge
       # disabled + suppressed EXIT-trap restore). Stop here — never resolve threads
@@ -2840,7 +2844,7 @@ case "$INTENT_TYPE" in
       # fix-reviews failure branch above for why running the resolver here is safe.
       resolve_dispositioned_comments "review-changes" failed
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
-      retract_unlanded_claims "review-changes" failed
+      retract_unlanded_claims "review-changes" failed || true
     fi
     exit "$rc"
     ;;
