@@ -287,7 +287,7 @@ reset_engine_usage() {
   LAST_CACHE_WRITE_TOKENS=0
   LAST_OUTPUT_TOKENS=0
   local f; f="$(_engine_usage_sidecar)"
-  [ -n "$f" ] && rm -f "$f" 2>/dev/null || true
+  [ -n "$f" ] && rm -f "$f" "${f}.key" 2>/dev/null || true
 }
 
 # _usage_all_numeric <a> <b> <c> <d>

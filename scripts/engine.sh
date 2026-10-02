@@ -470,7 +470,9 @@ tier_for_intent() {
 # _usage_threshold — DEV_LEAD_USAGE_THRESHOLD (default: 75%), the usage percent at
 # or above which an engine (or a Gemini key) counts as out of headroom.
 _usage_threshold() {
-  printf '%s' "${DEV_LEAD_USAGE_THRESHOLD:-75}"
+  local t="${DEV_LEAD_USAGE_THRESHOLD:-75}"
+  [[ "$t" =~ ^[0-9]+$ ]] || t=75
+  printf '%s' "$t"
 }
 
 # check_provider_headroom <engine>
@@ -1021,7 +1023,14 @@ _gemini_chain_invoke() {
         for _key_i in "${!_key_names[@]}"; do
           _key_n=$((_key_n + 1))
           _key_name="${_key_names[$_key_i]}"
-          _key="${!_key_name}"
+          # Resolve the two primary names from the saved originals: the exports below
+          # overwrite both, so a distinct GOOGLE_API_KEY would otherwise read the
+          # first attempt's value and never rotate.
+          case "$_key_name" in
+            GEMINI_API_KEY) _key="$_saved_gmk" ;;
+            GOOGLE_API_KEY) _key="$_saved_gk" ;;
+            *)              _key="${!_key_name}" ;;
+          esac
           export GOOGLE_API_KEY="$_key" GEMINI_API_KEY="$_key"
           rc=0
           _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \

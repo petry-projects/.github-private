@@ -306,7 +306,8 @@ render_token_report() {
 
   if [ "$total_calls" -eq 0 ]; then
     rm -f "$enriched"
-    printf 'No token-usage records found in the last %s days.\n' "$lookback"
+    printf 'No token-usage records found in the last %s days.\n\n' "$lookback"
+    render_gemini_quota "$dir"
     return 0
   fi
 

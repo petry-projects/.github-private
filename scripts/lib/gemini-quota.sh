@@ -54,7 +54,15 @@ gq_setting() {
 # gq_key_index <VAR_NAME> — the key index for a Gemini key variable name.
 gq_key_index() {
   case "${1:-}" in
-    GEMINI_API_KEY|GOOGLE_API_KEY) printf '1' ;;
+    GEMINI_API_KEY) printf '1' ;;
+    # A GOOGLE_API_KEY holding a different credential than GEMINI_API_KEY is its own
+    # key: it gets its own index so cooldowns and ledger usage are not merged.
+    GOOGLE_API_KEY)
+      if [ -n "${GEMINI_API_KEY:-}" ] && [ "${GOOGLE_API_KEY:-}" != "$GEMINI_API_KEY" ]; then
+        printf '1b'
+      else
+        printf '1'
+      fi ;;
     GOOGLE_API_KEY_[0-9]*)         printf '%s' "${1#GOOGLE_API_KEY_}" ;;
     *)                             return 1 ;;
   esac
@@ -103,7 +111,12 @@ gq_day_start() {
     d="$(TZ="$tz" date -d "@$now" +%Y-%m-%d 2>/dev/null)" \
       && r="$(TZ="$tz" date -d "$d $t" +%s 2>/dev/null)" \
       && [[ "$r" =~ ^[0-9]+$ ]] && {
-        [ "$r" -gt "$now" ] && r=$(( r - _GQ_DAY ))
+        if [ "$r" -gt "$now" ]; then
+          # Previous local calendar day (not now-86400: DST days are 23/25h).
+          d="$(TZ="$tz" date -d "$d -1 day" +%Y-%m-%d 2>/dev/null)" \
+            && r="$(TZ="$tz" date -d "$d $t" +%s 2>/dev/null)" \
+            && [[ "$r" =~ ^[0-9]+$ ]] || r=$(( now - _GQ_DAY ))
+        fi
         printf '%s' "$r"
         return 0
       }
@@ -132,7 +145,15 @@ gq_ledger_rows() {
   command -v jq >/dev/null 2>&1 || { printf 'jq unavailable'; return 1; }
   out="$(jq -R -s -r --arg k "$idx" --argjson since "$since" '
       [ split("\n")[] | select(test("\\S")) | (try fromjson catch "__bad__") ] as $recs
-      | ($recs | map(select(. == "__bad__")) | length) as $bad
+      | ($recs | map(select(. == "__bad__")) | length) as $badjson
+      | ($recs | map(select(type == "object"
+            and (.kind // "token_usage") == "token_usage" and .engine == "gemini"
+            and ((.key_index // "" | tostring) == $k)
+            and ( ((.ts // "") | try fromdateiso8601 catch null) == null
+                  or ([.input_tokens, .cache_read_tokens, .output_tokens]
+                      | any(. != null and type != "number")) )))
+          | length) as $badrec
+      | ($badjson + $badrec) as $bad
       | if $bad > 0 then "BAD\t\($bad)"
         else
           $recs[] | select(type == "object")
@@ -193,7 +214,7 @@ gq_key_pct() {
       rows++
       r1 = 0; t1 = 0; rd = 0
       for (i = 1; i <= n; i++) if (cm[i] ~ re) {
-        if (ce[i] > minute_start) { r1++; t1 += ct[i] }
+        if (ce[i] >= minute_start) { r1++; t1 += ct[i] }
         if (ce[i] >= day) rd++
       }
       split(pct_of($4, r1) " " pct_of($5, t1) " " pct_of($6, rd), p, " ")
@@ -253,7 +274,7 @@ gq_record_cooldown() {
   now="$(gq_now)"
   jq -cn --arg ts "$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" \
     --arg workflow "${TOKEN_WORKFLOW:-unknown}" --arg run_id "${GITHUB_RUN_ID:-}" \
-    --arg k "$idx" --arg model "$model" --argjson until $(( now + secs )) --arg reason "$reason" \
+    --arg k "$idx" --arg model "$model" --argjson until $(( now + 10#$secs )) --arg reason "$reason" \
     '{ kind: "gemini_key_cooldown", ts: $ts, workflow: $workflow, engine: "gemini",
        key_index: ($k | tonumber? // $k), model: $model, until: $until,
        reason: $reason, run_id: $run_id }' 2>/dev/null >> "$f" || true
@@ -297,7 +318,7 @@ gq_retry_hint_sec() {
 #                                              (unknown limits / at-or-above threshold)
 gq_rotation_plan() {
   local model="$1" threshold="$2"; shift 2
-  local name idx until pct now first="" last=""
+  local name idx until pct now first="" mid="" last="" _dep=", ${GEMINI_DEPLETED_KEYS:-}, "
   now="$(gq_now)"
   for name in "$@"; do
     idx="$(gq_key_index "$name")" || continue
@@ -307,11 +328,14 @@ gq_rotation_plan() {
       continue
     fi
     pct="$(gq_key_pct "$idx" "$model")"
-    if [[ "$pct" =~ ^[0-9]+$ ]] && [ "$pct" -lt "$threshold" ]; then
+    if [[ "$_dep" == *", ${name}, "* ]]; then
+      # Billing-depleted keys stay last resort whatever their measured headroom (#1777).
+      last="${last}use"$'\t'"${name}"$'\t'"${idx}"$'\n'
+    elif [[ "$pct" =~ ^[0-9]+$ ]] && [ "$pct" -lt "$threshold" ]; then
       first="${first}use"$'\t'"${name}"$'\t'"${idx}"$'\n'
     else
-      last="${last}use"$'\t'"${name}"$'\t'"${idx}"$'\n'
+      mid="${mid}use"$'\t'"${name}"$'\t'"${idx}"$'\n'
     fi
   done
-  printf '%s%s' "$first" "$last"
+  printf '%s%s%s' "$first" "$mid" "$last"
 }

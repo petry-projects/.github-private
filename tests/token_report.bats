@@ -523,7 +523,10 @@ JSONL
 }
 
 @test "render_gemini_quota: no-op when no record carries a gemini key index" {
-  run render_gemini_quota "$FIXTURES"
+  local d; d="$(mktemp -d)"
+  printf '%s\n' '{"ts":"2026-06-01T10:00:00Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":1,"output_tokens":1,"repo":"r"}' > "$d/run.jsonl"
+  run render_gemini_quota "$d"
+  rm -rf "$d"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
