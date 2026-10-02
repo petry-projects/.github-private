@@ -581,7 +581,9 @@ can block a merge:
   Both `agent-ingress.yml` and the old stubs fire → each role runs *twice* per
   event. Wasteful and log-noisy, but not a correctness or gating failure (agentic
   roles are idempotent per-head-SHA; `pr-review`/`pr-auto-review` concurrency
-  groups collapse duplicates). **Rollback:** revert the ingress add; the stubs
+  groups collapse duplicates only where the old and new groups coincide — PR-keyed
+  events; the old `check_suite`/`workflow_run` stub groups were unique per run, so
+  those events may still double-run in this window). **Rollback:** revert the ingress add; the stubs
   alone resume normal single dispatch.
 - **State B — stubs deleted, ingress not yet added (coverage gap window).**
   No event-driven agent runs in markets until the ingress lands. No required

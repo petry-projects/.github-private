@@ -15,7 +15,7 @@ PACKAGE="$SCRIPT_DIR/docs/initiatives/agent-ingress-collapse-markets.md"
 SNAPSHOTS="$SCRIPT_DIR/tests/fixtures/agent-ingress/markets-pinned-reusables"
 
 setup() {
-  ROOT="$(mktemp -d)"
+  ROOT="$(mktemp -d)" || { echo "Failed to create temp dir" >&2; return 1; }
   mkdir -p "$ROOT/.github/workflows"
   INGRESS="$ROOT/.github/workflows/agent-ingress.yml"
   # The first ```yaml fence after the "## 3." heading is the §3 ingress.
@@ -48,6 +48,16 @@ teardown() {
   echo "$output"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ingress-if: OK"* ]]
+}
+
+@test "markets §3: every snapshot's recorded uses: target is still the ingress's pin (PINNED-USES)" {
+  local uses rec n=0
+  for rec in "$SNAPSHOTS"/*.yml; do
+    uses="$(sed -n 's/^# PINNED-USES: //p' "$rec")"
+    yq '.jobs[].uses' "$INGRESS" | grep -qxF "$uses"
+    n=$((n + 1))
+  done
+  [ "$n" -ge 4 ]
 }
 
 @test "markets §3: validate-caller-inputs.sh passes against the pinned reusables (no collision)" {
@@ -90,7 +100,9 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == pr-review-* ]]
   [[ "$output" != *"'batch'"* ]]
-  [[ "$output" == *"'enumerate'"* ]]
+  # PR-identity branches must stay, in order, ahead of the 'enumerate' fallback.
+  local re="pull_request\\.number.*check_suite\\.pull_requests\\[0\\]\\.number.*inputs\\.pr_url.*client_payload\\.pr_url.*'enumerate'"
+  printf '%s' "$output" | tr '\n' ' ' | grep -Eq "$re"
 }
 
 @test "markets §3: ci-failure-analyst concurrency is unchanged" {
