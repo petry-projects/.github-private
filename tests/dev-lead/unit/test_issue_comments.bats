@@ -254,3 +254,16 @@ setup() {
   [[ "$output" != *"FORGED_STEERING"* ]]
   [[ "$output" =~ [Nn]o.*comment ]]
 }
+
+@test "issue-comments: a final record without a trailing newline is still processed" {
+  # jq always newline-terminates, so shadow it with a function that emits a K
+  # record with NO trailing newline: the `|| [ -n "$tag" ]` read guard must
+  # still deliver it (otherwise the last comment is silently lost).
+  local b64
+  b64=$(printf '%s' '{"login":"alice","created_at":"","body":"LAST_NO_NEWLINE"}' | { base64 -w 0 2>/dev/null || base64 | tr -d '\n'; })
+  jq() { cat >/dev/null; printf 'K\t%s' "$b64"; }
+  run _ic_filter_human <<<'[]'
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [ "$(printf '%s' "$output" | base64 -d)" = '{"login":"alice","created_at":"","body":"LAST_NO_NEWLINE"}' ]
+}
