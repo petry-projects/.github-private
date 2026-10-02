@@ -464,6 +464,70 @@ GHEOF
   [[ "$listing" == *'"don-petry","donpetry-bot"'* ]]
 }
 
+# _claim_gh <listing-output> [post-output] — a fake gh whose post-claim marker
+# listing (and optionally the marker POST) is controlled by the test.
+_claim_gh() {
+  export CLAIM_LISTING="$1" CLAIM_POST="${2-777}"
+  cat > "$MOCK_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in
+  *"/dispatches"*) cat > "$GH_LOG.payload"; exit 0 ;;
+  *"api graphql"*) printf '%s' "$GRAPHQL_RESPONSE" ;;
+  *"--method POST"*"/comments"*) printf '%s' "$CLAIM_POST" ;;
+  *"comments?per_page"*"dev-lead-bot-comment-retry id="*)
+    [ "$CLAIM_LISTING" = "FAIL" ] && exit 1
+    printf '%s' "$CLAIM_LISTING" ;;
+  *"/pulls/"*) printf '%s' "$PR_JSON" ;;
+  *) echo "[]" ;;
+esac
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+}
+
+@test "sweep: a marker posted under an untrusted identity fails closed (no dispatch without dedup)" {
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+  # Our marker (777) does not come back from the trusted-author listing.
+  _claim_gh ""
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "0" ]
+  ! grep -q '/dispatches' "$GH_LOG"
+  grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/777' "$GH_LOG"
+  [[ "$output" == *"does not trust"* ]]
+  # The listing requires a trusted association as well as an automation login.
+  grep -q 'author_association' "$GH_LOG"
+}
+
+@test "sweep: an unreadable marker re-listing fails closed and withdraws the marker" {
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+  _claim_gh FAIL
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "0" ]
+  ! grep -q '/dispatches' "$GH_LOG"
+  grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/777' "$GH_LOG"
+}
+
+@test "sweep: a marker posted with an unreadable id is never dispatched over" {
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+  _claim_gh "777" ""
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "0" ]
+  ! grep -q '/dispatches' "$GH_LOG"
+  ! grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/$' "$GH_LOG"
+}
+
 @test "dispatch helpers report a failed dispatch, and only accepted ones are counted" {
   export DRY_RUN="false"
   gh() { return 1; }

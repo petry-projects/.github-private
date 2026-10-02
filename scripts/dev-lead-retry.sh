@@ -574,19 +574,40 @@ scan_pr_for_undispositioned_bot_comments() {
       echo "  [warn] bot-comment retry: could not record the retry marker on PR ${pr_number} — not dispatching (dedup unavailable)" >&2
       echo "0"; return 0
     fi
+    if [[ ! "$marker_id" =~ ^[0-9]+$ ]]; then
+      # Posted, but its id is unreadable: it can be neither verified nor withdrawn.
+      echo "  [warn] bot-comment retry: the retry marker's id on PR ${pr_number} is unreadable — not dispatching (fail closed)" >&2
+      echo "0"; return 0
+    fi
     # Two concurrent scans can both have seen no marker. Keep only the earliest
     # marker for this comment version AND attempt; the loser withdraws and does
     # not dispatch. Scoped to the attempt so a lost run's expired attempt-N marker
     # never wins against the attempt-N+1 retry that replaces it, and to markers
-    # our own automation posted (the same authors bcr_retry_decisions trusts), so
-    # a commenter pasting matching text cannot make every scan back off.
-    local first_marker logins_jq
+    # our own automation posted with a trusted association — exactly the markers
+    # bcr_retry_decisions counts — so a commenter pasting matching text cannot
+    # make every scan back off.
+    local marker_ids first_marker logins_jq
     logins_jq=$(jq -cn --arg a "$automation" '$a | split(",")')
-    first_marker=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+    if ! marker_ids=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
       --jq '.[] | select((.user.login // "") as $l | '"${logins_jq}"' | index($l) != null)
+            | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
             | select((.body // "") | contains("dev-lead-bot-comment-retry id='"${cid}"' version='"${version}"' attempt='"${attempt}"' ")) | .id' \
-      2>/dev/null | sort -n | head -n1) || first_marker=""
-    if [ -n "$first_marker" ] && [ "$first_marker" != "$marker_id" ]; then
+      2>/dev/null); then
+      echo "  [warn] bot-comment retry: could not re-read retry markers on PR ${pr_number} — withdrawing and not dispatching (fail closed)" >&2
+      gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1 || true
+      echo "0"; return 0
+    fi
+    first_marker=$(printf '%s\n' "$marker_ids" | grep -E '^[0-9]+$' | sort -n | head -n1 || true)
+    if [ -z "$first_marker" ]; then
+      # Our own marker is not among the trusted ones: this scan posts under an
+      # identity (or association) bcr_retry_decisions does not count, so its
+      # markers could never hold a retry pending or count an attempt — every scan
+      # would dispatch again. Fail closed rather than dispatch without dedup.
+      echo "  ::warning::bot-comment retry: the retry marker on PR ${pr_number} was posted by an identity the retry dedup does not trust (expected one of: ${automation}) — withdrawing and not dispatching" >&2
+      gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1 || true
+      echo "0"; return 0
+    fi
+    if [ "$first_marker" != "$marker_id" ]; then
       echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent scan already recorded a retry" >&2
       gh api -X DELETE "repos/${repo}/issues/comments/${marker_id}" >/dev/null 2>&1 || true
       echo "0"; return 0
