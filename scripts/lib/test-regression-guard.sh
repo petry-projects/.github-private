@@ -43,10 +43,17 @@ trg_extract_failures() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^not\ ok\ [0-9]+[[:space:]]+(.*)$ ]]; then
       name="${BASH_REMATCH[1]}"
+      # bats appends the measured duration ("in 123ms"); strip it so the same test
+      # failing on both heads compares equal despite differing timings.
+      name="${name%% in [0-9]*ms}"
       [[ "$name" =~ \#[[:space:]]*(TODO|skip|SKIP) ]] && continue
       printf '%s\n' "$name"
     elif [[ "$line" =~ ^FAILED\ ([^[:space:]]+) ]]; then
       printf '%s\n' "${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^FAIL\ +([^[:space:]]+) ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"            # jest/vitest: FAIL path/to/file.test.js
+    elif [[ "$line" =~ ^[[:space:]]*---\ FAIL:\ ([^[:space:]]+) ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"            # go test: --- FAIL: TestName
     fi
   done | sort -u
 }
@@ -70,7 +77,7 @@ trg_classify() {
     echo "timeout"
     return 0
   fi
-  if [[ "$base_ran" != "true" ]] || ! [[ "$base_rc" =~ ^[0-9]+$ ]]; then
+  if [[ "$base_ran" != "true" ]] || ! [[ "$base_rc" =~ ^[0-9]+$ ]] || (( base_rc == 124 )); then
     echo "unbaselined"
     return 0
   fi
@@ -147,10 +154,14 @@ trg_discover_cmd() {
 # output on stdout, the exit status as the return code.
 _trg_run() {
   local cmd="$1" limit="${DEV_LEAD_TEST_TIMEOUT:-1500}"
+  # PR-controlled code runs here: strip every write-capable credential from the
+  # test process's environment.
+  local -a scrub=(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u ANTHROPIC_API_KEY
+    -u CLAUDE_CODE_OAUTH_TOKEN -u DEV_LEAD_APP_TOKEN -u APP_PRIVATE_KEY)
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$limit" bash -c "$cmd" 2>&1
+    "${scrub[@]}" timeout "$limit" bash -c "$cmd" 2>&1
   else
-    bash -c "$cmd" 2>&1
+    "${scrub[@]}" bash -c "$cmd" 2>&1
   fi
 }
 

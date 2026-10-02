@@ -180,3 +180,36 @@ SH
   [[ "$status" -eq 0 ]]
   [[ "${lines[0]}" == $'not-run\t' ]]
 }
+
+@test "trg_extract_failures: strips the bats timing suffix so the same test compares equal" {
+  run trg_extract_failures <<'OUT'
+not ok 1 existing behaviour in 123ms
+OUT
+  [[ "$output" == "existing behaviour" ]]
+}
+
+@test "trg_extract_failures: reads jest FAIL and go --- FAIL lines" {
+  run trg_extract_failures <<'OUT'
+FAIL src/a.test.js
+--- FAIL: TestThing (0.00s)
+OUT
+  [[ "$output" == *"TestThing"* && "$output" == *"src/a.test.js"* ]]
+}
+
+@test "trg_classify: a timed-out baseline is unbaselined, not preexisting" {
+  run trg_classify true 124 "x" 1 "x"
+  [[ "$output" == "unbaselined" ]]
+}
+
+@test "_trg_run: write-capable credentials are not visible to the suite" {
+  GH_TOKEN=secret GITHUB_TOKEN=secret run _trg_run 'echo "[${GH_TOKEN:-}${GITHUB_TOKEN:-}]"'
+  [[ "$output" == "[]" ]]
+}
+
+@test "trg_scan_pass: an unbaselinable base (unknown sha) is unbaselined and not blocked" {
+  d="$BATS_TEST_TMPDIR/repo"; mkdir -p "$d"; cd "$d"
+  git init -q; git -c user.email=t@t -c user.name=T commit -q --allow-empty -m i
+  DEV_LEAD_TEST_CMD="echo 'not ok 1 broken'; exit 1" run trg_scan_pass "0000000000000000000000000000000000000000"
+  [[ "${lines[0]}" == $'unbaselined\t'* ]]
+  [[ "$status" -eq 0 ]]
+}
