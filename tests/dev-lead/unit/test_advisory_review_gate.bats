@@ -727,10 +727,19 @@ _detect_cr() {
   [ "$status" -eq 0 ]
 }
 
-@test "detect_advisory_rate_limit(#2008): PR #2000's body (throttled code review + security finding) is NOT 'no CodeRabbit evidence'" {
+@test "detect_advisory_rate_limit(#2008): PR #2000's body (throttled code review + security finding) IS rate-limited" {
+  # The security section does not hide the throttled code review: it is still
+  # detected so the review is retried. The security finding itself is held by the
+  # maintainer gate (test_maintainer_comment_gate.bats), not by this detector.
   local fixture="$SCRIPT_DIR/../tests/fixtures/coderabbit/pr2000-ratelimited-with-security-finding.md"
   [ -s "$fixture" ]
+  grep -q 'architecture_review_start' "$fixture"
   _detect_cr "$(cat "$fixture")"
+  [ "$status" -eq 0 ]
+}
+
+@test "detect_advisory_rate_limit(#2008): a security section that only mentions a rate limit is not a notice" {
+  _detect_cr "$(_cr_summary $'<!-- architecture_review_start -->\n### Security Architecture Review\n- Low: the client ignores the API rate limit and usage limit reached errors.\n<!-- architecture_review_end -->')"
   [ "$status" -eq 1 ]
 }
 

@@ -114,10 +114,13 @@ readonly ADVISORY_CUBIC_RATE_LIMIT_RE='cubic.{0,40}(trial|free trial) (ended|exp
 # edited in place, holds two independently throttled outputs: the code review (a
 # `rate limited by coderabbit.ai` block) and the Security Architecture Review (not
 # throttled with it; it can carry findings, PR #2000). jq def `rl_scope` (input
-# {bot, body}) returns only what the rate-limit regex may see: "" for a CodeRabbit
-# summary that carries an architecture_review section (that is evidence); ONLY the
-# rate-limited block when present; "" for any other CodeRabbit summary (a walkthrough
-# merely mentioning rate limits is no notice); the whole body for everything else.
+# {bot, body}) returns only what the rate-limit regex may see: ONLY the rate-limited
+# block when present, even beside an architecture_review section, so a throttled
+# code review is still detected and retried; "" for any other CodeRabbit summary (a
+# walkthrough or a security section merely mentioning rate limits is no notice);
+# the whole body for everything else. A security section is evidence in its own
+# right: its findings are held by the maintainer gate and dispositioned through
+# reviewer_sources_finding_section_pattern, independently of this scope.
 # Shared by get_advisory_bot_states() and detect_advisory_rate_limit(), which also
 # order comments by lastEditedAt // createdAt (the summary is edited in place).
 # shellcheck disable=SC2034
@@ -131,8 +134,7 @@ readonly _ADVISORY_RL_SCOPE_JQ='
          and (($b | contains("<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"))
               or ($b | contains($rl_start)))
       then
-        if ($b | contains("<!-- architecture_review_start -->")) then ""
-        elif ($b | contains($rl_start)) then ($b | split($rl_start)[1] | split($rl_end)[0])
+        if ($b | contains($rl_start)) then ($b | split($rl_start)[1] | split($rl_end)[0])
         else "" end
       else $b end;
 '
@@ -398,7 +400,7 @@ detect_advisory_rate_limit() {
     | group_by(.bot)
     | map(sort_by(.time) | last)
     # Section-aware (#2008): the regex sees only the rate-limited block of a
-    # CodeRabbit summary, and nothing of one that carries a security review.
+    # CodeRabbit summary, whether or not it also carries a security review.
     | map(.body = rl_scope)
     # Generic markers match any bot; the cubic clause only cubic'"'"'s own notice (#1903).
     | map(select((.body | test($pat; "i"))
