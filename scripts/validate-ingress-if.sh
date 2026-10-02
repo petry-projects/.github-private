@@ -270,19 +270,20 @@ viif_group_stems() {
 # The other half of the collision rule (no reuse of a group the pinned reusable
 # declares) needs the reusable at its pinned ref; validate-caller-inputs.sh owns it.
 viif_check_concurrency() {
-  local role="$1" group="$2" cancel="$3" rc=0 expr bad stem stems
+  local role="$1" group="$2" cancel="$3" rc=0 expr bad stem stems group_exprs
   if [ -z "$group" ]; then
     echo "concurrency: declares no group"
     return 1
   fi
 
+  group_exprs="$(viif_group_exprs "$group")"
   while IFS= read -r expr; do
     [ -n "$expr" ] || continue
     if ! bad="$(viif_forbidden "$expr")"; then
       echo "concurrency.group reaches beyond the event payload — forbidden construct(s): ${bad}"
       rc=1
     fi
-  done < <(viif_group_exprs "$group")
+  done <<< "$group_exprs"
 
   case "$cancel" in
     ''|true|false) : ;;
@@ -331,7 +332,7 @@ viif_job_concurrency() {
 # filter. Emits ::error:: naming the offending job (and, for an if: violation,
 # the forbidden construct); returns 1 on any failure, 0 if clean.
 viif_validate_ingress() {
-  local file="$1" rc=0 job uses ifexpr bad group cancel reason
+  local file="$1" rc=0 job uses ifexpr bad group cancel reason concurrency_checks
   local -a jobs
 
   mapfile -t jobs < <(yq '.jobs | keys | .[]' "$file" 2>/dev/null)
@@ -366,11 +367,12 @@ viif_validate_ingress() {
     # (3) job-level concurrency: bounds (ADR-0010).
     IFS=$'\x1f' read -r group cancel < <(viif_job_concurrency "$file" "$job")
     if [ -n "$group" ] || [ -n "$cancel" ]; then
+      concurrency_checks="$(viif_check_concurrency "$job" "$group" "$cancel" || true)"
       while IFS= read -r reason; do
         [ -n "$reason" ] || continue
         echo "::error::agent-ingress job '$job' ${reason} (ADR-0010: a job-level concurrency group may read only the event surface an if: may read, must carry the role name as a prefix, and cancel-in-progress must be a literal boolean)"
         rc=1
-      done < <(viif_check_concurrency "$job" "$group" "$cancel")
+      done <<< "$concurrency_checks"
     fi
   done
 

@@ -285,16 +285,19 @@ vci_reusable_groups() {
 # declares (viif_group_stems: the literal text before the first placeholder).
 vci_check_concurrency_collision() {
   local job="$1" group="$2" reusable="$3" label="${4:-$3}" rc=0 stem rgroup rstems
+  local reusable_groups group_stems
+  reusable_groups="$(vci_reusable_groups "$reusable" || true)"
   rstems="$(while IFS= read -r rgroup; do
               [ -n "$rgroup" ] && viif_group_stems "$rgroup"
-            done < <(vci_reusable_groups "$reusable") | LC_ALL=C sort -u)"
+            done <<< "$reusable_groups" | LC_ALL=C sort -u)"
+  group_stems="$(viif_group_stems "$group")"
   while IFS= read -r stem; do
     [ -n "$stem" ] || continue
     if printf '%s\n' "$rstems" | grep -qxF -- "$stem"; then
       echo "::error::ingress job '$job' concurrency group '${stem}…' collides with a group its pinned reusable declares (${label}) — nested caller/reusable groups block or cancel each other (ADR-0010)"
       rc=1
     fi
-  done < <(viif_group_stems "$group")
+  done <<< "$group_stems"
   [ "$rc" -eq 0 ] && echo "OK: $label — ingress job '$job' concurrency group does not collide with the reusable's"
   return "$rc"
 }
@@ -345,6 +348,8 @@ vci_scan_repo() {
   local -a lines
   local i n
 
+  tmp="$(mktemp)"
+  trap 'rm -f "${tmp:-}"; trap - RETURN' RETURN
   shopt -s nullglob
   for wf in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
     mapfile -t lines < "$wf"
@@ -367,7 +372,6 @@ vci_scan_repo() {
       fi
       [ -n "$keys" ] || [ -n "$group" ] || continue  # nothing forwarded, no ingress group — nothing to check
 
-      tmp="$(mktemp)"
       label="$(basename "$wf") → ${repo_slug}/${wf_path}@${ref}"
       if vci_resolve_reusable "$repo_slug" "$wf_path" "$ref" "$tmp"; then
         checked=$((checked + 1))
@@ -381,7 +385,6 @@ vci_scan_repo() {
         echo "::warning::caller-inputs: could not resolve ${repo_slug}/${wf_path}@${ref} (referenced by $(basename "$wf")) — skipping; verify the forwarded inputs manually"
         warned=$((warned + 1))
       fi
-      rm -f "$tmp"
     done
   done
 
