@@ -1177,7 +1177,7 @@ case "$cmd" in
   api)
     case "$*" in
       *"pulls?state=open"*) echo "0" ;;
-      *comments*)           echo '[{"user":{"login":"alice","type":"User"},"created_at":"2026-08-21T01:14:00Z","body":"ANSWER: the telemetry source is the oauth/usage endpoint."}]' ;;
+      *comments*)           echo '[{"user":{"login":"alice","type":"User"},"author_association":"MEMBER","created_at":"2026-08-21T01:14:00Z","body":"ANSWER: the telemetry source is the oauth/usage endpoint."}]' ;;
       *"users/"*)           echo '{"id":12345}' ;;
       *"issues/"*)          echo '{"title":"Test","body":"QUESTION: what is the telemetry source?"}' ;;
       *)                    echo "{}" ;;
