@@ -1216,6 +1216,19 @@ resolve_dispositioned_comments() {
     cdv_disposition_is_stale "$edited_at" "$chosen_created" || stale_rc=$?
     if [ "$stale_rc" -ne 1 ]; then
       echo "::notice::not minimizing comment ${cid} — its disposition predates the last edit (${edited_at}) or a timestamp is unreadable; needs a fresh disposition (#2008)"
+      # Converge duplicates to one (#1992): minimize every superseded disposition
+      # reply OUTDATED before skipping, so a later pass sees exactly one authorized
+      # disposition even when the candidate is not yet minimized.
+      local sid
+      for sid in "${superseded_ids[@]:-}"; do
+        [ -z "$sid" ] && continue
+        if gh api graphql -f query='mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}' \
+            -f id="$sid" >/dev/null 2>&1; then
+          echo "::notice::minimized superseded disposition reply ${sid} OUTDATED (#1992)"
+        else
+          echo "::warning::failed to minimize superseded disposition reply ${sid} OUTDATED"
+        fi
+      done
       continue
     fi
 
