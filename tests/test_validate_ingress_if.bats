@@ -340,6 +340,36 @@ setup() {
   [ "$output" = "pr-review-pr-" ]
 }
 
+@test "viif_group_exprs: a quoted }} does not close the expression; an unclosed tail is still emitted" {
+  run viif_group_exprs "x-\${{ format('}}') }}"
+  [ "$status" -eq 0 ]
+  [ "$output" = " format('}}') " ]
+
+  run viif_group_exprs "x-\${{ github.event.a == '}}' && 'y' }}-\${{ github.event.b }}"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [[ "${lines[0]}" == *"'}}'"* ]]
+
+  run viif_group_exprs 'pr-review-${{ vars.lane'
+  [ "$status" -eq 0 ]
+  [ "$output" = " vars.lane" ]
+  run viif_check_concurrency pr-review 'pr-review-${{ vars.lane' ""
+  [ "$status" -eq 1 ]
+}
+
+@test "viif_group_stems: every expression of a multi-expression group is stem-checked" {
+  run viif_group_stems "\${{ format('a-{0}', github.event.number) }}-\${{ format('b-{0}', github.event.number) }}"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'a-\nb-')" ]
+}
+
+@test "concurrency: an explicit null cancel-in-progress fails" {
+  run viif_validate_ingress "${SAMPLES}/concurrency-cancel-null.yml"
+  echo "$output"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"literal boolean"* ]]
+}
+
 @test "concurrency: a bounded, role-prefixed group with a literal cancel-in-progress passes" {
   run viif_validate_ingress "${SAMPLES}/concurrency-good.yml"
   echo "$output"
@@ -396,4 +426,19 @@ setup() {
   rm -rf "$root"
   [ "$status" -eq 1 ]
   [[ "$output" == *"vars"* ]]
+}
+
+@test "vci_job_for_uses: finds the job key for plain, commented, and quoted keys" {
+  # shellcheck source=scripts/validate-caller-inputs.sh
+  source "${REPO_ROOT}/scripts/validate-caller-inputs.sh"
+  local f="${BATS_TEST_TMPDIR}/wf.yml"
+  printf '%s\n' 'jobs:' '  plain: # note' '    uses: x/y/.github/workflows/a.yml@v1' \
+    '  "dq":' '    uses: x/y/.github/workflows/b.yml@v1' \
+    "  'sq':" '    uses: x/y/.github/workflows/c.yml@v1' > "$f"
+  run vci_job_for_uses "$f" 3
+  [ "$output" = "plain" ]
+  run vci_job_for_uses "$f" 5
+  [ "$output" = "dq" ]
+  run vci_job_for_uses "$f" 7
+  [ "$output" = "sq" ]
 }

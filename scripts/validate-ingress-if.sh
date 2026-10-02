@@ -219,6 +219,11 @@ viif_group_exprs() {
       fi
       (( i++ ))
     done
+    # Unclosed ${{ — validate the remaining tail rather than dropping it.
+    if (( i >= ${#rest} )); then
+      printf '%s\n' "$expr_body"
+      rest=""
+    fi
   done
 }
 
@@ -240,7 +245,7 @@ viif_group_stems() {
     printf '%s\n' "$head"
     return 0
   fi
-  viif_group_exprs "$group" | head -n 1 | awk '
+  viif_group_exprs "$group" | awk '
     function skipws() { while (i <= n && substr(s, i, 1) ~ /[ \t]/) i++ }
     {
       s = $0; n = length(s); i = 1; sp = 0; prev = "START"
@@ -349,8 +354,7 @@ viif_job_concurrency() {
       cancel_type="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"] | type" "$file" 2>/dev/null)"
       if [ "$cancel_type" = "boolean" ]; then
         cancel="$(yq ".jobs[\"$job\"].concurrency[\"cancel-in-progress\"]" "$file" 2>/dev/null)"
-        [ "$cancel" = "null" ] && cancel=""
-      elif [ "$cancel_type" != "null" ]; then
+      elif [ "$(yq ".jobs[\"$job\"].concurrency | has(\"cancel-in-progress\")" "$file" 2>/dev/null)" = "true" ]; then
         # cancel-in-progress is present but not a boolean — this is an error, mark with special value
         cancel="__NOT_BOOLEAN__"
       fi
