@@ -143,6 +143,7 @@ CFGEOF
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$PR_CREATED_FLAG" "$COMMENT_FILE"
+  [ -z "${CAP_SEEN_FILE:-}" ] || rm -f "$CAP_SEEN_FILE"
   rm -rf "$STUB_BIN_DIR" "$PLG_STANDARDS_DIR"
 }
 
