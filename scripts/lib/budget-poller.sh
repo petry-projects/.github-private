@@ -212,7 +212,7 @@ bp_append_record() {
   local log="$1" record="$2" max="${3:-720}" tmp
   [[ "$max" =~ ^[0-9]+$ ]] && [ "$max" -gt 0 ] || max=720
   printf '%s\n' "$record" >> "$log"
-  tmp="$(mktemp "${log}.XXXXXX")" || return 0
+  tmp="$(mktemp "${log}.XXXXXX")" || { bp_log "warning: failed to create temp file for log pruning"; return 0; }
   if tail -n "$max" "$log" > "$tmp"; then
     mv -f "$tmp" "$log"
   else
@@ -317,23 +317,25 @@ bp_fleet_section() {
 # log", never as fatal.
 # ---------------------------------------------------------------------------
 bp_download_latest_log() {
-  local repo="$1" dest="$2" id workdir found
-  id="$(gh api "repos/${repo}/actions/artifacts?name=${BUDGET_POLLER_ARTIFACT}&per_page=10" \
-    --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .id // empty' \
+  local repo="$1" dest="$2" ids id workdir found
+  ids="$(gh api "repos/${repo}/actions/artifacts?name=${BUDGET_POLLER_ARTIFACT}&per_page=10" \
+    --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[].id' \
     2>/dev/null || printf '')"
-  [[ "$id" =~ ^[0-9]+$ ]] || return 1
-  workdir="$(mktemp -d)" || return 1
-  if ! gh api "repos/${repo}/actions/artifacts/${id}/zip" > "$workdir/log.zip" 2>/dev/null \
-    || ! unzip -q -o "$workdir/log.zip" -d "$workdir/out" >/dev/null 2>&1; then
+  # Newest first; fall through to older artifacts when one is unreadable/malformed.
+  for id in $ids; do
+    [[ "$id" =~ ^[0-9]+$ ]] || continue
+    workdir="$(mktemp -d)" || return 1
+    found=""
+    if gh api "repos/${repo}/actions/artifacts/${id}/zip" > "$workdir/log.zip" 2>/dev/null \
+      && unzip -q -o "$workdir/log.zip" -d "$workdir/out" >/dev/null 2>&1; then
+      found="$(find "$workdir/out" -type f -name '*.jsonl' -print | head -n 1)"
+    fi
+    if [ -n "$found" ] && [ -s "$found" ] && jq -e . "$found" >/dev/null 2>&1; then
+      cp "$found" "$dest"
+      rm -rf "$workdir"
+      return 0
+    fi
     rm -rf "$workdir"
-    return 1
-  fi
-  found="$(find "$workdir/out" -type f -name '*.jsonl' -print | head -n 1)"
-  if [ -z "$found" ]; then
-    rm -rf "$workdir"
-    return 1
-  fi
-  cp "$found" "$dest"
-  rm -rf "$workdir"
-  return 0
+  done
+  return 1
 }

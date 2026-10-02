@@ -586,7 +586,7 @@ done
 # so a silently dead feed is visible. Best-effort and read-only: a missing
 # artifact or API error renders "no OK record", never fails the monitor.
 # ---------------------------------------------------------------------------
-budget_poller_log_file=$(mktemp)
+budget_poller_log_file=$(mktemp) || { echo "::error::budget-poller: failed to create temporary file" >&2; exit 1; }
 if ! bp_download_latest_log "${BUDGET_POLLER_REPO:-petry-projects/.github-private}" "$budget_poller_log_file"; then
   echo "::notice::budget-poller: no readable ${BUDGET_POLLER_ARTIFACT} artifact — reporting no OK record"
   : > "$budget_poller_log_file"
