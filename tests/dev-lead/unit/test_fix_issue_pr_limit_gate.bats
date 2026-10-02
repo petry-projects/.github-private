@@ -224,3 +224,66 @@ teardown() {
   [[ "$output" == *"::warning::"* ]]
   [[ "$output" == *"failing open"* ]]
 }
+
+# ── PR_LIMITS_ORG_CAP wiring (#2018) ─────────────────────────────────────────
+# The shared guard's plg_effective_org_cap (petry-projects/.github#1221) reads
+# PR_LIMITS_ORG_CAP as a runtime override for the org-wide cap. The org variable
+# only takes effect if every workflow step that runs the gate maps it into env.
+
+# Overwrite the fake guard with one that records the PR_LIMITS_ORG_CAP it sees
+# ("<unset>" when absent) so tests can assert the value reaches the gate.
+_install_cap_recording_guard() {
+  CAP_SEEN_FILE="$(mktemp -u)"; export CAP_SEEN_FILE
+  cat > "$PLG_STANDARDS_DIR/scripts/lib/pr-limit-gate.sh" <<'GUARDEOF'
+#!/usr/bin/env bash
+plg_admission_gate() {
+  printf '%s' "${PR_LIMITS_ORG_CAP-<unset>}" > "$CAP_SEEN_FILE"
+  return 0
+}
+GUARDEOF
+}
+
+@test "pr-limit gate: PR_LIMITS_ORG_CAP from step env reaches plg_admission_gate" {
+  export DEV_LEAD_DRY_RUN="false"
+  export PR_LIMITS_ORG_CAP="42"
+  _install_cap_recording_guard
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CAP_SEEN_FILE")" = "42" ]
+  rm -f "$CAP_SEEN_FILE"
+}
+
+@test "pr-limit gate: PR_LIMITS_ORG_CAP unset → script does not inject a cap" {
+  export DEV_LEAD_DRY_RUN="false"
+  unset PR_LIMITS_ORG_CAP
+  _install_cap_recording_guard
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CAP_SEEN_FILE")" = "<unset>" ]
+  rm -f "$CAP_SEEN_FILE"
+}
+
+@test "pr-limit gate: every workflow step running dev-lead-fix-issue.sh maps vars.PR_LIMITS_ORG_CAP" {
+  command -v yq >/dev/null || skip "yq not installed"
+  local wf steps found=0
+  for wf in "$SCRIPT_DIR"/.github/workflows/*.yml; do
+    # Step names (one per line) whose run: invokes the gate-running script.
+    steps=$(yq -r '.jobs[].steps[]? | select((.run // "") | test("dev-lead-fix-issue\\.sh")) | .name' "$wf")
+    [ -n "$steps" ] || continue
+    while IFS= read -r name; do
+      found=$((found + 1))
+      local val
+      val=$(NAME="$name" yq -r '.jobs[].steps[]? | select(.name == strenv(NAME)) | .env.PR_LIMITS_ORG_CAP // ""' "$wf")
+      [ "$val" = '${{ vars.PR_LIMITS_ORG_CAP }}' ] || {
+        echo "$(basename "$wf"): step '$name' PR_LIMITS_ORG_CAP='$val' (want \${{ vars.PR_LIMITS_ORG_CAP }})" >&2
+        return 1
+      }
+    done <<< "$steps"
+  done
+  # Guard against the selector silently matching nothing.
+  [ "$found" -ge 2 ]
+}

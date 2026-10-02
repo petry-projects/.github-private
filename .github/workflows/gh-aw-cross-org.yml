@@ -157,6 +157,9 @@ jobs:
           PROMPTS_DIR: ${{ github.workspace }}/dotgithub-private/prompts/dev-lead
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
           GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+          # Runtime override for the org-wide automation open-PR cap read by the
+          # PR-limit admission gate (#2018); unset → cap from pr-limits.json.
+          PR_LIMITS_ORG_CAP: ${{ vars.PR_LIMITS_ORG_CAP }}
         working-directory: target-repo
         run: bash ${{ github.workspace }}/dotgithub-private/scripts/dev-lead-fix-issue.sh
 
