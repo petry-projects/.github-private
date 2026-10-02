@@ -1,0 +1,29 @@
+name: Fixture Reusable — dev-lead (declares its own concurrency)
+# Representative subset of the real dev-lead reusable: concurrency is centralized HERE, at
+# workflow level, so a caller-side group must not reuse any of these names
+# (ADR-0010 collision rule) or the nested groups block/cancel each other.
+on:
+  workflow_call:
+    inputs:
+      agent_ref:
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: >-
+    ${{
+      (github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha))
+      || (github.event.pull_request.number && format('dev-lead-pr-{0}', github.event.pull_request.number))
+      || (github.event.issue.number && format('dev-lead-issue-{0}', github.event.issue.number))
+      || format('dev-lead-run-{0}', github.run_id)
+    }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo dispatch
