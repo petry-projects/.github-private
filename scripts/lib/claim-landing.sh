@@ -7,8 +7,11 @@
 #   addressed-marker + #1692 claim) from its OWN shell, BEFORE the harness commits
 #   and pushes. On petry-projects/.github#1220 that left false "Fixed" replies
 #   standing when the push never landed, and when the claim named the PR's FIRST
-#   commit (a stale pre-pass head). CodeRabbit then marked a thread "✅ Confirmed as
-#   addressed" on the strength of the reply, so an unverified claim cleared a gate.
+#   commit (a stale pre-pass head). Separately, CodeRabbit marked a thread
+#   "✅ Confirmed as addressed" on a reply describing `15a919e`, which WAS pushed:
+#   a wrong fix (a new test added, an existing one broken without being edited)
+#   cleared a review gate. Landing checks cannot catch that one; the
+#   test-regression guard does.
 #   The #1692 claim check ran only at thread-RESOLUTION time; nothing ever took a
 #   posted claim back.
 #

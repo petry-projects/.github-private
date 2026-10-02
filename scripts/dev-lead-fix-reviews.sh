@@ -19,6 +19,8 @@ source "$(dirname "$0")/lib/addressed-claim-verify.sh"
 source "$(dirname "$0")/lib/claim-landing.sh"
 # Test-tamper guard (#2013): a fix pass may not silently rewrite an existing test.
 source "$(dirname "$0")/lib/test-tamper-guard.sh"
+# Test-regression guard (#2013): a pass may not push with the suite newly red.
+source "$(dirname "$0")/lib/test-regression-guard.sh"
 # PR issue-comment disposition verifier (#1813): the issue-comment sibling of
 # addressed-claim-verify.sh. Turns a dev-lead comment-disposition reply into a
 # machine-checkable claim the harness verifies before minimizing the original
@@ -2213,7 +2215,7 @@ commit_and_push() {
     # existing test to make its own change pass (the petry-projects/.github#1220
     # `13927fc` shape). Refuse the push and escalate, like the no-op guard (rc 3).
     case "$intent" in
-      fix-reviews|fix-bot-comment)
+      fix-reviews|fix-bot-comment|review-changes|human-pr)
         local ttg_out ttg_rc=0 ttg_files
         ttg_out=$(ttg_scan_pass "${RESOLUTION_BASE_SHA:-}" HEAD) || ttg_rc=$?
         ttg_files=$(printf '%s\n' "$ttg_out" | sed '1d' | paste -sd ',' - | sed 's/,/, /g')
@@ -2231,12 +2233,30 @@ commit_and_push() {
         fi
         ;;
     esac
+    # Test-regression guard (#2013): the `15a919e` shape adds a new test and breaks an
+    # existing one WITHOUT editing it, so the tamper guard is silent. Run the suite;
+    # refuse the push when a test that passed on the pre-pass head fails on the result.
+    case "$intent" in
+      fix-reviews|fix-bot-comment|review-changes|human-pr)
+        local trg_out trg_rc=0 trg_verdict trg_cmd trg_tests
+        trg_out=$(trg_scan_pass "${RESOLUTION_BASE_SHA:-}") || trg_rc=$?
+        IFS=$'\t' read -r trg_verdict trg_cmd <<<"$(printf '%s\n' "$trg_out" | head -1)"
+        trg_tests=$(printf '%s\n' "$trg_out" | sed '1d' | paste -sd ',' - | sed 's/,/, /g')
+        record_suite_summary "$(trg_summary_line "$trg_verdict" "$trg_cmd")"
+        if [ "$trg_rc" -ne 0 ]; then
+          echo "::error::Test-regression guard: the ${intent} pass broke test(s) that passed on the pre-pass head [${trg_tests}] — refusing to push (#2013)"
+          flag_test_regression "$intent" "${trg_tests:-(unnamed)}"
+          return 4
+        fi
+        ;;
+    esac
     # No-clobber push (#1311): never discard a concurrent writer's unseen commit.
     # push_no_clobber fast-forwards normally and only ever force-with-leases a
     # rewritten branch, aborting if the remote moved beyond what we fetched.
     # A rejected push — or one the remote head does not reflect (#2013) — must not
     # leave this pass's "Fixed" replies standing: retract them before failing.
-    # (commit_and_push returns 3 for the no-op guard and 4 for the test-tamper guard.)
+    # (commit_and_push returns 3 for the no-op guard and 4 for the test-tamper and
+    # test-regression guards.)
     push_no_clobber || {
       echo "::error::git push failed — check remote access and branch permissions" >&2
       retract_unlanded_claims "$intent" failed || true
@@ -2360,6 +2380,47 @@ retract_unlanded_claims() {
   # A listing or PATCH failure leaves a possibly-false claim standing: report it so
   # callers do not treat the pass as clean (resolution gate closes).
   [ "$failed" -eq 0 ]
+}
+
+# record_suite_summary <line> — put the test-suite verdict in the run summary and the
+# log, so a pass that did not run the suite never reads as green (#2013).
+record_suite_summary() {
+  local line="$1"
+  case "$line" in
+    *"NOT RUN"*|*"NOT verified"*) echo "::warning::${line}" ;;
+    *) echo "::notice::${line}" ;;
+  esac
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
+}
+
+# flag_test_regression <intent> <tests> — the test-regression guard refused the push
+# (#2013). Same escalation as flag_test_tamper: one deduped comment, the
+# needs-human-review label, auto-merge disabled and its EXIT-trap restore suppressed.
+flag_test_regression() {
+  local intent="$1" tests="$2"
+  _AM_NEEDS_RESTORE=0
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] test-regression guard: would flag PR #${PR_NUMBER} (${intent}), add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}, disable auto-merge"
+    return 0
+  fi
+  local marker="<!-- dev-lead-test-regression pr=${PR_NUMBER} intent=${intent} -->"
+  if gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+       | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
+    echo "::notice::PR #${PR_NUMBER} already flagged for a test regression for intent=${intent} — not reposting"
+  else
+    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${marker}
+## Test suite newly red — human attention needed
+
+The \`${intent}\` pass left the test suite failing on test(s) that passed on the pre-pass head: ${tests}. A fix that breaks a passing test is wrong or incomplete, so dev-lead **did not push** this pass (#2013). Auto-merge has been disabled." \
+      || echo "::warning::could not post test-regression flag comment on PR #${PR_NUMBER}"
+  fi
+  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
+    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
+    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  return 0
 }
 
 # flag_test_tamper <intent> <files> — the test-tamper guard refused the push
@@ -2626,7 +2687,7 @@ case "$INTENT_TYPE" in
         # marker and do not re-enable auto-merge or resolve threads.
         echo "::warning::fix-reviews produced a net-zero diff — flagged for human, not pushed (#1340)"
       elif [ "$cp_rc" -eq 4 ]; then
-        echo "::warning::fix-reviews was refused by the test-tamper guard — flagged for human, not pushed (#2013)"
+        echo "::warning::fix-reviews was refused by a test guard (tamper/regression) — flagged for human, not pushed (#2013)"
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -2713,7 +2774,7 @@ case "$INTENT_TYPE" in
         # re-enable auto-merge or resolve threads.
         echo "::warning::fix-bot-comment produced a net-zero diff — flagged for human, not pushed (#1340)"
       elif [ "$cp_rc" -eq 4 ]; then
-        echo "::warning::fix-bot-comment was refused by the test-tamper guard — flagged for human, not pushed (#2013)"
+        echo "::warning::fix-bot-comment was refused by a test guard (tamper/regression) — flagged for human, not pushed (#2013)"
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -2835,6 +2896,14 @@ case "$INTENT_TYPE" in
       # or re-enable auto-merge on a self-cancelling PR.
       if [ "$cp_rc" -eq 3 ]; then
         echo "::notice::review-changes: no-op guard aborted the push for PR #${PR_NUMBER} — flagged for human, not merged (#1786)"
+        exit "$rc"
+      fi
+      # Test guards (#2013): the push was refused and the PR flagged for a human.
+      # Nothing landed, so a `fixed` disposition would cite a local-only commit; no
+      # thread resolves and auto-merge stays off.
+      if [ "$cp_rc" -eq 4 ]; then
+        echo "::warning::review-changes was refused by a test guard (tamper/regression) — flagged for human, not pushed (#2013)"
+        resolve_dispositioned_comments "review-changes" failed
         exit "$rc"
       fi
       if [ "$cp_rc" -eq 0 ]; then

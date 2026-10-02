@@ -1,4 +1,4 @@
-# 0010. Write-mode personas on a shared branch: verify what landed, retract what did not
+# 0011. Write-mode personas on a shared branch: verify what landed, retract what did not
 
 ## Status
 
@@ -19,8 +19,10 @@ a human session was driving the same branch:
   branch. Its claim named the PR's **first** commit: the head the model read
   with `git rev-parse HEAD` *before* committing anything, because the prompt
   told it to cite that SHA and also told it not to commit.
-- CodeRabbit marked a thread "Confirmed as addressed" on the strength of one of
-  those replies, so an unverified claim cleared a review gate.
+- CodeRabbit marked a thread "Confirmed as addressed" on the strength of a
+  reply describing `15a919e`, which *was* pushed. A wrong fix cleared a review
+  gate: it added a new test and broke an existing one without editing it, and
+  the persona never ran the suite against the pre-pass baseline.
 - A bot suggestion ("update the older test so the suite can pass") was applied
   literally. That rewrote an existing test and inverted deliberate behavior.
 
@@ -32,7 +34,7 @@ claim back. That breaks ADR-0004's "Fail Loud, Never Fake".
 
 ## Decision
 
-We will make every write-mode persona sharing a branch follow four rules, each
+We will make every write-mode persona sharing a branch follow five rules, each
 enforced by harness checks with bats tests (pure classifiers where applicable,
 per ADR-0004), not by prompt text alone:
 
@@ -59,6 +61,13 @@ per ADR-0004), not by prompt text alone:
    explicit cited `Test-Change-Justification:` trailer is refused before the
    push and escalated to a human (`scripts/lib/test-tamper-guard.sh`). A bot
    suggestion that contradicts an existing test goes to a human.
+5. **A red suite blocks the push.** Before the push, the harness runs the
+   repo's test command on the pass's result. A test that passed on the
+   pre-pass head and fails now refuses the push and escalates like the tamper
+   guard (`scripts/lib/test-regression-guard.sh`). A failure that already
+   existed on the pre-pass head does not block. When no test command can be
+   determined, the run summary says the suite was not run; it never implies
+   green.
 
 The boundary a check can assert: **no dev-lead claim reply survives a pass
 unless the claim's commit was produced by that pass and is on the remote

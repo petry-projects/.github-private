@@ -5387,3 +5387,106 @@ _run_2013() {
   [[ "$output" != *"Test-tamper guard"* ]]
   grep -q "PRRT_2013" "$T2013_MUT"
 }
+
+# ── review-changes / human-pr parity + test-regression guard (#2013) ───────────
+# Criterion 2: `review-changes` (and human-pr, which runs as review-changes) gets the
+# same claim-landing and test-tamper protection as fix-reviews. Criterion 3: a pass
+# that breaks a test that passed on the pre-pass head is never pushed (the 15a919e
+# shape from petry-projects/.github#1220: new test added, existing test broken,
+# existing test file untouched).
+
+@test "#2013: review-changes — a claim citing the commit THIS pass produced is kept and its thread resolves" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; git add -A; git -c user.email=t@t -c user.name=T commit -q -m 'fix(reviews): x'"
+  _run_2013 review-changes
+
+  [ -s "$T2013_PUSH" ]
+  grep -q "PRRT_2013" "$T2013_MUT"
+  [ ! -s "$T2013_PATCH" ]
+}
+
+@test "#2013: review-changes — a claim citing the pre-pass head is retracted" {
+  _setup_2013 BASE "printf 'fixed\n' > fix.txt"
+  _run_2013 review-changes
+
+  [ ! -s "$T2013_MUT" ]
+  grep -q "pulls/comments/777" "$T2013_PATCH"
+  grep -q "Retracted" "$T2013_PATCH"
+}
+
+@test "#2013: review-changes — an unjustified rewrite of an existing test is refused" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; sed -i 's/success precedence/failure precedence/' tests/existing.bats"
+  _run_2013 review-changes
+
+  [ ! -s "$T2013_PUSH" ]
+  [[ "$output" == *"Test-tamper guard"* ]]
+  [[ "$output" == *"needs-human-review"* ]]
+  [ ! -s "$T2013_MUT" ]
+  grep -q "pulls/comments/777" "$T2013_PATCH"
+}
+
+# The 15a919e fixture: a tiny TAP suite in the workdir. The pass adds a new passing
+# test and breaks the existing one by editing a *source* file, never the test file.
+_setup_15a919e() {
+  _setup_2013 HEAD "$1"
+  cat > "$T2013_DIR/suite.sh" <<'SH'
+#!/usr/bin/env bash
+n=0; rc=0
+t() { n=$((n+1)); if eval "$2"; then echo "ok $n $1"; else echo "not ok $n $1"; rc=1; fi; }
+t "existing behaviour" '[ "$(cat file.txt)" = initial ]'
+[ -f new_test_marker ] && t "new test" 'true'
+exit $rc
+SH
+  chmod +x "$T2013_DIR/suite.sh"
+  git -C "$T2013_DIR" add .
+  git -C "$T2013_DIR" -c user.email="t@test" -c user.name="T" commit -q -m "add suite"
+  git -C "$T2013_DIR" update-ref refs/remotes/origin/main "$(git -C "$T2013_DIR" rev-parse HEAD)"
+  T2013_BASE="$(git -C "$T2013_DIR" rev-parse HEAD)"
+  export DEV_LEAD_TEST_CMD="./suite.sh"
+}
+
+@test "#2013: 15a919e shape — new test added, existing test broken but untouched — the push is refused" {
+  _setup_15a919e "printf 'changed\n' > file.txt; : > new_test_marker; git add -A; git -c user.email=t@t -c user.name=T commit -q -m 'fix(reviews): x'"
+  _run_2013 fix-reviews
+
+  [ ! -s "$T2013_PUSH" ]
+  [[ "$output" == *"Test-regression guard"* ]]
+  [[ "$output" == *"existing behaviour"* ]]
+  [[ "$output" == *"needs-human-review"* ]]
+  [ ! -s "$T2013_MUT" ]
+  grep -q "pulls/comments/777" "$T2013_PATCH"
+}
+
+@test "#2013: review-changes also refuses the 15a919e shape" {
+  _setup_15a919e "printf 'changed\n' > file.txt; : > new_test_marker; git add -A; git -c user.email=t@t -c user.name=T commit -q -m 'fix(reviews): x'"
+  _run_2013 review-changes
+
+  [ ! -s "$T2013_PUSH" ]
+  [[ "$output" == *"Test-regression guard"* ]]
+}
+
+@test "#2013: a failure that already existed on the pre-pass head does not block the push" {
+  _setup_15a919e "printf 'fixed\n' > fix.txt; : > new_test_marker; git add -A; git -c user.email=t@t -c user.name=T commit -q -m 'fix(reviews): x'"
+  printf 'broken\n' > "$T2013_DIR/file.txt"
+  git -C "$T2013_DIR" -c user.email="t@test" -c user.name="T" commit -q -am "already red"
+  git -C "$T2013_DIR" update-ref refs/remotes/origin/main "$(git -C "$T2013_DIR" rev-parse HEAD)"
+  T2013_BASE="$(git -C "$T2013_DIR" rev-parse HEAD)"
+  _run_2013 fix-reviews
+
+  [ -s "$T2013_PUSH" ]
+  [[ "$output" != *"Test-regression guard: the"* ]]
+  [[ "$output" == *"already failed on the pre-pass head"* ]]
+}
+
+@test "#2013: no test command — the run says the suite was NOT run, and still pushes" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt"
+  rm -rf "$T2013_DIR/tests"
+  git -C "$T2013_DIR" add -A
+  git -C "$T2013_DIR" -c user.email="t@test" -c user.name="T" commit -q -m "drop tests"
+  git -C "$T2013_DIR" update-ref refs/remotes/origin/main "$(git -C "$T2013_DIR" rev-parse HEAD)"
+  T2013_BASE="$(git -C "$T2013_DIR" rev-parse HEAD)"
+  unset DEV_LEAD_TEST_CMD
+  _run_2013 fix-reviews
+
+  [ -s "$T2013_PUSH" ]
+  [[ "$output" == *"Test suite: NOT RUN"* ]]
+}
