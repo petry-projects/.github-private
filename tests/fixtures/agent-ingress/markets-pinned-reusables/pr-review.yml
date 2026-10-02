@@ -1,0 +1,57 @@
+# SNAPSHOT (trimmed) of petry-projects/.github-private
+# .github/workflows/pr-review.yml @ pr-review/stable (776c9585c8fff87a1ffefd469137791ab6467e61),
+# read 2026-10-02 for #2038. Only the parts the two ingress guards read are kept:
+# the workflow_call inputs (validate-caller-inputs.sh) and the workflow-level
+# concurrency group verbatim (the ADR-0010 collision rule). Re-snapshot if the
+# markets §3 pin moves.
+name: PR Review Agent
+
+on:
+  workflow_call:
+    inputs:
+      agent_ref:
+        type: string
+        required: false
+        default: ""
+      pr_url:
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        type: string
+        required: false
+        default: ""
+      force_review:
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: >-
+    ${{
+      (inputs.pr_url
+       || github.event.client_payload.pr_url
+       || (github.event.pull_request.number && format('{0}/pull/{1}', github.repository, github.event.pull_request.number))
+       || (github.event.check_suite.pull_requests[0].number && format('{0}/pull/{1}', github.repository, github.event.check_suite.pull_requests[0].number)))
+      && format('pr-review-pr-{0}{1}',
+           inputs.pr_url
+           || github.event.client_payload.pr_url
+           || (github.event.pull_request.number && format('{0}/pull/{1}', github.repository, github.event.pull_request.number))
+           || (github.event.check_suite.pull_requests[0].number && format('{0}/pull/{1}', github.repository, github.event.check_suite.pull_requests[0].number)),
+           (github.event.pull_request.head.sha
+            || github.event.check_suite.head_sha
+            || github.event.client_payload.sha)
+           && format('-{0}',
+                github.event.pull_request.head.sha
+                || github.event.check_suite.head_sha
+                || github.event.client_payload.sha)
+           || '')
+      || 'pr-review-batch'
+    }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo snapshot

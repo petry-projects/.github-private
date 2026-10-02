@@ -1,0 +1,101 @@
+#!/usr/bin/env bats
+# Regression test for the markets collapse package (#2038, ADR-0010): the §3
+# `agent-ingress.yml` in docs/initiatives/agent-ingress-collapse-markets.md must
+# pass BOTH ingress guards as rendered, so the package cannot drift back to a
+# non-conforming concurrency block (run_id / inputs.* fallbacks, expression
+# cancel-in-progress). The §3 YAML is extracted from the doc itself — the test
+# reads the package, not a copy of it.
+#
+# The pinned reusables are resolved from trimmed snapshots
+# (tests/fixtures/agent-ingress/markets-pinned-reusables/) via VCI_RESOLVE_DIR so
+# the collision check is deterministic and offline.
+
+SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+PACKAGE="$SCRIPT_DIR/docs/initiatives/agent-ingress-collapse-markets.md"
+SNAPSHOTS="$SCRIPT_DIR/tests/fixtures/agent-ingress/markets-pinned-reusables"
+
+setup() {
+  ROOT="$(mktemp -d)"
+  mkdir -p "$ROOT/.github/workflows"
+  INGRESS="$ROOT/.github/workflows/agent-ingress.yml"
+  # The first ```yaml fence after the "## 3." heading is the §3 ingress.
+  awk '
+    /^## 3\./ { in3 = 1; next }
+    in3 && /^## / { exit }
+    in3 && !open && /^```yaml$/ { open = 1; next }
+    open && /^```$/ { exit }
+    open { print }
+  ' "$PACKAGE" > "$INGRESS"
+}
+
+teardown() {
+  rm -rf "$ROOT"
+}
+
+@test "markets §3: the ingress block is extracted and declares the five role jobs" {
+  [ -s "$INGRESS" ]
+  run yq '.jobs | keys | .[]' "$INGRESS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dev-lead"* ]]
+  [[ "$output" == *"pr-auto-review"* ]]
+  [[ "$output" == *"pr-review"* ]]
+  [[ "$output" == *"pr-review-mention"* ]]
+  [[ "$output" == *"ci-failure-analyst"* ]]
+}
+
+@test "markets §3: validate-ingress-if.sh passes (pure if:, bounded concurrency)" {
+  VIIF_ROOT="$ROOT" run bash "$SCRIPT_DIR/scripts/validate-ingress-if.sh"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ingress-if: OK"* ]]
+}
+
+@test "markets §3: validate-caller-inputs.sh passes against the pinned reusables (no collision)" {
+  VCI_ROOT="$ROOT" VCI_RESOLVE_DIR="$SNAPSHOTS" run bash "$SCRIPT_DIR/scripts/validate-caller-inputs.sh"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pr-review' concurrency group does not collide"* ]]
+  [[ "$output" == *"pr-auto-review' concurrency group does not collide"* ]]
+  [[ "$output" == *"ci-failure-analyst' concurrency group does not collide"* ]]
+}
+
+@test "markets §3: every concurrency group is role-prefixed and every cancel-in-progress is a literal boolean" {
+  source "$SCRIPT_DIR/scripts/validate-ingress-if.sh"
+  local job group cancel stem n=0
+  for job in pr-auto-review pr-review ci-failure-analyst; do
+    IFS=$'\x1f' read -r group cancel < <(viif_job_concurrency "$INGRESS" "$job")
+    [ -n "$group" ]
+    [[ "$cancel" == "true" || "$cancel" == "false" ]]
+    while IFS= read -r stem; do
+      [[ "$stem" == "$job"-* ]]
+      n=$((n + 1))
+    done < <(viif_group_stems "$group")
+  done
+  [ "$n" -ge 3 ]
+}
+
+@test "markets §3: no group falls back to github.run_id or the inputs.* context" {
+  run yq '.jobs[].concurrency.group // ""' "$INGRESS"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"run_id"* ]]
+  # github.event.inputs.* is the workflow_dispatch payload; a bare inputs.* is not.
+  ! printf '%s\n' "$output" | grep -Eq '(^|[^.[:alnum:]_])inputs\.'
+}
+
+@test "markets §3: pr-review's shared fallback slot is not the reusable's pr-review-batch" {
+  # The collision check compares literal stems (a tripwire, ADR-0010). A caller
+  # fallback of 'batch' would resolve to the reusable's own 'pr-review-batch'
+  # group while passing the stem check, so pin the chosen literal here.
+  run yq '.jobs["pr-review"].concurrency.group' "$INGRESS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == pr-review-* ]]
+  [[ "$output" != *"'batch'"* ]]
+  [[ "$output" == *"'enumerate'"* ]]
+}
+
+@test "markets §3: ci-failure-analyst concurrency is unchanged" {
+  run yq -r '.jobs["ci-failure-analyst"].concurrency.group' "$INGRESS"
+  [ "$output" = 'ci-failure-analyst-${{ github.event.check_run.head_sha }}' ]
+  run yq '.jobs["ci-failure-analyst"].concurrency["cancel-in-progress"]' "$INGRESS"
+  [ "$output" = "false" ]
+}
