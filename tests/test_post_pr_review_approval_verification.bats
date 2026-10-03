@@ -68,8 +68,13 @@ GHEOF
 teardown() { rm -rf "$TEST_DIR"; }
 
 approve_verdict() {
+  # The body must carry a complete approval marker for PR_HEAD_SHA ($SHA) or the
+  # #1754 AC4 fail-closed guard rejects it before the #1874 read-back logic under
+  # test can run (sha= and decision=approved together in one marker).
   local f="$TEST_DIR/verdict.json"
-  jq -n '{decision:"approve", risk:"LOW", summary:"clean", body:"LGTM"}' > "$f"
+  jq -n --arg sha "$SHA" \
+    '{decision:"approve", risk:"LOW", summary:"clean",
+      body:("LGTM\n\n<!-- pr-review-agent v1 sha=" + $sha + " decision=approved risk=LOW -->")}' > "$f"
   echo "$f"
 }
 
