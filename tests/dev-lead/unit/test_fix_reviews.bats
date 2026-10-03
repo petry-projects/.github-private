@@ -4761,6 +4761,10 @@ STUB
 #!/usr/bin/env bash
 ARGS="$*"
 case "$ARGS" in
+  *"unminimizeComment"*"id=${UNMINIMIZE_FAIL_ID:-<none>}"*)
+    # #2037: simulate an API failure unminimizing this one comment.
+    echo "$ARGS" >> "$MINLOG"
+    exit 1 ;;
   *"minimizeComment"*)
     echo "$ARGS" >> "$MINLOG"
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
@@ -4775,7 +4779,7 @@ case "$ARGS" in
   *"pr view"*)
     printf '%s' '{"state":"OPEN","headRefName":"testbranch"}'; exit 0 ;;
   *"pr checkout"*) exit 0 ;;
-  *"pr comment"*) exit 0 ;;
+  *"pr comment"*) echo "$ARGS" >> "${COMMENTLOG:-/dev/null}"; exit 0 ;;
   *"issue comment"*) exit 0 ;;
   *"api"*"issues/"*) echo "[]"; exit 0 ;;
   *"api"*) echo "{}"; exit 0 ;;
@@ -5497,6 +5501,103 @@ SH
 
   [ -s "$T2013_PUSH" ]
   [[ "$output" == *"Test suite: NOT RUN"* ]]
+
+# ── #2037: an unminimizeComment failure fails the resolver closed ─────────────
+# A comment that must be re-opened but whose unminimize call fails stays RESOLVED,
+# and the gate would clear it. The resolver keeps processing the remaining
+# candidates, then returns non-zero. A success-path caller must then post no
+# applied/no-changes terminal marker, so the comment is retried.
+
+# _reverify_fixed_pair <comment-id> <old-reply-id> <new-reply-id>
+#   A RESOLVED bot comment edited at 21:30, with an `informational` disposition
+#   from before the edit and a fresh `fixed` one after it. The fresh `fixed` cites
+#   a sha this pass did not produce, so its re-verification fails.
+_reverify_fixed_pair() {
+  jq -nc --arg id "$1" '{id:$id, author:{login:"coderabbitai", __typename:"Bot"},
+    body:"Walkthrough only.", isMinimized:true, minimizedReason:"RESOLVED",
+    createdAt:"2026-09-26T20:00:00Z", lastEditedAt:"2026-09-26T21:30:00Z"}'
+  _disp_reply "$2" "2026-09-26T21:00:00Z" "informational" "$1"
+  jq -nc --arg id "$3" --arg t "$1" '{id:$id, author:{login:"donpetry-bot", __typename:"User"},
+    body:("Fixed it.\n<!-- dev-lead:comment-disposition id=" + $t + " disposition=fixed sha=c03ecdaea49cb873ca29ac0ca905c2d92ecbd3ce -->"),
+    isMinimized:false, minimizedReason:null, createdAt:"2026-09-26T22:00:00Z"}'
+}
+
+# _succeed_fix_bot_comment: turn the disposition pass into a SUCCESSFUL
+# fix-bot-comment pass that changes nothing (engine exits 0, nothing to commit),
+# so it reaches the no-changes terminal-marker branch. PR comments go to
+# $COMMENTLOG.
+_succeed_fix_bot_comment() {
+  cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
+  cp "$STUB_ENGINES_DIR/stub-gemini" "$STUB_BIN_DIR/gemini"
+  chmod +x "$STUB_BIN_DIR/claude" "$STUB_BIN_DIR/gemini"
+  export INTENT_TYPE="fix-bot-comment"
+  export COMMENT_BODY="Walkthrough" COMMENT_NODE_ID="IC_ORIG"
+  export COMMENTLOG="$BATS_TEST_TMPDIR/comments.log"
+  : > "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a failed unminimize on the re-verify path fails the pass; later candidates are still processed; no no-changes/applied marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2) <(_reverify_fixed_pair IC_B R3 R4))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  # The failure is not swallowed: the pass ends non-zero.
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG after a failed post-edit re-verification"* ]]
+  [[ "$output" == *"resolve_dispositioned_comments: failed to unminimize"* ]]
+  # The loop did not stop at the failure: IC_B, after IC_ORIG, was re-opened.
+  grep -Eq 'unminimizeComment.*id=IC_B' "$MINLOG"
+  # No success terminal marker, so the comment is retried; a partial one instead.
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
+  grep -q 'intent=fix-bot-comment status=partial' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a successful unminimize on the re-verify path still posts the no-changes marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 0 ]
+  grep -Eq 'unminimizeComment.*id=IC_ORIG' "$MINLOG"
+  grep -q 'intent=fix-bot-comment status=no-changes' "$COMMENTLOG"
+  ! grep -q 'status=partial' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a failed re-open (edited after its latest disposition) fails the pass even with no other candidate" {
+  local nodes
+  nodes=$(jq -sc '.' \
+    <(_resolved_bot_comment "2026-09-26T22:00:00Z") \
+    <(_disp_reply "R1" "2026-09-26T21:00:00Z" "informational" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG (edited after its latest disposition)"* ]]
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): on a FAILED pass a failed unminimize keeps the engine's exit code" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  # Engine failed → rc=1. The resolver's own failure is reported, not exited on.
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG after a failed post-edit re-verification"* ]]
+  [[ "$output" == *"resolve_dispositioned_comments: failed to unminimize"* ]]
 }
 
 # ── open review threads are paginated and fail closed (#2056) ─────────────────
