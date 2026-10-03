@@ -12,7 +12,7 @@
 #
 # CONVENTIONS (enforced by the standard):
 #   • permissions: {} at top, least-privilege per job (contents + pull-requests: read)
-#   • triggers: push + pull_request to main; checkout with fetch-depth: 0
+#   • triggers: push + pull_request + merge_group to main; checkout with fetch-depth: 0
 #   • first scan is continue-on-error with a single retry (SonarCloud's analysis
 #     endpoint is occasionally flaky)
 #   • SHA-pin every third-party action (never a tag/branch)
@@ -24,6 +24,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Required status check: must report on the merge queue's gh-readonly-queue/*
+  # ref, or the queue wedges (#1871, prerequisite for #1864).
+  merge_group:
 
 permissions: {}
 
@@ -47,15 +50,39 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      # merge_group.base_ref is the full ref (refs/heads/main); SonarCloud needs
+      # the short branch name or it creates a spurious branch.
+      - name: Resolve Sonar branch name
+        id: branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "${EVENT_NAME}" in
+            merge_group) echo "name=${BASE_REF#refs/heads/}" >> "$GITHUB_OUTPUT" ;;
+            push) echo "name=${REF_NAME}" >> "$GITHUB_OUTPUT" ;;
+            *) echo "name=" >> "$GITHUB_OUTPUT" ;;
+          esac
       - name: SonarCloud Scan
         id: sonar
         if: env.SONAR_TOKEN != ''
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
         with:
-          args: -Dsonar.scanner.skipJreProvisioning=true -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
+          args: >-
+            -Dsonar.scanner.skipJreProvisioning=true
+            -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
+            ${{ steps.branch.outputs.name != '' &&
+            format('-Dsonar.branch.name={0}', steps.branch.outputs.name)
+            || '' }}
         continue-on-error: true
       - name: SonarCloud Scan (retry)
         if: env.SONAR_TOKEN != '' && steps.sonar.outcome == 'failure'
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
         with:
-          args: -Dsonar.scanner.skipJreProvisioning=true -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
+          args: >-
+            -Dsonar.scanner.skipJreProvisioning=true
+            -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
+            ${{ steps.branch.outputs.name != '' &&
+            format('-Dsonar.branch.name={0}', steps.branch.outputs.name)
+            || '' }}
