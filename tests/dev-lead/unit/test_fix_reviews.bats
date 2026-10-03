@@ -3743,8 +3743,8 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # fix-bot-comment is not retryable, so bot-thread blocker posts terminal no-changes (not rate-limited)
-  [[ "$output" == *"fix-bot-comment is not automatically retried"* ]]
+  # A bot-thread blocker records no-changes (not rate-limited); the #2017 scan retries the comment if it does not end RESOLVED
+  [[ "$output" == *"recording no-changes; the terminal marker posts only if the comment ends RESOLVED"* ]]
   [[ "$output" == *"status=no-changes"* ]]
   [[ "$output" != *"[dry-run] would post rate-limited marker"* ]]
 }
@@ -5019,7 +5019,195 @@ _resolved_bot_comment() {
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"intent=fix-bot-comment status=no-changes read_at=2026-10-02T21:00:00Z -->"* ]]
+  [[ "$output" == *"intent=fix-bot-comment status=no-changes comment=IC_kwDOabc123 read_at=2026-10-02T21:00:00Z -->"* ]]
+}
+
+# ── #2017: fix-bot-comment terminal markers name the comment they processed ────
+# The undispositioned bot-comment retry (dev-lead-retry.sh) must not re-dispatch
+# a pass that already ENDED on the comment's current version. The terminal
+# marker's `comment=<node id>` is that "pass ended" signal.
+
+@test "fix-reviews: fix-bot-comment terminal marker carries comment=<node id> (#2017)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC_kwDOabc123'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"intent=fix-bot-comment status=no-changes comment=IC_kwDOabc123 read_at="* ]]
+}
+
+@test "fix-reviews: fix-bot-comment terminal marker stamps the processed comment version (#2017)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC_kwDOabc123' COMMENT_VERSION='2026-10-01T23:40:00Z'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"intent=fix-bot-comment status=no-changes comment=IC_kwDOabc123 version=2026-10-01T23:40:00Z read_at="* ]]
+}
+
+@test "fix-reviews: a malformed COMMENT_VERSION is never stamped into the marker (#2017)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC_kwDOabc123' COMMENT_VERSION='2026-10-01 --> x'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"comment=IC_kwDOabc123 read_at="* ]]
+  [[ "$output" != *"version="* ]]
+}
+
+@test "fix-reviews: fix-bot-comment posts its terminal marker only AFTER the disposition resolver (#2017)" {
+  # The marker reads as "this pass ended" to the bot-comment retry, so a pass
+  # cancelled before the resolver must leave none (the retry then re-dispatches).
+  local start end block
+  start=$(grep -n '^  fix-bot-comment)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
+  end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
+  [ -n "$start" ] && [ -n "$end" ]
+  block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  applied=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
+  nochg=$(grep -n 'post_no_changes "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  [ -n "$resolver" ] && [ -n "$applied" ] && [ -n "$nochg" ]
+  [ "$resolver" -lt "$applied" ]
+  [ "$resolver" -lt "$nochg" ]
+  # Exactly one of each terminal post in the success path (no early duplicate).
+  [ "$(grep -c 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block")" -eq 1 ]
+  [ "$(grep -c 'post_no_changes "fix-bot-comment"' <<< "$block")" -eq 1 ]
+}
+
+@test "fix-reviews: an unconfirmed comment state withholds the fix-bot-comment terminal marker (#2017)" {
+  # The resolver flags (never silently passes) a re-check it cannot confirm, and
+  # the fix-bot-comment path then posts no terminal marker, so the bot-comment
+  # retry is not suppressed by a pass whose outcome is unknown.
+  local fn block
+  fn=$(awk '/^resolve_dispositioned_comments\(\) \{/,/^}/' "$FIX_REVIEWS_SCRIPT")
+  grep -q 'RDC_STATE_UNKNOWN=0' <<< "$fn"
+  grep -A3 'if \[ "\$cur_minimized" = "unknown" \]' <<< "$fn" | grep -q 'RDC_STATE_UNKNOWN=1'
+  start=$(grep -n '^  fix-bot-comment)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
+  end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
+  block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  guard=$(grep -n 'RDC_STATE_UNKNOWN:-0}" = "1"' <<< "$block" | head -1 | cut -d: -f1)
+  post=$(grep -n 'case "\$_fbc_terminal" in' <<< "$block" | head -1 | cut -d: -f1)
+  [ -n "$resolver" ] && [ -n "$guard" ] && [ -n "$post" ]
+  [ "$resolver" -lt "$guard" ]
+  [ "$guard" -lt "$post" ]
+  sed -n "${guard},${post}p" <<< "$block" | grep -q '_fbc_terminal=""'
+}
+
+@test "fix-reviews: a malformed COMMENT_NODE_ID is never stamped into the marker (#2017)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='Walkthrough' COMMENT_NODE_ID='IC x --> injected'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"intent=fix-bot-comment status=no-changes read_at="* ]]
+  [[ "$output" != *"comment=IC"* ]]
+}
+
+# _expire_with <intent> <comment_node_id>: run expire_stale_terminal_markers against
+# three terminal markers on the same SHA (two comments' fix-bot-comment passes and a
+# fix-reviews pass) and print the ids it deletes.
+_expire_with() {
+  run bash -c "
+    eval \"\$(sed -n '/^REVIEWS_MARKER_PREFIX=/p' '$FIX_REVIEWS_SCRIPT')\"
+    eval \"\$(sed -n '/^expire_stale_terminal_markers()/,/^}/p' '$FIX_REVIEWS_SCRIPT')\"
+    gh() {
+      case \"\$*\" in
+        *'-X DELETE'*) echo \"DELETED \${@: -1}\" | sed 's|.*/|DELETED |' ;;
+        *comments*) jq -cn '[
+          {id:1, body:\"<!-- dev-lead-fix-reviews pr=54 sha=abc intent=fix-bot-comment status=no-changes comment=IC_a+1 version=2026-10-01T23:40:00Z -->\"},
+          {id:2, body:\"<!-- dev-lead-fix-reviews pr=54 sha=abc intent=fix-bot-comment status=applied comment=IC_b -->\"},
+          {id:3, body:\"<!-- dev-lead-fix-reviews pr=54 sha=abc intent=fix-bot-comment status=no-changes comment=IC_a+12 -->\"}]' ;;
+      esac
+    }
+    export DEV_LEAD_DRY_RUN=false PR_NUMBER=54 HEAD_SHA=abc REPO=o/r COMMENT_NODE_ID='$2'
+    expire_stale_terminal_markers '$1'
+  "
+}
+
+@test "fix-reviews: a fix-bot-comment pass expires only its own comment's terminal markers (#2017)" {
+  _expire_with fix-bot-comment 'IC_a+1'
+  [ "$status" -eq 0 ]
+  [ "$(grep -x 'DELETED [0-9]*' <<< "$output" | tr '\n' ' ')" = "DELETED 1 " ]
+}
+
+@test "fix-reviews: without a comment id, fix-bot-comment expiry keeps the SHA-wide behaviour (#2017)" {
+  _expire_with fix-bot-comment ''
+  [ "$status" -eq 0 ]
+  [ "$(grep -x 'DELETED [0-9]*' <<< "$output" | tr '\n' ' ')" = "DELETED 1 DELETED 2 DELETED 3 " ]
+}
+
+# _target_state <graphql-response> [node_id]: run fbc_target_resolved against a
+# stubbed node query.
+_target_state() {
+  run bash -c "
+    eval \"\$(sed -n '/^fbc_target_resolved()/,/^}/p' '$FIX_REVIEWS_SCRIPT')\"
+    gh() { printf '%s' '$1'; }
+    export COMMENT_NODE_ID='${2-IC_kwDOabc123}'
+    fbc_target_resolved
+  "
+}
+
+@test "fix-reviews: fbc_target_resolved reads the dispatched comment's RESOLVED state (#2017)" {
+  _target_state '{"data":{"node":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}'
+  [ "$output" = "yes" ]
+  _target_state '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'
+  [ "$output" = "no" ]
+  _target_state '{"data":{"node":{"isMinimized":true,"minimizedReason":"OUTDATED"}}}'
+  [ "$output" = "no" ]
+  _target_state '{"errors":[{"message":"x"}]}'
+  [ "$output" = "unknown" ]
+  _target_state '{"data":{"node":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}' 'bad id;x'
+  [ "$output" = "unknown" ]
+}
+
+@test "fix-reviews: fix-bot-comment withholds its terminal marker unless its comment ended RESOLVED (#2017)" {
+  local block
+  block="$(sed -n '/build_and_run "fix-bot-comment"/,/try_enable_auto_merge/p' "$FIX_REVIEWS_SCRIPT")"
+  local resolver check terminal
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  check=$(grep -n 'fbc_target_resolved' <<< "$block" | head -1 | cut -d: -f1)
+  terminal=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
+  [ -n "$resolver" ] && [ -n "$check" ] && [ -n "$terminal" ]
+  [ "$resolver" -lt "$check" ]
+  [ "$check" -lt "$terminal" ]
+  grep -q '"$_fbc_resolved" != "yes"' <<< "$block"
 }
 
 # ── #2004: a `fixed` disposition must cite the sha that FIXED the finding ──────
