@@ -653,6 +653,10 @@ its owner.
 Activation lands after the markets PR merges and the canonical template is
 published — this package hands both artifacts to that follow-up.
 
+The Bats ingress checks use trimmed reusable snapshots. Changes to checked
+inputs or concurrency declarations behind channel refs are not detected until
+the snapshots are refreshed.
+
 ---
 
 ## 10. Companion issue for `petry-projects/markets` (prepared; filing is remaining)

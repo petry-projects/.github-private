@@ -8,7 +8,9 @@
 #
 # The pinned reusables are resolved from trimmed snapshots
 # (tests/fixtures/agent-ingress/markets-pinned-reusables/) via VCI_RESOLVE_DIR so
-# the collision check is deterministic and offline.
+# the collision check is deterministic and offline. Changes to checked inputs or
+# concurrency declarations behind channel refs are not fetched; refresh the
+# snapshots to test those changes.
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 PACKAGE="$SCRIPT_DIR/docs/initiatives/agent-ingress-collapse-markets.md"
