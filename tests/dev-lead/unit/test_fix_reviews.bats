@@ -4753,10 +4753,14 @@ STUB
 #!/usr/bin/env bash
 ARGS="$*"
 case "$ARGS" in
-  *"unminimizeComment"*"id=${UNMINIMIZE_FAIL_ID:-<none>}"*)
-    # #2037: simulate an API failure unminimizing this one comment.
+  *"unminimizeComment"*)
+    # #2037: log every unminimize call, then simulate an API failure for the
+    # one configured comment id.
     echo "$ARGS" >> "$MINLOG"
-    exit 1 ;;
+    case "$ARGS" in
+      *"id=${UNMINIMIZE_FAIL_ID:-<none>}"*) exit 1 ;;
+    esac
+    printf '%s' '{"data":{"unminimizeComment":{"unminimizedComment":{"isMinimized":false}}}}'; exit 0 ;;
   *"minimizeComment"*)
     echo "$ARGS" >> "$MINLOG"
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
