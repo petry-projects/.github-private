@@ -647,12 +647,15 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA
   #   fix-request        — `<!-- pr-review-agent v1 sha=<HEAD> -->` + `<!-- decision=fix-requested …`
   # FORCE_REVIEW (human break-glass) still bypasses unconditionally, verdict or not.
   VERDICT_AT_HEAD=false
-  if printf '%s' "$LATEST_MARKER_BODY" \
-       | grep -qE "<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]]+decision=(approved|escalated)\b"; then
+  # Anchored on the full `<!-- pr-review-agent v1 sha=` opener and bounded after the
+  # decision word so prose that merely quotes the text, or `decision=approvedX`, is
+  # not a verdict.
+  verdict_re="<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]]+decision=(approved|escalated)([^[:alnum:]_]|$)"
+  fix_marker_re="<!-- pr-review-agent v1 sha=${PR_HEAD_SHA} -->"
+  if [[ "$LATEST_MARKER_BODY" =~ $verdict_re ]]; then
     VERDICT_AT_HEAD=true
-  elif printf '%s' "$LATEST_MARKER_BODY" \
-         | grep -qE "<!-- pr-review-agent v1 sha=${PR_HEAD_SHA} -->" \
-       && printf '%s' "$LATEST_MARKER_BODY" | grep -qE "<!-- decision=fix-requested\b"; then
+  elif [[ "$LATEST_MARKER_BODY" =~ $fix_marker_re ]] \
+       && [[ "$LATEST_MARKER_BODY" =~ decision=fix-requested ]]; then
     VERDICT_AT_HEAD=true
   fi
   if [ "${FORCE_REVIEW:-false}" = "true" ] \
@@ -809,9 +812,11 @@ if has_escalation_marker "$PR_ITEMS"; then
   HAS_HUMAN_LABEL=$(echo "$PR_SNAPSHOT" | jq -r '[.labels // [] | .[].name] | any(. == "needs-human-review")')
   if [ "${FORCE_REVIEW:-false}" = "true" ]; then
     echo "    force-review: escalation marker present, but FORCE_REVIEW=true — re-engaging cascade"
-    if [ "${DRY_RUN:-false}" != "true" ]; then
-      gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
-    fi
+    # Do NOT pre-emptively strip the label here (#1754 AC3). The final decision
+    # owns it: an approval or fix-request clears the hold in post-pr-review.sh,
+    # while a re-escalation leaves it in place idempotently. Removing it here and
+    # having the re-escalation re-add it was the unlabel-then-relabel churn (four
+    # toggles in a day on an unchanged PR).
   elif [ "$HAS_HUMAN_LABEL" = "true" ]; then
     echo "    noop: human-escalation active (needs-human-review label present) — remove the label or mention the bot to re-engage"
     emit_verdict noop human-escalated "a human removes the needs-human-review label, or @mentions the bot to re-engage the cascade"
@@ -851,7 +856,12 @@ ESCALATION_END
     rm -f "$ESCALATION_BODY"
   fi
   emit_verdict escalate max-cycles-reached "a human removes the needs-human-review label to grant a fresh cycle budget (an @mention will not reset the cap)"
-  exit 100
+  # Exit 101 is the human-escalation sentinel (#1754 AC1): a delivered escalation
+  # is counted as `escalated`, not a no-op. A DRY_RUN posted nothing, so it stays 100.
+  if [ "${DRY_RUN:-false}" = "true" ]; then
+    exit 100
+  fi
+  exit 101
 fi
 
 # Per-PR automation budget (#926): bound TOTAL automated activity on this PR over
@@ -863,10 +873,16 @@ fi
 if [ "${DRY_RUN:-false}" != "true" ]; then
   PR_BUDGET_NUMBER=$(echo "$PR_URL" | sed -E 's|.*/pull/([0-9]+).*|\1|')
   PR_BUDGET_REPO=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
+  # enforce_pr_budget reports (PR_AUTOMATION_NEWLY_ESCALATED) whether THIS run
+  # created the escalation: that run exits 101 (counted `escalated`, #1754 AC1);
+  # later runs that only find the budget already exhausted are holds and keep 100.
   if enforce_pr_budget "$PR_BUDGET_NUMBER" "$PR_BUDGET_REPO"; then
     echo "    cap: per-PR automation budget exhausted — halting automated review (escalated to human)"
     emit_verdict escalate automation-budget-exhausted "a human interaction (comment or approval) resets the per-PR automation budget"
-    exit 100
+    if [ "${PR_AUTOMATION_NEWLY_ESCALATED:-false}" != "true" ]; then
+      exit 100
+    fi
+    exit 101
   fi
 fi
 
@@ -903,7 +919,7 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
   )
   # Validate that the matched body actually contains our marker to reduce
   # prompt-injection surface area.
-  if [ -n "$PRIOR_REVIEW_BODY" ] && ! echo "$PRIOR_REVIEW_BODY" | grep -qE '<!-- pr-review-agent v1 sha=[a-f0-9]+ -->'; then
+  if [ -n "$PRIOR_REVIEW_BODY" ] && ! [[ "$PRIOR_REVIEW_BODY" =~ pr-review-agent\ v1\ sha=[a-f0-9]+\ --\> ]]; then
     echo "    prior review body missing valid marker, discarding"
     PRIOR_REVIEW_BODY=""
   fi
@@ -1351,10 +1367,14 @@ if [ "$TRIAGE_ESCALATE" = "false" ]; then
   fi
   rm -f "$VERDICT_JSON.raw"
 
-  # Post the review using the verdict
-  bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
+  # Post the review using the verdict. Propagate the output channel's exit status
+  # (0 posted, 100 no-op, 101 escalated-to-human, non-zero error) so review-batch.sh
+  # classifies the outcome correctly instead of counting an escalation as a posted
+  # review (#1754).
+  post_rc=0
+  bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN" || post_rc=$?
   echo "    [done]  $PR_URL"
-  exit 0
+  exit "$post_rc"
 fi
 
 # --- Issue-type classifier -> specialist deep-review prompt (issue #1091) ---
@@ -1617,10 +1637,14 @@ if [ "$COMBINED_ESCALATE" != "true" ]; then
   fi
   rm -f "$VERDICT_JSON.raw"
 
-  # Post the review using the verdict
-  bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
+  # Post the review using the verdict. Propagate the output channel's exit status
+  # (0 posted, 100 no-op, 101 escalated-to-human, non-zero error) so review-batch.sh
+  # classifies the outcome correctly instead of counting an escalation as a posted
+  # review (#1754).
+  post_rc=0
+  bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN" || post_rc=$?
   echo "    [done]  $PR_URL"
-  exit 0
+  exit "$post_rc"
 fi
 
 # --- Tier 3: Security audit ---
@@ -1690,7 +1714,11 @@ if ! extract_verdict_json "$VERDICT_JSON.raw" "$VERDICT_JSON"; then
 fi
 rm -f "$VERDICT_JSON.raw"
 
-# Post the review using the verdict
-bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
-
+# Post the review using the verdict. Propagate the output channel's exit status
+# (0 posted, 100 no-op, 101 escalated-to-human, non-zero error) so review-batch.sh
+# classifies the outcome correctly instead of counting an escalation as a posted
+# review (#1754).
+post_rc=0
+bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN" || post_rc=$?
 echo "    [done]  $PR_URL"
+exit "$post_rc"
