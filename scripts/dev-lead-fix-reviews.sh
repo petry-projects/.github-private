@@ -1088,7 +1088,7 @@ resolve_deferred_bot_threads() {
     node(id:$id){
       ... on PullRequestReviewThread {
         isResolved
-        comments(first:100){nodes{author{login __typename} body createdAt databaseId}}
+        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} body createdAt databaseId}}
       }
     }
   }'
@@ -1104,6 +1104,12 @@ resolve_deferred_bot_threads() {
       'if .data.node.isResolved == null then "unknown"
        elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
     [ "$cur_resolved" = "false" ] || continue
+    # Fail closed on a thread longer than one page: later replies could supersede
+    # the deferral and we would not see them.
+    if [ "$(printf '%s' "$node_json" | jq -r '.data.node.comments.pageInfo.hasNextPage // true' 2>/dev/null || echo true)" != "false" ]; then
+      echo "::notice::skipping thread ${id} — more than 100 comments (or page info unreadable); leaving unresolved (#2045)"
+      continue
+    fi
     comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
 
     # Re-check the bot origin on the fresh read: a maintainer thread is never ours
@@ -1141,7 +1147,9 @@ resolve_deferred_bot_threads() {
     issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>/dev/null) || issue_json=""
     issue_comments=$(gh api --paginate "repos/${REPO}/issues/${ref}/comments?per_page=100" 2>/dev/null \
       | jq -cs 'add // []' 2>/dev/null) || issue_comments="[]"
-    if ! verdict=$(dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$id" "$origin_db_id"); then
+    local verdict_rc=0
+    verdict=$(dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$id" "$origin_db_id") || verdict_rc=$?
+    if [ "$verdict_rc" -ne 0 ]; then
       echo "::notice::skipping thread ${id} — tracking issue #${ref} cannot back the deferral (${verdict}); leaving unresolved (#2045)"
       continue
     fi

@@ -218,3 +218,14 @@ setup() {
   [ "$status" -eq 1 ]
   [ "$output" = "no-mention" ]
 }
+
+@test "dtv_parse_deferral: text after the marker is malformed (marker must end the reply)" {
+  run dtv_parse_deferral "Deferring. <!-- dev-lead:deferred ref=#2050 --> trailing prose"
+  [ "$status" -eq 1 ]
+  [ "$output" = "malformed" ]
+}
+
+@test "dtv_text_mentions_thread: bare discussion_r token in prose is not a link" {
+  run dtv_text_mentions_thread "see discussion_r${DB_ID} for context" "$THREAD_ID" "$DB_ID"
+  [ "$status" -eq 1 ]
+}
