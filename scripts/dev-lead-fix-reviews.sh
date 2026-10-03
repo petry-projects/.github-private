@@ -29,6 +29,10 @@ source "$(dirname "$0")/lib/test-regression-guard.sh"
 # machine-checkable claim the harness verifies before minimizing the original
 # comment RESOLVED.
 source "$(dirname "$0")/lib/comment-disposition-verify.sh"
+# Review-thread deferral verifier (#2045): the thread-side sibling of the
+# `out-of-scope` disposition. A bot thread deferred to an open tracking issue that
+# links it is resolved by resolve_deferred_bot_threads.
+source "$(dirname "$0")/lib/deferred-thread-verify.sh"
 # The issue-comment gate — sourced for its agent-marker regex
 # ($_MAINTAINER_GATE_AGENT_MARKERS), so resolve_dispositioned_comments excludes
 # our own disposition/ack/note replies with the SAME discriminator the gate uses
@@ -690,6 +694,51 @@ resolve_bot_outdated_threads() {
   echo "::notice::resolve_bot_outdated_threads: resolved ${resolved_count} outdated bot thread(s) on PR #${PR_NUMBER}"
 }
 
+# list_unresolved_bot_thread_ids: prints the ids of PR_NUMBER's unresolved review
+# threads whose ORIGINATING comment is from a bot (__typename Bot, or a login with
+# the [bot] suffix), one per line. Candidates only — callers re-read each thread
+# before resolving it. Paginated via cursor (GraphQL 100/page max). Shared by
+# resolve_addressed_bot_threads and resolve_deferred_bot_threads.
+list_unresolved_bot_thread_ids() {
+  local ids=""
+  local cursor="" has_next_page="true" page_response page_ids
+  local cursor_args=()
+  local bot_threads_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{
+            id isResolved
+            origin: comments(first:1){nodes{author{login __typename}}}
+          }
+        }
+      }
+    }
+  }'
+  while [ "$has_next_page" = "true" ]; do
+    page_response=$(gh api graphql -f query="$bot_threads_query" \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      "${cursor_args[@]}" 2>/dev/null || echo "{}")
+    page_ids=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
+       | map(select(.isResolved == false
+                    and (((.origin.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                         or ((.origin.nodes?[0]?.author?.__typename // "") == "Bot"))))
+       | .[] | .id' 2>/dev/null || true)
+    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
+    has_next_page=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+      2>/dev/null || echo "false")
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+      2>/dev/null || echo "")
+    [ -z "$cursor" ] && has_next_page="false"
+    cursor_args=("-f" "cursor=${cursor}")
+  done
+  printf '%s\n' "$ids" | sed '/^[[:space:]]*$/d'
+}
+
 # resolve_addressed_bot_threads: resolves bot-originated review threads that dev-lead
 # has already ADDRESSED in-thread but left unresolved (#1547). Every pr-quality ruleset
 # sets required_review_thread_resolution:true, so such a thread — replied-to with
@@ -744,42 +793,8 @@ resolve_addressed_bot_threads() {
   # resolution (#codeant-623) and (b) resolve a thread a maintainer has since
   # replied to (#codeant-666). The authorizing state is re-read per candidate via a
   # fresh node(id) fetch taken immediately before the mutation below.
-  local ids=""
-  local cursor="" has_next_page="true" page_response page_ids
-  local cursor_args=()
-  local addressed_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
-    repository(owner:$owner,name:$repo){
-      pullRequest(number:$pr){
-        reviewThreads(first:100,after:$cursor){
-          pageInfo{hasNextPage endCursor}
-          nodes{
-            id isResolved
-            origin: comments(first:1){nodes{author{login __typename}}}
-          }
-        }
-      }
-    }
-  }'
-  while [ "$has_next_page" = "true" ]; do
-    page_response=$(gh api graphql -f query="$addressed_query" \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      "${cursor_args[@]}" 2>/dev/null || echo "{}")
-    page_ids=$(printf '%s' "$page_response" | jq -r \
-      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
-       | map(select(.isResolved == false
-                    and (((.origin.nodes?[0]?.author?.login // "") | endswith("[bot]"))
-                         or ((.origin.nodes?[0]?.author?.__typename // "") == "Bot"))))
-       | .[] | .id' 2>/dev/null || true)
-    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
-    has_next_page=$(printf '%s' "$page_response" | jq -r \
-      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
-      2>/dev/null || echo "false")
-    cursor=$(printf '%s' "$page_response" | jq -r \
-      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
-      2>/dev/null || echo "")
-    [ -z "$cursor" ] && has_next_page="false"
-    cursor_args=("-f" "cursor=${cursor}")
-  done
+  local ids
+  ids=$(list_unresolved_bot_thread_ids)
 
   if [ -z "$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no addressed unresolved bot threads on PR #${PR_NUMBER}"
@@ -1027,6 +1042,119 @@ rdc_find_fixing_commit() {
     return 0
   done < <(git rev-list --no-merges "${RDC_FIXED_BASE}..${RDC_FIXED_REF}" 2>/dev/null || true)
   return 1
+}
+
+# resolve_deferred_bot_threads: resolves bot-originated review threads whose finding
+# dev-lead judged valid but OUT OF SCOPE and deferred to a tracking issue (#2045) —
+# the review-thread sibling of the issue-comment `out-of-scope` disposition (#1813).
+# Before this, a deferral was a marker-less skip note, so the thread stayed
+# unresolved forever under required_review_thread_resolution (PR #1953: five Codex
+# threads, hand-resolved by a maintainer).
+#
+# A thread is resolved only when ALL of these hold on a fresh re-read:
+#   - it is unresolved and bot-originated (never a maintainer thread, #1415);
+#   - OUR account's latest reply carries exactly one
+#     `<!-- dev-lead:deferred ref=#<n> -->` (dtv_parse_deferral);
+#   - nothing unaddressed landed after that reply (acv_post_marker_clear, #1735);
+#   - no marker-less maintainer asserted a "required" disposition anywhere in the
+#     thread (acv_latest_maintainer_disposition). A deferral fixes nothing, so it
+#     can never overrule one, older or newer; an unparseable one fails closed;
+#   - #<n> is an open issue (not a PR) whose body or comments link this thread
+#     (dtv_verify_tracking_issue).
+# Any failed check leaves the thread open (fail closed).
+#
+# A deferral produces no commit, so callers run this OUTSIDE the #1617 head-advance
+# resolution gate — on commit and no-commit passes alike.
+resolve_deferred_bot_threads() {
+  local intent="$1"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would resolve deferred review threads from bot reviewers on PR #${PR_NUMBER}"
+    return 0
+  fi
+  if [ -z "${PR_NUMBER:-}" ]; then
+    echo "::notice::resolve_deferred_bot_threads: PR_NUMBER not set for intent=${intent} — skipping"
+    return 0
+  fi
+
+  local bot_user="${BOT_USER:-donpetry-bot}"
+  local ids
+  ids=$(list_unresolved_bot_thread_ids)
+  if [ -z "$ids" ]; then
+    echo "::notice::no unresolved bot threads to check for deferrals on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  local node_query='query($id:ID!){
+    node(id:$id){
+      ... on PullRequestReviewThread {
+        isResolved
+        comments(first:100){nodes{author{login __typename} body createdAt databaseId}}
+      }
+    }
+  }'
+
+  local resolved_count=0
+  local id node_json cur_resolved comments_json origin_bot reply_idx reply_body
+  local ref parse_rc post_reason post_rc disp_rc origin_db_id
+  local issue_json issue_comments verdict
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    node_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
+    cur_resolved=$(printf '%s' "$node_json" | jq -r \
+      'if .data.node.isResolved == null then "unknown"
+       elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+    [ "$cur_resolved" = "false" ] || continue
+    comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+
+    # Re-check the bot origin on the fresh read: a maintainer thread is never ours
+    # to resolve (#1415), even if the enumeration snapshot said otherwise.
+    origin_bot=$(printf '%s' "$comments_json" | jq -r \
+      '.[0].author as $a | if (($a.__typename // "") == "Bot") or (($a.login // "") | endswith("[bot]"))
+       then "yes" else "no" end' 2>/dev/null || echo "no")
+    [ "$origin_bot" = "yes" ] || continue
+
+    reply_idx=$(dtv_latest_own_reply_index "$comments_json" "$bot_user") || continue
+    reply_body=$(printf '%s' "$comments_json" | jq -r --argjson i "$reply_idx" '.[$i].body // ""' 2>/dev/null || echo "")
+    parse_rc=0
+    ref=$(dtv_parse_deferral "$reply_body") || parse_rc=$?
+    if [ "$parse_rc" -ne 0 ]; then
+      # Most threads simply carry no deferral; only report a malformed one.
+      if [ "$ref" != "no-deferral" ]; then
+        echo "::notice::skipping thread ${id} — deferral marker not verifiable (${ref}); leaving unresolved (#2045)"
+      fi
+      continue
+    fi
+
+    post_reason=$(acv_post_marker_clear "$comments_json" "$reply_idx" "$bot_user") && post_rc=0 || post_rc=$?
+    if [ "${post_rc:-0}" -ne 0 ]; then
+      echo "::notice::skipping thread ${id} — an unaddressed comment landed after our deferral (${post_reason}); leaving unresolved (#2045)"
+      continue
+    fi
+
+    acv_latest_maintainer_disposition "$comments_json" "$bot_user" >/dev/null && disp_rc=0 || disp_rc=$?
+    if [ "$disp_rc" -ne 1 ]; then
+      echo "::notice::skipping thread ${id} — a maintainer disposition is present (or unparseable); a deferral cannot overrule it; leaving unresolved (#2045)"
+      continue
+    fi
+
+    origin_db_id=$(printf '%s' "$comments_json" | jq -r '.[0].databaseId // ""' 2>/dev/null || echo "")
+    issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>/dev/null) || issue_json=""
+    issue_comments=$(gh api --paginate "repos/${REPO}/issues/${ref}/comments?per_page=100" 2>/dev/null \
+      | jq -cs 'add // []' 2>/dev/null) || issue_comments="[]"
+    if ! verdict=$(dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$id" "$origin_db_id"); then
+      echo "::notice::skipping thread ${id} — tracking issue #${ref} cannot back the deferral (${verdict}); leaving unresolved (#2045)"
+      continue
+    fi
+
+    if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+        -f id="$id" >/dev/null 2>&1; then
+      resolved_count=$((resolved_count + 1))
+      echo "::notice::resolved deferred bot thread ${id} (tracked in #${ref})"
+    else
+      echo "::warning::failed to resolve deferred bot thread ${id}"
+    fi
+  done <<< "$ids"
+  echo "::notice::resolve_deferred_bot_threads: resolved ${resolved_count} deferred bot thread(s) on PR #${PR_NUMBER}"
 }
 
 # resolve_dispositioned_comments: the issue-comment sibling of
@@ -2930,6 +3058,9 @@ case "$INTENT_TYPE" in
         fi
       fi
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
+        # Deferred bot threads (#2045) are verified against their tracking issue,
+        # not the diff, so they resolve outside the head-advance gate below.
+        resolve_deferred_bot_threads "fix-reviews"
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
         if resolution_gate_open "$cp_rc"; then
@@ -3035,6 +3166,9 @@ case "$INTENT_TYPE" in
         no-changes) post_no_changes "fix-bot-comment" ;;
       esac
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
+        # Deferred bot threads (#2045): verified against the tracking issue, so
+        # outside the head-advance gate below.
+        resolve_deferred_bot_threads "fix-bot-comment"
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
         if resolution_gate_open "$cp_rc"; then
@@ -3152,6 +3286,9 @@ case "$INTENT_TYPE" in
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
+      # Deferred bot threads (#2045): verified against the tracking issue, so
+      # outside the head-advance gate below.
+      resolve_deferred_bot_threads "review-changes"
       # Resolution gate (#1617): auto-resolve threads only when this pass advanced
       # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
       if resolution_gate_open "$cp_rc"; then
