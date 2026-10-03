@@ -65,6 +65,14 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
+# Compiled gh-aw lock files are generated output and are allow-listed.
+@test "check: allowed file (.github/workflows/*.lock.yml) may name concrete ids" {
+  mkdir -p "$SANDBOX/.github/workflows"
+  printf '%s\n' 'model: claude-opus-5-5' > "$SANDBOX/.github/workflows/foo.lock.yml"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 0 ]
+}
+
 # fable ids are covered by the same regex.
 @test "check: a fable id is also flagged" {
   mkdir -p "$SANDBOX/scripts"
