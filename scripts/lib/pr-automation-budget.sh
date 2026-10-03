@@ -272,8 +272,11 @@ pr_automation_escalate() {
 This PR has reached **${MAX_PR_AUTOMATION_CYCLES}** automated actions (agent commits + review cycles + acks) since the last human interaction, without converging. To prevent a runaway loop (see #926 / the #860 post-mortem), all automated commits, reviews, and acknowledgements on this PR are now **paused**, auto-merge is disabled, and \`needs-human-review\` is applied.
 
 **Re-engaging is human-gated.** A human reviewing, commenting, or pushing to this PR resets the budget; a machine action will not. Removing \`needs-human-review\` after a human has looked is the clean way to resume."
-  gh pr comment "$pr" --repo "$repo" --body "$body" \
-    || echo "::warning::could not post budget-exhaustion comment on PR #${pr}"
+  if gh pr comment "$pr" --repo "$repo" --body "$body"; then
+    PR_AUTOMATION_NEWLY_ESCALATED=true
+  else
+    echo "::warning::could not post budget-exhaustion comment on PR #${pr}"
+  fi
   gh pr edit "$pr" --repo "$repo" --add-label "$NEEDS_HUMAN_REVIEW_LABEL" 2>/dev/null \
     || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL} on PR #${pr}"
   gh pr merge "$pr" --repo "$repo" --disable-auto 2>/dev/null \
@@ -288,6 +291,11 @@ enforce_pr_budget() {
   local pr="$1" repo="$2"
   [ -n "$pr" ] && [ -n "$repo" ] || return 1
   local events
+  # Set by pr_automation_escalate only when THIS call created the escalation
+  # comment (not on dedupe, dry-run, or a failed post); callers read it to tell a
+  # fresh escalation from a hold on an already-exhausted budget.
+  # shellcheck disable=SC2034  # read by callers (review-one-pr.sh)
+  PR_AUTOMATION_NEWLY_ESCALATED=false
   events=$(gather_pr_automation_events "$pr" "$repo")
   if pr_budget_exhausted "$events"; then
     echo "::warning::PR #${pr} reached MAX_PR_AUTOMATION_CYCLES=${MAX_PR_AUTOMATION_CYCLES} automated actions since the last human interaction — halting automation"
