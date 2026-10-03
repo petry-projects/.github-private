@@ -1829,7 +1829,7 @@ _2045_comments() {
 
 _2045_open_issue() {
   jq -cn --arg b "Deferred review findings\n- [ ] duration_ms — ${_2045_LINK}" \
-    '{number:2050,state:"open",body:$b}'
+    '{number:2050,title:"dev-lead: deferred review findings",state:"open",body:$b}'
 }
 
 @test "resolve_deferred_bot_threads (#2045): verified deferral resolves on a NO-commit pass" {
@@ -1855,7 +1855,7 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): a link in a tracking-issue COMMENT is enough" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
-  export DEFER_ISSUE_JSON='{"number":2050,"state":"open","body":"Deferred review findings"}'
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings"}'
   export DEFER_ISSUE_COMMENTS="$(jq -cn --arg b "- duration_ms: ${_2045_LINK}" '[{body:$b}]')"
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
@@ -1895,7 +1895,7 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): ref to a CLOSED issue -> stays open" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
-  export DEFER_ISSUE_JSON="$(jq -cn --arg b "${_2045_LINK}" '{number:2050,state:"closed",body:$b}')"
+  export DEFER_ISSUE_JSON="$(jq -cn --arg b "${_2045_LINK}" '{number:2050,title:"dev-lead: deferred review findings",state:"closed",body:$b}')"
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   [[ "$_HARNESS_OUTPUT" == *"(closed)"* ]]
@@ -1905,7 +1905,7 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): tracking issue that does not mention the thread -> stays open" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
-  export DEFER_ISSUE_JSON='{"number":2050,"state":"open","body":"Deferred review findings (none linked)"}'
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings (none linked)"}'
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   [[ "$_HARNESS_OUTPUT" == *"(no-mention)"* ]]
@@ -1980,9 +1980,29 @@ _2045_open_issue() {
 @test "resolve_deferred_bot_threads (#2045): dry-run announces and skips API calls" {
   export INTENT_TYPE="fix-reviews"
   export DEV_LEAD_DRY_RUN="true"
+  export GH_CALLS="$BATS_TEST_TMPDIR/gh-calls"
+  : > "$GH_CALLS"
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+echo "\$*" >> "$GH_CALLS"
+echo "{}"
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
   run bash "$FIX_REVIEWS_SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"would resolve deferred review threads from bot reviewers on PR #54"* ]]
+  run grep -c "resolveReviewThread" "$GH_CALLS"
+  [ "$output" = "0" ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): tracking issue with a non-tracker title -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue | jq -c '.title="some other issue"')"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"(wrong-title)"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
 }
 
 @test "resolve_deferred_bot_threads (#2045): wired outside the #1617 head-advance gate in every thread-resolving intent" {

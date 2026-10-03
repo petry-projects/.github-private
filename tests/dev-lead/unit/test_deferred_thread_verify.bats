@@ -166,7 +166,7 @@ setup() {
 
 @test "dtv_verify_tracking_issue: open issue whose body links the thread -> ok" {
   local issue
-  issue=$(jq -cn --arg b "Deferred findings:\n- ${LINK}" '{number:2050,state:"open",body:$b}')
+  issue=$(jq -cn --arg b "Deferred findings:\n- ${LINK}" '{number:2050,title:"dev-lead: deferred review findings",state:"open",body:$b}')
   run dtv_verify_tracking_issue "$issue" "[]" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
@@ -175,7 +175,7 @@ setup() {
 @test "dtv_verify_tracking_issue: open issue whose COMMENT links the thread -> ok" {
   local comments
   comments=$(jq -cn --arg b "Appended: ${LINK}" '[{body:"unrelated"},{body:$b}]')
-  run dtv_verify_tracking_issue '{"number":2050,"state":"open","body":"Deferred findings"}' \
+  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred findings"}' \
     "$comments" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
@@ -192,7 +192,7 @@ setup() {
 
 @test "dtv_verify_tracking_issue: closed issue -> closed" {
   local issue
-  issue=$(jq -cn --arg b "${LINK}" '{number:2050,state:"closed",body:$b}')
+  issue=$(jq -cn --arg b "${LINK}" '{number:2050,title:"dev-lead: deferred review findings",state:"closed",body:$b}')
   run dtv_verify_tracking_issue "$issue" "[]" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
   [ "$output" = "closed" ]
@@ -200,21 +200,21 @@ setup() {
 
 @test "dtv_verify_tracking_issue: a pull request is not a tracking issue" {
   local issue
-  issue=$(jq -cn --arg b "${LINK}" '{number:2050,state:"open",body:$b,pull_request:{url:"x"}}')
+  issue=$(jq -cn --arg b "${LINK}" '{number:2050,title:"dev-lead: deferred review findings",state:"open",body:$b,pull_request:{url:"x"}}')
   run dtv_verify_tracking_issue "$issue" "[]" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
   [ "$output" = "not-an-issue" ]
 }
 
 @test "dtv_verify_tracking_issue: issue that does not mention the thread -> no-mention" {
-  run dtv_verify_tracking_issue '{"number":2050,"state":"open","body":"Deferred findings"}' \
+  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred findings"}' \
     '[{"body":"some other thread #discussion_r1"}]' "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
   [ "$output" = "no-mention" ]
 }
 
 @test "dtv_verify_tracking_issue: unparseable comments read as none (fail closed)" {
-  run dtv_verify_tracking_issue '{"number":2050,"state":"open","body":"x"}' "garbage" "$THREAD_ID" "$DB_ID"
+  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"x"}' "garbage" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
   [ "$output" = "no-mention" ]
 }
@@ -228,4 +228,38 @@ setup() {
 @test "dtv_text_mentions_thread: bare discussion_r token in prose is not a link" {
   run dtv_text_mentions_thread "see discussion_r${DB_ID} for context" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
+}
+
+# ── review-round hardening ───────────────────────────────────────────────────
+
+@test "dtv_parse_deferral: stray attribute tokens beside a valid ref -> bad-ref" {
+  run dtv_parse_deferral "<!-- dev-lead:deferred junk ref=#2050 -->"
+  [ "$status" -eq 1 ]
+  [ "$output" = "bad-ref" ]
+  run dtv_parse_deferral "<!-- dev-lead:deferred ref=#2050 extra -->"
+  [ "$status" -eq 1 ]
+  [ "$output" = "bad-ref" ]
+}
+
+@test "dtv_text_mentions_thread: scoped to repo+PR; other PR or repo is not a mention" {
+  local url="https://github.com/petry-projects/.github-private/pull/54#discussion_r${DB_ID}"
+  run dtv_text_mentions_thread "$url" "$THREAD_ID" "$DB_ID" "petry-projects/.github-private" "54"
+  [ "$status" -eq 0 ]
+  run dtv_text_mentions_thread "$url" "$THREAD_ID" "$DB_ID" "petry-projects/.github-private" "55"
+  [ "$status" -eq 1 ]
+  run dtv_text_mentions_thread "$url" "$THREAD_ID" "$DB_ID" "other/repo" "54"
+  [ "$status" -eq 1 ]
+}
+
+@test "dtv_text_mentions_thread: a letter suffix after the comment id is not a mention" {
+  run dtv_text_mentions_thread "https://github.com/o/r/pull/54#discussion_r${DB_ID}x" "$THREAD_ID" "$DB_ID" "o/r" "54"
+  [ "$status" -eq 1 ]
+}
+
+@test "dtv_verify_tracking_issue: non-tracker title -> wrong-title" {
+  local issue
+  issue=$(jq -cn --arg b "${LINK}" '{number:7,title:"per-finding issue",state:"open",body:$b}')
+  run dtv_verify_tracking_issue "$issue" "[]" "$THREAD_ID" "$DB_ID"
+  [ "$status" -eq 1 ]
+  [ "$output" = "wrong-title" ]
 }

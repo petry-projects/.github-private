@@ -34,6 +34,7 @@ set -euo pipefail
 
 readonly _DTV_MARKER_PREFIX='<!-- dev-lead:deferred'
 readonly _DTV_MARKER_SUFFIX='-->'
+readonly _DTV_TRACKER_TITLE='dev-lead: deferred review findings'
 
 # dtv_parse_deferral <reply_body>
 #   Extract the tracking-issue number from the single deferral marker in a reply.
@@ -80,7 +81,8 @@ dtv_parse_deferral() {
     echo "bad-ref"
     return 1
   fi
-  if [[ "$attrs" =~ [[:space:]]ref=#([1-9][0-9]*)([[:space:]]|$) ]]; then
+  # The WHOLE attribute region must be exactly one `ref=#<n>`; stray tokens fail.
+  if [[ "$attrs" =~ ^[[:space:]]+ref=#([1-9][0-9]*)[[:space:]]*$ ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
@@ -110,43 +112,55 @@ dtv_latest_own_reply_index() {
   echo "$idx"
 }
 
-# dtv_text_mentions_thread <text> <thread_id> <origin_database_id>
+# dtv_text_mentions_thread <text> <thread_id> <origin_database_id> [<owner/repo> <pr_number>]
 #   0 when <text> links the review thread: it names the thread node id
 #   (`PRRT_…`) or the originating comment's anchor `discussion_r<databaseId>` inside a
 #   review-comment URL (`…/pull/<n>#discussion_r<id>`; bare prose tokens don't count). Matches are bounded so `discussion_r12` does
 #   not match `discussion_r123`. An identifier with an unexpected shape is ignored
 #   rather than used as a pattern; with neither identifier usable this returns 1.
-#   Pure.
+#   When <owner/repo> and <pr_number> are given, the URL must point at exactly that
+#   repository and pull request. Pure.
 dtv_text_mentions_thread() {
-  local text="${1:-}" thread_id="${2:-}" db_id="${3:-}"
+  local text="${1:-}" thread_id="${2:-}" db_id="${3:-}" repo="${4:-}" pr="${5:-}"
   [[ -z "$text" ]] && return 1
   if [[ "$thread_id" =~ ^[A-Za-z0-9_=-]+$ ]] \
      && [[ "$text" =~ (^|[^A-Za-z0-9_=-])${thread_id}([^A-Za-z0-9_=-]|$) ]]; then
     return 0
   fi
-  if [[ "$db_id" =~ ^[1-9][0-9]*$ ]] \
-     && [[ "$text" =~ /pull/[0-9]+#discussion_r${db_id}([^0-9]|$) ]]; then
-    return 0
+  if [[ "$db_id" =~ ^[1-9][0-9]*$ ]]; then
+    local url_re='/pull/[0-9]+#discussion_r'
+    if [[ -n "$repo" || -n "$pr" ]]; then
+      # Scoped: unusable repo/PR identifiers never fall back to the loose match.
+      [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$pr" =~ ^[1-9][0-9]*$ ]] || return 1
+      url_re="github\\.com/${repo//./\\.}/pull/${pr}#discussion_r"
+    fi
+    if [[ "$text" =~ ${url_re}${db_id}([^0-9A-Za-z_]|$) ]]; then
+      return 0
+    fi
   fi
   return 1
 }
 
-# dtv_verify_tracking_issue <issue_json> <issue_comments_json> <thread_id> <origin_database_id>
+# dtv_verify_tracking_issue <issue_json> <issue_comments_json> <thread_id> <origin_database_id> [<owner/repo> <pr_number>]
 #   Decide whether the tracking issue a deferral cites can back resolution.
 #   <issue_json> is the REST issue object (number, state, body, pull_request?);
 #   <issue_comments_json> is the REST array of its comments ({body}). Echoes "ok"
 #   and returns 0 when the issue is an OPEN ISSUE (not a pull request) whose body or
 #   any comment links the thread (dtv_text_mentions_thread). Otherwise echoes a
-#   reason and returns 1: missing | not-an-issue | closed | no-mention. An empty or
+#   reason and returns 1: missing | not-an-issue | wrong-title | closed | no-mention.
+#   The issue must carry the exact shared-tracker title
+#   `dev-lead: deferred review findings` (AC6), never a per-finding issue. An empty or
 #   unparseable <issue_json> (a failed or 404 fetch) reads as missing; unparseable
 #   comments read as none. Pure.
 dtv_verify_tracking_issue() {
   local issue_json="${1:-}" comments_json="${2:-}" thread_id="${3:-}" db_id="${4:-}"
+  local repo="${5:-}" pr="${6:-}"
   local facts
   facts=$(jq -c '
       if type == "object" and ((.number // null) | type) == "number" then
         {kind: (if has("pull_request") and .pull_request != null then "pr" else "issue" end),
          state: ((.state // "") | ascii_downcase),
+         title: (.title // ""),
          body: (.body // "")}
       else empty end
     ' <<<"$issue_json" 2>/dev/null || true)
@@ -161,20 +175,26 @@ dtv_verify_tracking_issue() {
     echo "not-an-issue"
     return 1
   fi
+  local title
+  title=$(jq -r '.title' <<<"$facts" 2>/dev/null) || title=""
+  if [[ "$title" != "$_DTV_TRACKER_TITLE" ]]; then
+    echo "wrong-title"
+    return 1
+  fi
   if [[ "$state" != "open" ]]; then
     echo "closed"
     return 1
   fi
   local text
   text=$(jq -r '.body' <<<"$facts")
-  if dtv_text_mentions_thread "$text" "$thread_id" "$db_id"; then
+  if dtv_text_mentions_thread "$text" "$thread_id" "$db_id" "$repo" "$pr"; then
     echo "ok"
     return 0
   fi
   local comment_text
   comment_text=$(jq -r 'if type == "array" then .[] | objects | (.body // "") else empty end' \
     <<<"${comments_json:-[]}" 2>/dev/null || true)
-  if dtv_text_mentions_thread "$comment_text" "$thread_id" "$db_id"; then
+  if dtv_text_mentions_thread "$comment_text" "$thread_id" "$db_id" "$repo" "$pr"; then
     echo "ok"
     return 0
   fi
