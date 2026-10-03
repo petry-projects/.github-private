@@ -5505,6 +5505,7 @@ SH
 
   [ -s "$T2013_PUSH" ]
   [[ "$output" == *"Test suite: NOT RUN"* ]]
+}
 
 # ── #2037: an unminimizeComment failure fails the resolver closed ─────────────
 # A comment that must be re-opened but whose unminimize call fails stays RESOLVED,
