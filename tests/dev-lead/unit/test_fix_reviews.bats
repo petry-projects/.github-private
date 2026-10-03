@@ -3743,8 +3743,8 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # fix-bot-comment is not retryable, so bot-thread blocker posts terminal no-changes (not rate-limited)
-  [[ "$output" == *"fix-bot-comment is not automatically retried"* ]]
+  # A bot-thread blocker records no-changes (not rate-limited); the #2017 scan retries the comment if it does not end RESOLVED
+  [[ "$output" == *"recording no-changes; the terminal marker posts only if the comment ends RESOLVED"* ]]
   [[ "$output" == *"status=no-changes"* ]]
   [[ "$output" != *"[dry-run] would post rate-limited marker"* ]]
 }

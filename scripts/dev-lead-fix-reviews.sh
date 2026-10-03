@@ -2508,9 +2508,9 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — fix-bot-comment is not retried automatically; posting terminal marker"
+          echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — recording no-changes; the terminal marker posts only if the comment ends RESOLVED, otherwise the #2017 scan retries it"
         elif has_tier1_blockers; then
-          echo "::warning::Unresolved bot review threads remain — fix-bot-comment is not automatically retried; posting no-changes terminal marker"
+          echo "::warning::Unresolved bot review threads remain — recording no-changes; the terminal marker posts only if the comment ends RESOLVED, otherwise the #2017 scan retries it"
         fi
         _fbc_terminal="no-changes"
       fi
