@@ -100,7 +100,7 @@ For a thread that is `isOutdated: true` with no code change, a reply is optional
 
 When a **bot** thread's finding is real but does not belong in this PR, do not leave a bare skip note: that thread can never be resolved and blocks merge. Defer it to the repo's **single** deferred-findings tracking issue instead (AC6 — the same issue you use for issue-comment `out-of-scope` dispositions; never one issue per finding):
 
-1. Find that issue: `gh issue list --repo ${REPO} --state open --search 'in:title "dev-lead: deferred review findings"' --json number,title`. If none is open, create it with exactly that title.
+1. Find that issue: `gh issue list --repo ${REPO} --state open --search 'in:title "dev-lead: deferred review findings"' --json number,title`. If none is open, create it with exactly that title. Concurrent runs can race here, so after creating it search again and, if more than one open issue carries the title, use the lowest-numbered one (and note the duplicate on it).
 2. Append the finding to it with a link to the thread's **originating comment**, its `url` (`…/pull/${PR_NUMBER}#discussion_r<id>`), plus a one-line summary: `gh issue comment <n> --repo ${REPO} --body "…"`.
 3. Reply to the thread saying why it is deferred and where it is tracked, ending with **exactly one** deferral marker, and **no** addressed-marker or claim:
 
@@ -114,7 +114,7 @@ The harness resolves the thread on its own, on commit and no-commit passes alike
 
 #### Resolution is the harness's responsibility — never call `resolveReviewThread`
 
-**Do not resolve review threads yourself.** You have a shell, but resolution is not yours to perform: you must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance. Thread resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them once this pass commits your fix.** A pass that advances the PR head triggers resolution; a no-commit pass resolves nothing (the #1617 resolution gate — a pass that produced no commit resolves zero threads).
+**Do not resolve review threads yourself.** You have a shell, but resolution is not yours to perform: you must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance. Thread resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them once this pass commits your fix.** A pass that advances the PR head triggers resolution; a no-commit pass resolves no *addressed* threads (the #1617 resolution gate — a pass that produced no commit resolves zero addressed/outdated threads). The one exception is a bot thread carrying a verified deferral marker (see above), which the harness resolves regardless.
 
 Your reply and its marker are the *only* lever you have on resolution — which is why the reply above is mandatory. The harness resolves by exactly this scope (outdated status never overrides marker ownership for human threads):
 
