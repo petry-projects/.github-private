@@ -1011,6 +1011,12 @@ resolve_dispositioned_comments() {
     git fetch --quiet origin "refs/heads/${BASE_REF:-main}:refs/remotes/origin/${BASE_REF:-main}" >/dev/null 2>&1 || true
   fi
 
+  # Base ancestry is only trustworthy on full history (a shallow clone can report
+  # "not an ancestor" for a base commit), so deepen once, best-effort.
+  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+    git fetch --quiet --unshallow origin >/dev/null 2>&1 || true
+  fi
+
   local resolved_count=0
   local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
   local reverify edited_at chosen_created stale_rc
@@ -1149,7 +1155,10 @@ resolve_dispositioned_comments() {
         on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
         own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
         on_base="unknown"
-        if git rev-parse -q --verify "origin/${BASE_REF:-main}^{commit}" >/dev/null 2>&1; then
+        # A shallow clone can make --is-ancestor return nonzero for a commit that IS
+        # on base, so ancestry is unknown (fails closed) unless history is complete.
+        if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != "true" ] \
+           && git rev-parse -q --verify "origin/${BASE_REF:-main}^{commit}" >/dev/null 2>&1; then
           if git merge-base --is-ancestor "$sha" "origin/${BASE_REF:-main}" 2>/dev/null; then
             on_base="true"
           else

@@ -155,7 +155,7 @@ For **every other** comment (bot or human alike — a bot conflict report or tri
 
 | Disposition | Use when | Required evidence (harness-verified) |
 |---|---|---|
-| `fixed` | the code was changed to address the finding | `sha=` the **full 40-char** commit whose diff fixes it — this pass's commit (`git rev-parse HEAD`) if you fixed it now, or the earlier PR commit that already did. **Not the commit that introduced the finding.** The harness checks it is a PR commit on head (not on the base branch), with a non-empty diff, **authored after the finding** was posted (#2004) |
+| `fixed` | the code was changed to address the finding | `sha=` the **full 40-char** commit whose diff fixes it — this pass's commit (`git rev-parse HEAD`) if you fixed it now, or the earlier PR commit that already did. **Not the commit that introduced the finding.** The harness checks only that it is a PR commit on head (not on the base branch), with a non-empty diff, **authored after the finding** was posted (#2004); it does **not** check that the diff fixes the finding, so inspect the cited diff yourself and confirm it does |
 | `out-of-scope` | the finding is real but belongs elsewhere | `ref=#<n>` a tracking issue that **exists**; open one first if needed |
 | `invalid` | the finding is wrong / a false positive | a reply body with concrete reasoning (non-empty beyond the marker) |
 | `answered` | the comment asked a question you answer in the reply | a reply body that actually answers it |

@@ -5049,6 +5049,11 @@ _setup_fixed_history_pass() {
   INTRO_SHA="$(git -C "$FH_REPO" rev-parse HEAD)"
   _fh_commit "2026-09-30T12:00:00Z" "# the --emit-workflow REFERENCE_MANIFEST mode" "fix(reviews): address review comments"
   FIX_SHA="$(git -C "$FH_REPO" rev-parse HEAD)"
+  # FH_LATER=1 adds a later commit so FIX_SHA is a strict ancestor of head.
+  if [ "${FH_LATER:-}" = "1" ]; then
+    _fh_commit "2026-09-30T15:00:00Z" "# later unrelated commit" "chore: later commit"
+  fi
+  FH_HEAD="$(git -C "$FH_REPO" rev-parse HEAD)"
 
   export COMMENTS_NODES="${1//__INTRO__/$INTRO_SHA}"
   COMMENTS_NODES="${COMMENTS_NODES//__FIX__/$FIX_SHA}"
@@ -5077,7 +5082,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"pulls/"*"reviews"*) echo '[]' ;;
-  *"pulls/"*) echo '{"head":{"sha":"${FIX_SHA}"},"base":{"ref":"main"},"auto_merge":null}' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${FH_HEAD}"},"base":{"ref":"main"},"auto_merge":null}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -5093,7 +5098,7 @@ _run_fixed_history_pass() {
   run bash -c "
     cd '$FH_REPO'
     export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
-    export PR_NUMBER=1977 HEAD_SHA=$FIX_SHA REPO='petry-projects/.github-private'
+    export PR_NUMBER=1977 HEAD_SHA=$FH_HEAD REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export BOT_USER='donpetry-bot' MINLOG='$MINLOG'
     export COMMENTS_NODES='$COMMENTS_NODES'
@@ -5146,8 +5151,8 @@ _fixed_reply() {
 @test "#2004 AC4(c): a \`fixed\` disposition citing the correct earlier-pass commit verifies and minimizes on the first pass" {
   # The fix landed on an earlier pass; this pass commits nothing. The cited sha
   # is not bound to this pass's commit — it must still verify (the cited sha is
-  # head here; the fixture has no later commit).
-  _setup_fixed_history_pass "$(jq -sc '.' <(_codeant_finding) <(_fixed_reply R1 "2026-09-30T13:00:00Z" __FIX__))"
+  # strict ancestor of head: a later commit follows it).
+  FH_LATER=1 _setup_fixed_history_pass "$(jq -sc '.' <(_codeant_finding) <(_fixed_reply R1 "2026-09-30T13:00:00Z" __FIX__))"
 
   _run_fixed_history_pass
 
