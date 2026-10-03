@@ -152,6 +152,11 @@ jobs:
       # what caused the donpetry-bot regression (#1316); the manifest is now the
       # sole source of truth. See scripts/lib/resolve-persona-identity.sh.
       BOT_USER: 'don-petry'
+      # Repo-named test command for the pre-push regression guard
+      # (scripts/lib/test-regression-guard.sh, #2013). Mapped from a repository
+      # variable — NOT a workflow_call input — so no channel-pin sequencing is
+      # needed. Empty => the guard auto-discovers (npm/make/pytest/bats).
+      DEV_LEAD_TEST_CMD: ${{ vars.DEV_LEAD_TEST_CMD }}
       # Empty by default so dev-lead-intent.sh derives the trusted set from the
       # reviewer-source registry (scripts/lib/reviewer-sources.tsv), the single
       # source of truth — no hardcoded list to drift from the gate/scorecard
@@ -460,6 +465,12 @@ jobs:
                 gh extension install github/gh-copilot || true
               fi ;;
           esac
+
+      # bats is not preinstalled on ubuntu-latest; the test-regression guard's
+      # `bats --recursive tests` fallback needs it (#2013). Same install as lint.yml.
+      - name: Install bats
+        if: env.INTENT_TYPE == 'fix-reviews' || env.INTENT_TYPE == 'fix-bot-comment' || env.INTENT_TYPE == 'review-changes' || env.INTENT_TYPE == 'human-pr'
+        run: sudo apt-get install -y bats
 
       # ── fix-ci ────────────────────────────────────────────────────────────
       - name: Run fix-ci
