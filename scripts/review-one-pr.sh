@@ -137,6 +137,57 @@ emit_verdict() {
 
 echo "==> $PR_URL"
 
+# emit_approval_diagnostic <pr_snapshot_json>
+#   Surface the single "why is this PR not approved?" diagnostic (#1894) where an
+#   operator looks — the step summary — instead of only in a run log. It names the
+#   blocking gate, the specific condition, and what would satisfy it, and reports
+#   the advisory denominator RECONCILED with the registry (AC #2). Purely additive:
+#   sourced/run in an isolated subshell and fully guarded, so a diagnostic failure
+#   never affects the review decision. The subshell inherits PR_URL for the `pr` field.
+emit_approval_diagnostic() {
+  local snap="${1:-}"
+  [ -n "$snap" ] || return 0
+  (
+    # shellcheck source=lib/approval-diagnostic.sh
+    source "$SCRIPT_DIR/lib/approval-diagnostic.sh" || exit 0
+    # Give the diagnostic the same review-thread surface the maintainer-review-thread
+    # gate (#1415) evaluates, so it can never report approval while an unresolved
+    # maintainer thread blocks (the b78 gap). Best-effort: a fetch failure leaves the
+    # args empty and that gate is simply not modelled. Sourced in this isolated
+    # subshell so the gate helpers never leak into the caller.
+    local _threads="" _head_date=""
+    # shellcheck source=lib/maintainer-comment-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh" 2>/dev/null || true
+    # shellcheck source=lib/maintainer-review-thread-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-review-thread-gate.sh" 2>/dev/null || true
+    if declare -f mrtg_fetch_review_threads >/dev/null 2>&1; then
+      _threads=$(mrtg_fetch_review_threads "$PR_URL" 2>/dev/null) || _threads=""
+      # mrtg_fetch_review_threads echoes empty ONLY on an API failure (a PR with no
+      # threads yields {"reviewThreads":[]}). The real maintainer-review-thread gate
+      # fails closed on that same failure, so pass the fail-closed sentinel — otherwise
+      # diagnose_approval would skip the thread gate and the summary could claim
+      # approval the run withholds (thread F, #1902).
+      [ -z "$_threads" ] && _threads="$_APPROVAL_DIAG_THREADS_FETCH_FAILED"
+    fi
+    if declare -f maintainer_gate_head_committer_date >/dev/null 2>&1; then
+      _head_date=$(maintainer_gate_head_committer_date "$PR_URL" 2>/dev/null) || _head_date=""
+    fi
+    local verdict diag_rc
+    set +e
+    verdict=$(diagnose_approval "$snap" "" "${BOT_USER:-donpetry-bot}" "$_threads" "$_head_date")
+    diag_rc=$?
+    set -e
+    if [ "$diag_rc" -ne 0 ] || [ -z "$verdict" ]; then
+      echo "::warning::approval diagnostic could not evaluate the PR snapshot (#1894)"
+      exit 0
+    fi
+    echo "    approval-diagnostic: $verdict"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      render_approval_diagnostic "$verdict" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+    fi
+  ) || true
+}
+
 # ==========================================================================
 # Artifact-contract dispatch (issues #611/#612). The production PR-review path
 # is the `pr_diff` handler of the rubric registry: instead of hard-coding the
@@ -380,6 +431,11 @@ if [ -n "$NON_REQUIRED_CI_FAILURES" ]; then
   echo "::notice::proceeding past non-required failing check(s) the branch ruleset does not require: ${NON_REQUIRED_CI_FAILURES} — the merge gate still blocks on any failing REQUIRED check (#1795)"
   export NON_REQUIRED_CI_FAILURES
 fi
+
+# Approval diagnostic (#1894) — record, in the step summary, the single end-to-end
+# reason this PR is (not) approved before the gate chain runs. CI is green here, so
+# any subsequent decline is an approval-gate decision the diagnostic explains.
+emit_approval_diagnostic "$PR_SNAPSHOT"
 
 # Advisory bot review gate — instant check for advisory bot reviews (Gemini, Copilot, SonarCloud, Codex)
 # This ensures valid code reviews are incorporated before pr-review posts approval (issue #457).
