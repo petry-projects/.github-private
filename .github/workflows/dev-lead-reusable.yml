@@ -455,7 +455,7 @@ jobs:
       # bats is not preinstalled on ubuntu-latest; the test-regression guard's
       # `bats --recursive tests` fallback needs it (#2013). Same install as lint.yml.
       - name: Install bats
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
+        if: env.INTENT_TYPE == 'fix-reviews' || env.INTENT_TYPE == 'fix-bot-comment' || env.INTENT_TYPE == 'review-changes' || env.INTENT_TYPE == 'human-pr'
         run: sudo apt-get install -y bats
 
       # ── fix-ci ────────────────────────────────────────────────────────────
