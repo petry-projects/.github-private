@@ -112,15 +112,18 @@ done
 # Regression for issue #452: GraphQL omits the "[bot]" suffix from bot logins,
 # so the prompts identify bots by author.__typename == "Bot". Every reviewThreads
 # query that feeds OPEN_THREADS_JSON must therefore select __typename — both the
-# fix-reviews build AND the review-changes build (the latter was missed).
+# fix-reviews build AND the review-changes build (the latter was missed). Both
+# builds now share the paginated helper lib/open-review-threads.sh (#2046), so the
+# query lives there; the driver is still scanned in case a build is inlined again.
 
 echo ""
 echo "Checking OPEN_THREADS_JSON queries expose author.__typename..."
 DRIVER="$(dirname "$0")/../../../scripts/dev-lead-fix-reviews.sh"
-author_sel_total=$(grep -c 'comments(first:5) { nodes { body author {' "$DRIVER" 2>/dev/null || echo 0)
-author_sel_typename=$(grep -c 'comments(first:5) { nodes { body author { login __typename } }' "$DRIVER" 2>/dev/null || echo 0)
+THREADS_HELPER="$(dirname "$0")/../../../scripts/lib/open-review-threads.sh"
+author_sel_total=$(cat "$DRIVER" "$THREADS_HELPER" 2>/dev/null | grep -c 'comments(first:5) { nodes { body author {' || echo 0)
+author_sel_typename=$(cat "$DRIVER" "$THREADS_HELPER" 2>/dev/null | grep -c 'comments(first:5) { nodes { body author { login __typename } }' || echo 0)
 if [ "$author_sel_total" -eq 0 ]; then
-  echo "  FAIL: no OPEN_THREADS_JSON author selection found in $(basename "$DRIVER")"
+  echo "  FAIL: no OPEN_THREADS_JSON author selection found in $(basename "$DRIVER") or $(basename "$THREADS_HELPER")"
   FAILED=1
 elif [ "$author_sel_total" -ne "$author_sel_typename" ]; then
   echo "  FAIL: $((author_sel_total - author_sel_typename)) of $author_sel_total OPEN_THREADS_JSON build(s) omit author.__typename"
