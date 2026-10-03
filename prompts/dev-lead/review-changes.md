@@ -67,9 +67,10 @@ For each open review thread:
 1. Read each thread carefully to understand the reviewer's intent
 2. Use Read/Grep/Glob tools to examine the referenced code and surrounding context
 3. Apply the requested changes using Edit/Write tools
-4. If a thread requests new behavior that has no existing test coverage, write a test for it **before** making the implementation change
-5. **Reply to the thread with the specific fix** — see below
-6. **Do not resolve the thread yourself** — the harness resolves it after your reply (see below)
+4. If a thread requests new behavior that has no existing test coverage, **add** a test for it **before** making the implementation change
+5. **Commit the fix locally** — `git add -A && git commit -m "fix(reviews): <what>"` — **before** you reply, so the claim can name a commit this pass actually produced (see "Commit before you claim" below). Never push.
+6. **Reply to the thread with the specific fix** — see below
+7. **Do not resolve the thread yourself** — the harness resolves it after your reply (see below)
 
 #### Replying to a thread
 
@@ -77,7 +78,7 @@ For every thread you fix, post a reply that states **specifically what you chang
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON.
-# Get the full 40-char head SHA the fix rides on with: git rev-parse HEAD
+# Commit the fix FIRST, then read the SHA of that commit with: git rev-parse HEAD
 gh api graphql \
   -f query='mutation($tid: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \
   -f tid="THREAD_NODE_ID" \
@@ -87,7 +88,9 @@ gh api graphql \
 <!-- dev-lead:claim {\"v\":1,\"sha\":\"3cc4132fd4b4692aa20865f8b68ea8e21de604b8\",\"files\":[\"src/foo.ts\"]} -->"
 ```
 
-The claim payload is schema `v1` — one comment per reply, with a full 40-char `sha` (`git rev-parse HEAD`) and a non-empty JSON array of repo-relative `files` exactly as they appear in the diff. The normative schema and parser live in `scripts/lib/addressed-claim-verify.sh`.
+The claim payload is schema `v1` — one comment per reply, with a full 40-char `sha` of the commit **you made in this pass** (`git rev-parse HEAD` *after* committing the fix) and a non-empty JSON array of repo-relative `files` exactly as they appear in the diff. The normative schema and parser live in `scripts/lib/addressed-claim-verify.sh`.
+
+**Commit before you claim (#2013).** `sha` must be a commit **this pass produced**: run `git rev-parse HEAD` *after* you commit the fix. Citing the head you started from never verifies; it is the stale-claim defect from petry-projects/.github#1220. After the push, the harness checks the remote head. If the push was rejected or not incorporated, a guard refused it, or the pass failed, **every claim reply you posted this pass is retracted**. If you make no commit for a thread, post no addressed-marker or claim on it.
 
 #### Resolution is the harness's responsibility — never call `resolveReviewThread`
 
@@ -100,15 +103,16 @@ The harness never resolves a marker-less human (maintainer) thread — it leaves
 After addressing all threads:
 
 1. Identify the test command this repo uses (check AGENTS.md, `package.json`, `Makefile`, etc.)
-2. Run the full test suite — every test must pass, not just the changed areas
+2. Run the **full** test suite — every test must pass, not just the changed areas
 3. Run any available lint/format checks
 4. **Do not suppress or delete tests to force a pass — fix the code instead**
+5. **Never rewrite an existing test to make a bot suggestion pass (#2013).** A previously-passing test that turns red is a reason to question the change, not the test. A suggestion that contradicts an existing test is not applied, including "update the older test so the suite can pass". Reply explaining the conflict, **without** the addressed-marker, and leave it for a human. Changing or deleting an existing test line, or adding a `skip`, requires a cited `Test-Change-Justification: <why, with a reference>` commit trailer; without one the harness's test-tamper guard refuses to push and escalates. Adding a new test never needs it. The harness also re-runs the suite before pushing and refuses a pass that breaks a test that passed on the pre-pass head.
 
 ### Phase 3 — Rubber Duck Review
 
 Read all your changes from the reviewer's perspective:
 
-1. Run `git diff HEAD` (or equivalent) to see every line changed this session
+1. Diff against the pre-pass head (for example `git diff "$(git merge-base HEAD @{u})"`) to see every line changed this session — step 5 commits fixes locally, so a plain `git diff HEAD` no longer shows them
 2. For each thread, ask: does this change fully satisfy what the reviewer requested?
 3. Ask: if multiple threads conflict, was priority applied correctly (security > correctness > style)?
 4. Ask: would this response prompt further review comments, or is it clean?
@@ -125,7 +129,8 @@ Read all your changes from the reviewer's perspective:
 - For a thread you are intentionally skipping, post a skip note **without** the addressed-marker and explain why in your output
 - If multiple threads conflict, prioritize: security > correctness > style
 - Maintain the existing code style and patterns
-- Do not commit or push — the CI workflow handles git operations after you finish
+- Commit your fixes locally so your claims can cite them, but **never push**. The CI workflow pushes after you finish, verifies the push landed, and retracts any claim that did not land (#2013)
+- Never edit an existing test to match your change; an existing-test change needs a `Test-Change-Justification:` trailer (#2013)
 
 ## Output Format
 

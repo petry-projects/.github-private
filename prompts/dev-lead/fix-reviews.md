@@ -55,8 +55,9 @@ For each open review thread:
 1. Read the relevant file(s) using Read/Grep/Glob tools
 2. Understand the reviewer's concern
 3. Apply the appropriate fix using Edit/Write tools
-4. **Reply to the thread with the specific fix** — see below
-5. **Do not resolve the thread yourself** — the harness resolves it (see "Resolution is the harness's responsibility" below). A marker-less human thread is never resolved, including one with `isOutdated: true` (outdated status never overrides marker ownership).
+4. **Commit the fix locally** — `git add -A && git commit -m "fix(reviews): <what>"` — **before** you reply, so the claim can name a commit this pass actually produced (see "Commit before you claim" below). Never push.
+5. **Reply to the thread with the specific fix** — see below
+6. **Do not resolve the thread yourself** — the harness resolves it (see "Resolution is the harness's responsibility" below). A marker-less human thread is never resolved, including one with `isOutdated: true` (outdated status never overrides marker ownership).
 
 #### Replying to a thread
 
@@ -64,7 +65,7 @@ For every thread you fix, post a reply to that thread that states **specifically
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON.
-# Get the full 40-char head SHA the fix rides on with: git rev-parse HEAD
+# Commit the fix FIRST, then read the SHA of that commit with: git rev-parse HEAD
 gh api graphql \
   -f query='mutation($tid: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \
   -f tid="THREAD_NODE_ID" \
@@ -79,10 +80,19 @@ gh api graphql \
 | Field | Type | Rule |
 |---|---|---|
 | `v` | integer | Schema version — `1` today. A payload with any other `v` is unverifiable → the thread stays open. |
-| `sha` | string | The **full 40-character** commit SHA your fix rides on (`git rev-parse HEAD`). Abbreviated SHAs are rejected. |
+| `sha` | string | The **full 40-character** SHA of the commit **you made in this pass** that carries the fix (`git rev-parse HEAD` **after** committing it). Abbreviated SHAs are rejected. |
 | `files` | array of strings | The repo-relative POSIX path(s) your fix touches, **exactly as they appear in the diff** (no leading `./` or `/`, no quoting). Must be non-empty. It is a **JSON array** — never comma- or newline-separated. |
 
 Emit **exactly one** claim comment per reply — the harness treats zero or more-than-one as unverifiable and leaves the thread open. The harness then checks that the named commit is reachable from the PR head, its diff (or the cumulative `<sha>^..HEAD` range) is non-empty, and it touches at least one file in `files`. If any check fails, the thread stays unresolved — so name the real SHA and the real files.
+
+#### Commit before you claim — a claim is checked, then kept or retracted (#2013)
+
+The harness checks every claim against what actually **landed**, not against what you meant to do:
+
+- The cited commit must be one **this pass produced**: it must be on the PR head and **not** already on the branch when the pass started. Citing the head you started from (`git rev-parse HEAD` before you committed anything) is the stale-claim defect from petry-projects/.github#1220. It never verifies.
+- After pushing, the harness checks that the **remote** head contains the pushed commit. If the push was rejected, the remote moved and your commit could not be incorporated, a guard refused the push, or the pass failed, then **every claim reply you posted this pass is retracted**: the markers are stripped and a retraction notice is added. An unverified "Fixed" must never stand, because other review bots treat it as addressed.
+
+So: edit, **commit locally**, then reply citing that commit's SHA. If you end up making no commit for a thread, post no addressed-marker or claim on it.
 
 For a thread that is `isOutdated: true` with no code change, a reply is optional — a one-line note that the referenced code no longer exists is helpful but not required.
 
@@ -154,7 +164,7 @@ For **every other** comment (bot or human alike — a bot conflict report or tri
 
 | Disposition | Use when | Required evidence (harness-verified) |
 |---|---|---|
-| `fixed` | you changed code to address the finding | `sha=` the **full 40-char** commit (`git rev-parse HEAD`) your fix rides on; the harness checks it is on the PR head with a non-empty diff |
+| `fixed` | you changed code to address the finding | `sha=` the **full 40-char** SHA of the commit **you made in this pass** (`git rev-parse HEAD` *after* committing the fix locally); the harness checks it is on the PR head, was produced by this pass, and has a non-empty diff |
 | `out-of-scope` | the finding is real but belongs elsewhere | `ref=#<n>` a tracking issue that **exists**; open one first if needed |
 | `invalid` | the finding is wrong / a false positive | a reply body with concrete reasoning (non-empty beyond the marker) |
 | `answered` | the comment asked a question you answer in the reply | a reply body that actually answers it |
@@ -173,15 +183,20 @@ For **every other** comment (bot or human alike — a bot conflict report or tri
 After addressing all threads, run the test suite to ensure no regressions were introduced:
 
 1. Identify the test command this repo uses (check AGENTS.md, `package.json`, `Makefile`, etc.)
-2. Run the full test suite — all tests must pass
-3. If a thread fix required adding new behavior, add or update tests to cover it
+2. Run the **full** test suite, not only the tests near your change. All tests must pass.
+3. If a thread fix required adding new behavior, **add** a test to cover it
 4. **Do not suppress or delete tests to force a pass — fix the code instead**
+5. **A previously-passing test that turns red is a signal about your change, not about the test.** Question the change first. An existing test often encodes a deliberate behavior. On petry-projects/.github#1220 a "success precedence" test that encoded deliberate recovery semantics was rewritten to "failure precedence" to match a bot's suggestion, which inverted that behavior.
+6. **A bot suggestion that contradicts an existing test is not applied.** That includes a literal "update the old test so the suite passes". Reply on the thread explaining the conflict and naming the test, **without** the addressed-marker, so the thread stays open for a human. Do not rewrite the test.
+7. **Changing or deleting an existing test line, or adding a `skip`, needs an explicit, cited justification** in a commit trailer:
+   `Test-Change-Justification: <why the old assertion was wrong, citing the review comment / issue that establishes it — include an #issue, commit SHA, or URL>`
+   The harness's test-tamper guard refuses to push a pass that changes an existing test without this trailer, and escalates it to a human. Adding a **new** test never needs it.
 
 ### Phase 3 — Rubber Duck Review
 
 Read every changed line as if you are the reviewer seeing the response:
 
-1. Run `git diff HEAD` (or equivalent) to see all changes made this session
+1. Run `git diff "$(git merge-base HEAD @{u})"` (or diff against the pre-pass head) to see all changes made this session — step 4 commits fixes locally, so a plain `git diff HEAD` no longer shows them
 2. Ask: does each change directly and completely address its thread?
 3. Ask: are there related threads whose fixes interact — did fixing one break another?
 4. Ask: would the reviewer be satisfied, or is there still an issue?
@@ -197,7 +212,8 @@ Read every changed line as if you are the reviewer seeing the response:
 - Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - Never revert or undo the PR's own committed changes to satisfy a neutral `COMMENTED`/overview review — that produces a net-zero diff that silently cancels the fix (#1340)
 - If a review thread is ambiguous, apply the most conservative interpretation
-- Do not commit or push — the CI workflow handles git operations after you finish
+- Commit your fixes locally so your claims can cite them, but **never push**. The CI workflow pushes after you finish, verifies the push landed, and retracts any claim that did not land (#2013)
+- Never edit an existing test to match your change. A bot suggestion that contradicts an existing test goes to a human (reply without the marker). An existing-test change needs a `Test-Change-Justification:` trailer (#2013)
 
 ## Output Format
 
