@@ -115,16 +115,25 @@ _fmt_ms() {
 # so it would drop or admit the wrong hour of records (#1953). Callers must convert
 # such inputs to UTC (…Z) first; we fail closed rather than score the wrong window.
 _norm_iso() {
-  local t="${1-}"
+  local t="${1-}" n
   case "$t" in
-    "")                                     printf '' ;;
-    *T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)    printf '%s'    "$t" ;;
-    *T[0-9][0-9]:[0-9][0-9]Z)               printf '%s:00Z' "${t%Z}" ;;
-    *T[0-9][0-9]:[0-9][0-9]:[0-9][0-9])     printf '%sZ'   "$t" ;;
-    *T[0-9][0-9]:[0-9][0-9])                printf '%s:00Z' "$t" ;;
+    "")                                     return 0 ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)    n="$t" ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]Z)               n="${t%Z}:00Z" ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9])     n="${t}Z" ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9])                n="${t}:00Z" ;;
     *)  echo "ERROR: unsupported timestamp '${t}': use canonical UTC ISO-8601 (YYYY-MM-DDTHH:MM[:SS]Z). Numeric offsets and fractional seconds are not lexically comparable with UTC record timestamps and are rejected." >&2
         return 1 ;;
   esac
+  # The patterns above only check shape; reject impossible calendar/clock values
+  # (month 13, Feb 30, 25:99, second 60) by round-tripping through date(1) — a
+  # normalizing parser changes an invalid value, so any mismatch means invalid.
+  local rt
+  if ! rt="$(date -u -d "$n" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || [ "$rt" != "$n" ]; then
+    echo "ERROR: invalid UTC timestamp '${t}': not a real calendar date/time." >&2
+    return 1
+  fi
+  printf '%s' "$n"
 }
 
 # _combine_verdict <rc1> <rc2>  → the worse go/no-go exit code of the two report
@@ -189,10 +198,17 @@ canary_annotate() {
           (.kind // "token_usage") as $k
           | if ($k == "finding_verification" or $k == "lsp_cold_start") then empty
             elif $k == "token_usage" then
-              (if ((.ts | type) == "string" and (.workflow | type) == "string"
+              # ts must be a canonical, valid UTC instant (a "2026-09-26garbage" string
+              # would sort in-window lexically); token counts must be non-negative
+              # integers (a negative count would subtract from the call cost).
+              (def cnt: type == "number" and . >= 0 and . == floor;
+               if ((.ts | type) == "string"
+                   and (.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                   and ((.ts | try (fromdateiso8601 | todateiso8601) catch null) == .ts)
+                   and (.workflow | type) == "string"
                    and (.tier | type) == "string" and (.model | type) == "string"
-                   and (.input_tokens | type) == "number" and (.cache_read_tokens | type) == "number"
-                   and (.cache_creation_tokens | type) == "number" and (.output_tokens | type) == "number")
+                   and (.input_tokens | cnt) and (.cache_read_tokens | cnt)
+                   and (.cache_creation_tokens | cnt) and (.output_tokens | cnt))
                then empty else "invalid" end)
             else "invalid" end
         end' "${files[@]}" 2>/dev/null)"; then
@@ -214,25 +230,41 @@ canary_annotate() {
         (.context // ""),
         (if (.duration_ms == null) then "" else (.duration_ms | tostring) end)
       ] | join("\u001f")' "${files[@]}" 2>/dev/null \
-  | while IFS=$'\037' read -r ts wf tier model inp cr cw out ctx dur; do
-      local date price cost crcost known
-      date="${ts:0:10}"
-      price="$(price_for "$model" "$date")"
-      if [ -n "$price" ]; then
-        local pin pcr pcw pout
-        read -r pin pcr pcw pout <<< "$price"
-        cost="$(awk -v i="$inp" -v c="$cr" -v w="$cw" -v o="$out" \
-          -v pin="$pin" -v pcr="$pcr" -v pcw="$pcw" -v pout="$pout" \
-          'BEGIN { printf "%.6f", (i * pin + c * pcr + w * pcw + o * pout) / 1000000 }')"
-        crcost="$(awk -v c="$cr" -v pcr="$pcr" 'BEGIN { printf "%.6f", c * pcr / 1000000 }')"
-        known=1
-      else
-        cost="-1"; crcost="-1"; known=0
-      fi
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$ts" "$wf" "$tier" "$model" "$inp" "$cr" "$cw" "$out" "$ctx" "$dur" \
-        "$cost" "$crcost" "$known"
-    done
+  | awk -F'\037' -v OFS='\t' -v table="${PRICING_TABLE:-}" '
+      # One awk pass with the dated price table loaded once (same selection rule as
+      # price_for: most-specific glob, ties -> latest effective_from) — not a price_for
+      # subprocess plus two cost awks per record.
+      function glob2re(g,   re) {
+        re = g
+        gsub(/[.[\]()^$+{}|\\]/, "\\\\&", re); gsub(/\*/, ".*", re); gsub(/\?/, ".", re)
+        return "^" re "$"
+      }
+      function israte(v) { return v ~ /^[0-9]+(\.[0-9]+)?$/ }
+      BEGIN {
+        nr = 0
+        if (table != "")
+          while ((getline line < table) > 0) {
+            if (line ~ /^[[:space:]]*#/) continue
+            n = split(line, f, "\t"); if (n < 6) continue
+            nr++; gre[nr] = glob2re(f[1]); eff[nr] = f[2]
+            tin[nr] = f[3]; tcr[nr] = f[4]; tcw[nr] = f[5]; tout[nr] = f[6]
+            lit = f[1]; gsub(/[*?]/, "", lit); spec[nr] = length(lit)
+          }
+      }
+      {
+        d = substr($1, 1, 10); bs = -1; be = ""; bi = 0
+        for (i = 1; i <= nr; i++)
+          if ($4 ~ gre[i] && eff[i] <= d)
+            if (spec[i] > bs || (spec[i] == bs && eff[i] > be)) { bs = spec[i]; be = eff[i]; bi = i }
+        # A matched row with any non-numeric/negative rate is UNPRICED, never coerced
+        # to a zero rate (which would fabricate a cheap candidate).
+        if (bi > 0 && israte(tin[bi]) && israte(tcr[bi]) && israte(tcw[bi]) && israte(tout[bi])) {
+          cost = sprintf("%.6f", ($5 * tin[bi] + $6 * tcr[bi] + $7 * tcw[bi] + $8 * tout[bi]) / 1000000)
+          crcost = sprintf("%.6f", $6 * tcr[bi] / 1000000)
+          known = 1
+        } else { cost = "-1"; crcost = "-1"; known = 0 }
+        print $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, cost, crcost, known
+      }'
 }
 
 # _canary_arm_metrics <enriched_arm_file>  (stdout: one TSV metrics row)
@@ -326,6 +358,13 @@ render_canary_report() {
   latency_bar="${CANARY_LATENCY_BAR-0.20}"
   label="${CANARY_LABEL-Canary go/no-go — real PRs}"
   mode="${CANARY_MODE-real}"
+
+  # Identical candidate/incumbent IDs make the two arms the same model over different
+  # time windows — workload drift alone could then PASS. A misconfiguration, not a verdict.
+  if [ "$candidate" = "$incumbent" ]; then
+    echo "ERROR: --candidate and --incumbent must differ (both '${candidate}')." >&2
+    return 3
+  fi
 
   local enriched
   enriched="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 3; }
@@ -469,7 +508,14 @@ render_canary_report() {
   # arm to carry a single non-null duration. Require at least min_inv durations per
   # arm, so a five-invocation comparison with duration on only one call each stays
   # INSUFFICIENT instead of scoring a bogus one-pair PASS.
-  if [ "$base_insuff" -eq 1 ] || [ "$c_durc" -lt "$min_inv" ] || [ "$i_durc" -lt "$min_inv" ]; then
+  # In real mode the candidate durations must also span min_prs DISTINCT PRs: raw
+  # duration counts can come from retries of a single PR.
+  local c_dur_prs=0
+  if [ "$mode" = "real" ]; then
+    c_dur_prs="$(awk -F'\t' '$10 != "" && $9 != "" && !($9 in s) { s[$9] = 1; n++ } END { print n + 0 }' "$cand_file")"
+  fi
+  if [ "$base_insuff" -eq 1 ] || [ "$c_durc" -lt "$min_inv" ] || [ "$i_durc" -lt "$min_inv" ] \
+     || { [ "$mode" = "real" ] && [ "$c_dur_prs" -lt "$min_prs" ]; }; then
     latency_status="INSUFFICIENT"
   else
     latency_status="$(_bar_status "$c_mdur" "$i_mdur" "$latency_bar")"
@@ -612,12 +658,13 @@ collect_repo_jsonl() {
     return 1
   fi
 
-  local id requested=0
-  while IFS= read -r id; do
-    [ -n "$id" ] || continue
-    requested=$((requested + 1))
-    _collect_one_artifact "$repo" "$id"
-  done <<< "$ids"
+  # Bounded-parallel download (same as token_report.sh's collector) so a slow
+  # artifact set cannot serially consume the job timeout.
+  local requested=0
+  requested="$(printf '%s\n' "$ids" | grep -c . || true)"
+  export -f _collect_one_artifact _gh_timeout _extract_zip
+  printf '%s\n' "$ids" | grep . \
+    | xargs -P "${COLLECT_CONCURRENCY:-8}" -I {} bash -c '_collect_one_artifact "$1" "$2"' _ "$repo" {} || true
 
   local collected
   collected="$(find "$COLLECT_MARKER_DIR" -type f | wc -l | tr -d ' ')"
@@ -646,6 +693,12 @@ main() {
   local dir="" model_ab_dir="" collect_only="false"
 
   while [ "$#" -gt 0 ]; do
+    # A value-taking option with no value is an operational error (64), not a
+    # `set -u` abort (exit 1), which the workflow would read as a FAIL verdict.
+    case "$1" in
+      --repo|--candidate|--incumbent|--workflow|--tier|--since|--until|--baseline-since|--baseline-until|--candidate-max-prs|--dir|--model-ab-dir)
+        if [ "$#" -lt 2 ]; then echo "ERROR: $1 requires a value." >&2; return 64; fi ;;
+    esac
     case "$1" in
       --repo)            repo="$2"; shift 2 ;;
       --candidate)       candidate="$2"; shift 2 ;;
@@ -664,6 +717,11 @@ main() {
       *) echo "ERROR: unknown argument: $1" >&2; return 64 ;;
     esac
   done
+
+  if [ "$candidate" = "$incumbent" ]; then
+    echo "ERROR: --candidate and --incumbent must differ (both '${candidate}')." >&2
+    return 64
+  fi
 
   # Canonicalize every ISO bound to UTC seconds precision up front so the collector
   # (jq) and the renderer (awk) compare bounds and record timestamps consistently. A

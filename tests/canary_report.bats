@@ -196,7 +196,7 @@ seed_pass() {
     1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/777" 900
   run render_canary_report "$DIR"
   [[ "$output" == *"Deep-tier fallback calls (excluded from both arms)"* ]]
-  [[ "$output" == *"claude-opus-4-8"* ]]
+  [[ "$output" == *"| \`claude-opus-4-8\` | 1 |"* ]]
 }
 
 @test "render_canary_report: no non-null duration on either arm → latency INSUFFICIENT (never PASS), exit 2" {
@@ -369,4 +369,60 @@ seed_pass() {
   run _norm_iso "2026-09-25T15:07:00+01:00"; [ "$status" -ne 0 ]
   run _norm_iso "2026-09-25T14:07:00.123Z";  [ "$status" -ne 0 ]
   run _norm_iso "garbage";                   [ "$status" -ne 0 ]
+}
+
+@test "_norm_iso: rejects impossible calendar and clock values" {
+  run _norm_iso "2026-02-30T00:00Z"; [ "$status" -ne 0 ]
+  run _norm_iso "2026-13-01T00:00Z"; [ "$status" -ne 0 ]
+  run _norm_iso "2026-09-25T25:00Z"; [ "$status" -ne 0 ]
+  run _norm_iso "2026-09-25T14:60Z"; [ "$status" -ne 0 ]
+}
+
+@test "render_canary_report: a negative token count aborts scoring (exit 3)" {
+  seed_pass
+  mkrec "$FILE" "2026-09-26T10:09:00Z" pr-review deep claude-opus-5-5 \
+    1000 1000 -1000 100 "https://github.com/petry-projects/.github-private/pull/9" 700
+  run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "render_canary_report: a malformed record timestamp aborts scoring (exit 3)" {
+  seed_pass
+  mkrec "$FILE" "2026-09-26garbage" pr-review deep claude-opus-5-5 \
+    1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/9" 700
+  run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "render_canary_report: identical candidate and incumbent is an operational error (exit 3)" {
+  seed_pass
+  CANARY_INCUMBENT="claude-opus-5-5" run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "render_canary_report: a non-numeric price rate is unpriced, never a zero rate" {
+  seed_pass
+  local tbl="$DIR/pricing.tsv"
+  printf 'claude-opus-4-8\t2025-01-01\t15\t1.5\t18.75\t75\nclaude-opus-5-5\t2025-01-01\tbad\t0\t0\t0\n' > "$tbl"
+  PRICING_TABLE="$tbl" run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- candidate unpriced records: 5"* ]]
+}
+
+@test "render_canary_report: latency needs durations across distinct candidate PRs" {
+  # Five PRs exist, but only one carries durations (five retries) → latency INSUFFICIENT.
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" ""
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/1" 700
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- latency: INSUFFICIENT"* ]]
 }

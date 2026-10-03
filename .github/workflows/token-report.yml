@@ -47,7 +47,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: token-report-${{ inputs.org || 'petry-projects' }}-${{ inputs.run_canary && 'canary' || 'weekly' }}
+  group: token-report-${{ inputs.org || 'petry-projects' }}
   cancel-in-progress: true
 
 jobs:
