@@ -968,7 +968,7 @@ rdc_fixed_verdict() {
 }
 
 # rdc_find_fixing_commit <finding_body> <finding_created>
-#   Echo the newest PR-branch commit (base..head, merges excluded, at most 200)
+#   Echo the newest PR-branch commit (base..head, merges excluded)
 #   whose own diff removes one of the finding's tokens and passes every other
 #   check; rc 1 when there is none. Never searches on the date-only basis: with no
 #   token, any later commit would qualify, which fails open.
@@ -983,7 +983,7 @@ rdc_find_fixing_commit() {
     [ "$reason" = "content-removes-token" ] || continue
     echo "$c"
     return 0
-  done < <(git rev-list --no-merges --max-count=200 "${RDC_FIXED_BASE}..${RDC_FIXED_REF}" 2>/dev/null || true)
+  done < <(git rev-list --no-merges "${RDC_FIXED_BASE}..${RDC_FIXED_REF}" 2>/dev/null || true)
   return 1
 }
 

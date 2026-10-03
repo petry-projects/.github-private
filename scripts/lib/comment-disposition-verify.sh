@@ -225,17 +225,27 @@ _cdv_diff_side() {
   fi
 }
 
+# _cdv_has_token <text> <token>
+#   rc 0 when <token> occurs in <text> as a whole token: not flanked by a
+#   word character or `-`, so `--emit-workflow` never matches inside
+#   `--emit-workflow-only`. Pure.
+_cdv_has_token() {
+  local text="${1:-}" tok="${2:-}" esc
+  esc=$(sed 's/[][\.^$*+?(){}|/]/\\&/g' <<< "$tok")
+  grep -qE -- "(^|[^A-Za-z0-9_-])${esc}($|[^A-Za-z0-9_-])" <<< "$text"
+}
+
 # cdv_removed_token <diff> <tokens>
 #   Echo the first token (from the newline-separated <tokens>) that appears on a
 #   removed line of <diff> and on no added line; rc 0. rc 1 when there is none.
-#   Matching is a literal substring match. Pure.
+#   Matching is whole-token (see _cdv_has_token). Pure.
 cdv_removed_token() {
   local diff="${1:-}" tokens="${2:-}" removed added tok
   removed=$(_cdv_diff_side "$diff" "-")
   added=$(_cdv_diff_side "$diff" "+")
   while IFS= read -r tok; do
     [[ -z "$tok" ]] && continue
-    if grep -qF -- "$tok" <<< "$removed" && ! grep -qF -- "$tok" <<< "$added"; then
+    if _cdv_has_token "$removed" "$tok" && ! _cdv_has_token "$added" "$tok"; then
       printf '%s' "$tok"
       return 0
     fi
@@ -268,7 +278,7 @@ cdv_diff_token_verdict() {
   added=$(_cdv_diff_side "$diff" "+")
   while IFS= read -r tok; do
     [[ -z "$tok" ]] && continue
-    if grep -qF -- "$tok" <<< "$added"; then
+    if _cdv_has_token "$added" "$tok"; then
       echo "content-adds-token"
       return 1
     fi

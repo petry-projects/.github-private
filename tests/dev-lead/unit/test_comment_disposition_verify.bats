@@ -525,3 +525,11 @@ Also `real_token`.'
   [ "$status" -eq 1 ]
   [ "$output" = "content-unknown" ]
 }
+
+@test "diff verdict(#2051): token match is whole-token, not substring" {
+  local d=$'--- a/x\n+++ b/x\n@@ -1 +0,0 @@\n-run --emit-workflow-only now'
+  run bash -c "source '$LIB'; cdv_removed_token \"\$1\" \"\$2\"" _ "$d" "--emit-workflow"
+  [ "$status" -eq 1 ]
+  run bash -c "source '$LIB'; cdv_removed_token \"\$1\" \"\$2\"" _ "$d" "--emit-workflow-only"
+  [ "$status" -eq 0 ]
+}
