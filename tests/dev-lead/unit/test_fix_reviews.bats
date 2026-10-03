@@ -4773,6 +4773,9 @@ case "$ARGS" in
     echo "$ARGS" >> "$MINLOG"
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
   *"on IssueComment"*)
+    if [ "${NODE_RESOLVED:-}" = "1" ]; then
+      printf '%s' '{"data":{"node":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}'; exit 0
+    fi
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
   *"reviewThreads"*)
     printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; exit 0 ;;
@@ -5115,7 +5118,7 @@ _resolved_bot_comment() {
   end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   [ -n "$start" ] && [ -n "$end" ]
   block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
   applied=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
   nochg=$(grep -n 'post_no_changes "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$applied" ] && [ -n "$nochg" ]
@@ -5137,7 +5140,7 @@ _resolved_bot_comment() {
   start=$(grep -n '^  fix-bot-comment)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
   guard=$(grep -n 'RDC_STATE_UNKNOWN:-0}" = "1"' <<< "$block" | head -1 | cut -d: -f1)
   post=$(grep -n 'case "\$_fbc_terminal" in' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$guard" ] && [ -n "$post" ]
@@ -5538,6 +5541,9 @@ _succeed_fix_bot_comment() {
   export INTENT_TYPE="fix-bot-comment"
   export COMMENT_BODY="Walkthrough" COMMENT_NODE_ID="IC_ORIG"
   export COMMENTLOG="$BATS_TEST_TMPDIR/comments.log"
+  # The dispatched comment reads back RESOLVED, so the #2017 gate lets the
+  # terminal marker post (the #2037 downgrade is what is under test).
+  export NODE_RESOLVED=1
   : > "$COMMENTLOG"
 }
 
