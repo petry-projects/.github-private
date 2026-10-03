@@ -917,6 +917,73 @@ resolve_addressed_bot_threads() {
   echo "::notice::resolve_addressed_bot_threads: resolved ${resolved_count} addressed bot thread(s) on PR #${PR_NUMBER}"
 }
 
+# ── `fixed` disposition verification by diff content (#2004) ─────────────────
+# A `fixed` disposition must cite the commit whose diff addresses the finding. On
+# PR #1977 one cited the commit that INTRODUCED the finding; under the old "this
+# pass produced the sha" rule that failed silently, so the comment never minimized
+# and dev-lead never re-answered. The judgement is the pure cdv_fixed_verdict.
+# These helpers gather its git facts.
+
+# rdc_fixed_refs — set RDC_FIXED_REF (the PR's pushed head) and RDC_FIXED_BASE
+# (the base branch tip). Same reference-head rule as retract_unlanded_claims: the
+# remote head; the local HEAD only when there is no upstream (rc 1) on a pass whose
+# push succeeded. An unreadable remote leaves RDC_FIXED_REF empty, so every cited
+# sha is not-on-head (fail closed). An unreadable base leaves RDC_FIXED_BASE empty
+# (base-unknown).
+rdc_fixed_refs() {
+  local ref_rc=0 baseref="origin/${BASE_REF:-main}"
+  RDC_FIXED_REF=$(cl_remote_head) || ref_rc=$?
+  if [ -z "$RDC_FIXED_REF" ] && [ "$ref_rc" -eq 1 ]; then
+    RDC_FIXED_REF="$(git rev-parse HEAD 2>/dev/null || true)"
+  fi
+  if ! RDC_FIXED_BASE=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null); then
+    git fetch --quiet origin "${BASE_REF:-main}" 2>/dev/null || true
+    RDC_FIXED_BASE=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null || true)
+  fi
+}
+
+# rdc_commit_diff <sha> — the commit's own diff, without its message or context lines.
+rdc_commit_diff() {
+  git show --format= --no-color --no-ext-diff --no-renames -U0 "$1" 2>/dev/null || true
+}
+
+# rdc_fixed_verdict <sha> <finding_body> <finding_created>
+#   Echo cdv_fixed_verdict's reason for <sha> against the finding; rc 0 = verified.
+rdc_fixed_verdict() {
+  local sha="$1" body="$2" created="$3"
+  local facts on_head="false" in_base="unknown" own_files=0 commit_date="" content
+  if [ -n "${RDC_FIXED_REF:-}" ]; then
+    facts=$(acv_gather_commit_facts "$sha" "${RDC_FIXED_BASE:-}" "$RDC_FIXED_REF")
+    on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
+    if [ -n "${RDC_FIXED_BASE:-}" ]; then
+      in_base=$(printf '%s' "$facts" | jq -r 'if .in_base == false then "false" else "true" end' 2>/dev/null || echo "true")
+    fi
+    own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
+    commit_date=$(printf '%s' "$facts" | jq -r '.commit_date // ""' 2>/dev/null || echo "")
+  fi
+  content=$(cdv_diff_token_verdict "$(rdc_commit_diff "$sha")" "$(cdv_finding_tokens "$body")") || true
+  cdv_fixed_verdict "$on_head" "$in_base" "$own_files" "$commit_date" "$created" "$content"
+}
+
+# rdc_find_fixing_commit <finding_body> <finding_created>
+#   Echo the newest PR-branch commit (base..head, merges excluded, at most 200)
+#   whose own diff removes one of the finding's tokens and passes every other
+#   check; rc 1 when there is none. Never searches on the date-only basis: with no
+#   token, any later commit would qualify, which fails open.
+rdc_find_fixing_commit() {
+  local body="$1" created="$2" c reason
+  [ -n "$(cdv_finding_tokens "$body")" ] || return 1
+  [ -n "${RDC_FIXED_REF:-}" ] && [ -n "${RDC_FIXED_BASE:-}" ] || return 1
+  while IFS= read -r c; do
+    [ -z "$c" ] && continue
+    reason=$(rdc_fixed_verdict "$c" "$body" "$created") || continue
+    [ "$reason" = "content-removes-token" ] || continue
+    echo "$c"
+    return 0
+  done < <(git rev-list --no-merges --max-count=200 "${RDC_FIXED_BASE}..${RDC_FIXED_REF}" 2>/dev/null || true)
+  return 1
+}
+
 # resolve_dispositioned_comments: the issue-comment sibling of
 # resolve_addressed_bot_threads (#1813). A PR *issue comment* (from `gh pr comment`
 # or the GitHub main comment box) creates no review thread, so it is invisible to
@@ -1083,8 +1150,11 @@ resolve_dispositioned_comments() {
   local resolved_count=0
   local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
   local reverify edited_at chosen_created stale_rc
+  # #2004: the `fixed` refs are read once per resolver run, on first use.
+  local rdc_refs_ready="false" corrected_at
   while IFS= read -r cid || [ -n "$cid" ]; do
     [ -z "$cid" ] && continue
+    corrected_at=""
 
     # (b) above: an already-RESOLVED, edited bot comment. It is re-verified only
     # when a fresh disposition straddles the edit (checked after selection below).
@@ -1210,29 +1280,50 @@ resolve_dispositioned_comments() {
           fi
           continue
         fi
-        # Bind the `fixed` evidence to THIS pass's commit — not merely any ancestor
-        # already on the PR head. Without this, a prior pass's commit (or any
-        # existing ancestor) satisfies the on-head + non-empty-diff check even when
-        # the current pass produced no fix. Require: this pass advanced the head
-        # (RESOLUTION_BASE_SHA → current HEAD via ri_may_resolve), the cited sha was
-        # produced by this pass (reachable from HEAD but NOT from the pre-pass base),
-        # and its diff is non-empty. Fail closed when the pre-pass base or HEAD is
-        # unknowable, or the sha predates this pass.
-        local facts on_head own_files cumulative_files pass_base pass_head
-        pass_base="${RESOLUTION_BASE_SHA:-}"
-        pass_head="$(git rev-parse HEAD 2>/dev/null || true)"
-        if ri_may_resolve "$pass_base" "$pass_head" \
-             && git merge-base --is-ancestor "$sha" "$pass_head" 2>/dev/null \
-             && ! git merge-base --is-ancestor "$sha" "$pass_base" 2>/dev/null; then
-          facts=$(acv_gather_commit_facts "$sha")
-          on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
-          own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
-          cumulative_files=$(printf '%s' "$facts" | jq -r '(.cumulative_files // []) | length' 2>/dev/null || echo "0")
-          if [ "$on_head" = "true" ] && { [ "${own_files:-0}" -gt 0 ] || [ "${cumulative_files:-0}" -gt 0 ]; }; then
-            verified="true"
-          fi
+        # Verify the cited commit's DIFF CONTENT (#2004), not which pass produced
+        # it: on the PR's pushed head, not on the base branch, a non-empty diff that
+        # REMOVES a token the finding names and does not ADD it, dated after the
+        # finding. A finding with no token falls back to the date rule (date-only).
+        # The old "produced by THIS pass" rule could never accept a fix that landed
+        # in an earlier pass. Accepting any later commit would let an unrelated
+        # commit resolve the comment.
+        if [ "${rdc_refs_ready:-false}" != "true" ]; then
+          rdc_fixed_refs
+          rdc_refs_ready="true"
+        fi
+        local orig_body orig_created fixed_reason corrected removed_tok fix_body
+        orig_body=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+          'first(.[] | select(.id == $id)) | .body // ""' 2>/dev/null || echo "")
+        orig_created=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+          'first(.[] | select(.id == $id)) | .createdAt // ""' 2>/dev/null || echo "")
+        if fixed_reason=$(rdc_fixed_verdict "$sha" "$orig_body" "$orig_created"); then
+          verified="true"
+          echo "::notice::comment ${cid}: \`fixed\` disposition verified against ${sha} (${fixed_reason}) (#2004)"
         else
-          echo "::notice::skipping comment ${cid} — cited sha ${sha} was not produced by this pass (base=${pass_base:-<unset>} head=${pass_head:-<unset>}); leaving open (#1813)"
+          # AC2: loud and distinguishable from "dev-lead has not run yet".
+          echo "::warning::comment ${cid}: \`fixed\` disposition citing ${sha} did not verify (fixed-unverified:${fixed_reason}); the cited commit's diff must remove what the finding names (#2004)"
+          # AC3: an unverified disposition is not settled. Re-answer it with the
+          # PR-branch commit whose diff removes the finding's token, when one exists.
+          if corrected=$(rdc_find_fixing_commit "$orig_body" "$orig_created"); then
+            removed_tok=$(cdv_removed_token "$(rdc_commit_diff "$corrected")" "$(cdv_finding_tokens "$orig_body")" || true)
+            # Quote the token only when it is plain, so it can never form a marker.
+            [[ "$removed_tok" =~ ^[A-Za-z0-9_./:=-]+$ ]] || removed_tok=""
+            fix_body="Correcting my earlier \`fixed\` disposition for this comment: it cited \`${sha}\`, which does not address the finding (\`${fixed_reason}\`). The fix is in \`${corrected}\`${removed_tok:+, whose diff removes \`${removed_tok}\`}.
+
+<!-- dev-lead:comment-disposition id=${cid} disposition=fixed sha=${corrected} -->"
+            if gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$fix_body" >/dev/null 2>&1; then
+              echo "::notice::re-answered comment ${cid}: the corrected \`fixed\` disposition cites ${corrected} in place of ${sha} (#2004)"
+              # The corrected reply is now the latest. The wrong one is superseded.
+              superseded_ids+=("$chosen_reply_id")
+              sha="$corrected"
+              corrected_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              verified="true"
+            else
+              echo "::warning::comment ${cid}: could not post the corrected \`fixed\` disposition citing ${corrected}; it stays open (fixed-unverified:${fixed_reason}) (#2004)"
+            fi
+          else
+            echo "::warning::comment ${cid}: no commit on this branch removes what the finding names. The next pass must re-answer it with a fresh disposition (fixed-unverified:${fixed_reason}) (#2004)"
+          fi
         fi
         ;;
       out-of-scope)
@@ -1268,6 +1359,20 @@ resolve_dispositioned_comments() {
 
     if ! cdv_authorize "$disposition" "$is_human" "$verified"; then
       echo "::notice::skipping comment ${cid} — disposition '${disposition}' not authorized to resolve (is_human=${is_human} verified=${verified}); leaving open (#1813)"
+      if [ "$disposition" = "fixed" ] && [ "$reverify" != "true" ]; then
+        # #2004: an unverified `fixed` is re-answered on later passes. Converge the
+        # older replies to OUTDATED now, so the replies never stack (#1992).
+        local usid
+        for usid in "${superseded_ids[@]:-}"; do
+          [ -z "$usid" ] && continue
+          if gh api graphql -f query='mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}' \
+              -f id="$usid" >/dev/null 2>&1; then
+            echo "::notice::minimized superseded disposition reply ${usid} OUTDATED (#1992, #2004)"
+          else
+            echo "::warning::failed to minimize superseded disposition reply ${usid} OUTDATED"
+          fi
+        done
+      fi
       if [ "$reverify" = "true" ]; then
         # Fail closed: the fresh disposition answering the edit did not verify,
         # and the older one predates the edit, so nothing covers the current body.
@@ -1303,6 +1408,8 @@ resolve_dispositioned_comments() {
     edited_at=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
       'first(.[] | select(.id == $id)) | .lastEditedAt // ""' 2>/dev/null || echo "")
     chosen_created=$(printf '%s' "${selection:-}" | jq -r '.chosen.createdAt // ""' 2>/dev/null || echo "")
+    # A corrected `fixed` reply posted above judged the current body (#2004).
+    [ -n "$corrected_at" ] && chosen_created="$corrected_at"
     stale_rc=0
     cdv_disposition_is_stale "$edited_at" "$chosen_created" || stale_rc=$?
     if [ "$stale_rc" -ne 1 ]; then
