@@ -936,7 +936,9 @@ rdc_fixed_refs() {
   if [ -z "$RDC_FIXED_REF" ] && [ "$ref_rc" -eq 1 ]; then
     RDC_FIXED_REF="$(git rev-parse HEAD 2>/dev/null || true)"
   fi
-  if ! RDC_FIXED_BASE=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null); then
+  local base_rc=0
+  RDC_FIXED_BASE=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null) || base_rc=$?
+  if [ "$base_rc" -ne 0 ]; then
     git fetch --quiet origin "${BASE_REF:-main}" 2>/dev/null || true
     RDC_FIXED_BASE=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null || true)
   fi
@@ -971,8 +973,9 @@ rdc_fixed_verdict() {
 #   check; rc 1 when there is none. Never searches on the date-only basis: with no
 #   token, any later commit would qualify, which fails open.
 rdc_find_fixing_commit() {
-  local body="$1" created="$2" c reason
-  [ -n "$(cdv_finding_tokens "$body")" ] || return 1
+  local body="$1" created="$2" c reason tokens
+  tokens=$(cdv_finding_tokens "$body") || true
+  [ -n "$tokens" ] || return 1
   [ -n "${RDC_FIXED_REF:-}" ] && [ -n "${RDC_FIXED_BASE:-}" ] || return 1
   while IFS= read -r c; do
     [ -z "$c" ] && continue
@@ -1304,7 +1307,9 @@ resolve_dispositioned_comments() {
           echo "::warning::comment ${cid}: \`fixed\` disposition citing ${sha} did not verify (fixed-unverified:${fixed_reason}); the cited commit's diff must remove what the finding names (#2004)"
           # AC3: an unverified disposition is not settled. Re-answer it with the
           # PR-branch commit whose diff removes the finding's token, when one exists.
-          if corrected=$(rdc_find_fixing_commit "$orig_body" "$orig_created"); then
+          local corrected_rc=0
+          corrected=$(rdc_find_fixing_commit "$orig_body" "$orig_created") || corrected_rc=$?
+          if [ "$corrected_rc" -eq 0 ]; then
             removed_tok=$(cdv_removed_token "$(rdc_commit_diff "$corrected")" "$(cdv_finding_tokens "$orig_body")" || true)
             # Quote the token only when it is plain, so it can never form a marker.
             [[ "$removed_tok" =~ ^[A-Za-z0-9_./:=-]+$ ]] || removed_tok=""
@@ -1363,8 +1368,7 @@ resolve_dispositioned_comments() {
         # #2004: an unverified `fixed` is re-answered on later passes. Converge the
         # older replies to OUTDATED now, so the replies never stack (#1992).
         local usid
-        for usid in "${superseded_ids[@]:-}"; do
-          [ -z "$usid" ] && continue
+        for usid in "${superseded_ids[@]}"; do
           if gh api graphql -f query='mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}' \
               -f id="$usid" >/dev/null 2>&1; then
             echo "::notice::minimized superseded disposition reply ${usid} OUTDATED (#1992, #2004)"

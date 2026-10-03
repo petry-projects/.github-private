@@ -98,8 +98,8 @@ minimized with classifier `RESOLVED`. In practice:
   verifies that disposition and then minimizes the **original** comment `RESOLVED`
   (GraphQL `minimizeComment`). A push alone no longer clears anything.
   A `fixed` disposition is verified by the cited commit's **diff content** (#2004).
-  The commit must be on the PR's pushed head and not on the base branch, dated after
-  the finding. Its diff must remove at least one token the finding names (a
+  The commit must be on the PR's pushed head and not on the base branch, and not
+  dated before the finding. Its diff must remove at least one token the finding names (a
   backticked span, quoted identifier or `--flag`) and must not re-add it. A finding
   with no token falls back to the date check (`date-only`). A failure logs
   `::warning::… fixed-unverified:<reason>`. The harness then re-answers with the
