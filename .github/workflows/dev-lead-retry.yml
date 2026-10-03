@@ -26,6 +26,11 @@ name: Dev-Lead Retry (rate-limited)
 #
 # Phase 2 (fix-ci retry) and Phase 3 (fix-reviews/human-pr/rebase retry) are
 # both handled here since the retry logic is the same for all retryable intents.
+#
+# It also re-dispatches a lost fix-bot-comment pass (#2017): an open dev-lead PR
+# whose registered reviewer-bot issue comment has no covering disposition (and no
+# info_status_pattern match) gets one deduplicated fix-bot-comment retry per scan,
+# addressed by the comment's node id (scan_pr_for_undispositioned_bot_comments).
 
 on:
   schedule:

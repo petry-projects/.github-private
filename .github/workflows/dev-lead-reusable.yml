@@ -82,6 +82,17 @@ permissions: {}
 #
 # cancel-in-progress is false: a newer same-lane event queues behind the active
 # run rather than killing it, so an in-flight pickup always finishes.
+#
+# BUT GitHub keeps at most ONE *pending* run per group: a newer queued run still
+# cancels an older PENDING one. A burst of bot issue comments right after a PR
+# opens therefore drops most fix-bot-comment runs before they start (#2009: the
+# CodeRabbit/CodeAnt runs were cancelled with zero steps while the `opened` run
+# held dev-lead-pr-2009). fix-bot-comment can push commits, so it deliberately
+# stays in the per-PR lane (serialized with every other pushing run) rather than
+# getting its own per-comment group. A dropped run is recovered instead by the
+# undispositioned bot-comment retry (#2017): scripts/dev-lead-retry.sh re-dispatches
+# one deduplicated fix-bot-comment pass per PR by comment node id, from the retry
+# cron and from pr-review's `undispositioned-pr-comment` verdict.
 concurrency:
   group: >-
     ${{
@@ -285,6 +296,11 @@ jobs:
           # including legacy padding (=, +, /). Never a newline or quote.
           _cnid=$(echo "$ctx" | jq -r '.comment_node_id // ""')
           [[ "$_cnid" =~ ^[-A-Za-z0-9_+/=]+$ ]] || _cnid=""
+          # #2017: the version (ISO-8601 lastEditedAt // createdAt) of the comment body
+          # the pass reads; fix-bot-comment stamps it on its terminal marker. Only a
+          # well-formed timestamp is exported.
+          _cver=$(echo "$ctx" | jq -r '.comment_version // ""')
+          [[ "$_cver" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]] || _cver=""
           # fix-bot-comment dispositions the notice BY this id. Without it the run can only
           # no-op and leave the notice blocking, so fail loudly instead (#1928 review).
           if [ "${INTENT_TYPE:-}" = "fix-bot-comment" ] && [ -z "$_cnid" ]; then
@@ -297,6 +313,7 @@ jobs:
           echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
           echo "INTENT_ACTOR=$(echo "$ctx"        | jq -r '.actor // ""')"        >> "$GITHUB_ENV"
           echo "INTENT_COMMENT_NODE_ID=${_cnid}" >> "$GITHUB_ENV"
+          echo "INTENT_COMMENT_VERSION=${_cver}" >> "$GITHUB_ENV"
           # #1767: a hold-label skip carries the blocking label + subject number so
           # the workflow can post the one-time "held" notice (empty for non-holds).
           echo "INTENT_HOLD_LABEL=$(echo "$ctx"      | jq -r '.hold_label // ""')"     >> "$GITHUB_ENV"
@@ -499,6 +516,7 @@ jobs:
           ACTOR: ${{ env.INTENT_ACTOR }}
           COMMENT_BODY: ${{ env.INTENT_BODY }}
           COMMENT_NODE_ID: ${{ env.INTENT_COMMENT_NODE_ID }}
+          COMMENT_VERSION: ${{ env.INTENT_COMMENT_VERSION }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
