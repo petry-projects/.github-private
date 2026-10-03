@@ -1093,7 +1093,7 @@ resolve_deferred_bot_threads() {
     }
   }'
 
-  local resolved_count=0
+  local resolved_count=0 failed_count=0
   local id node_json cur_resolved comments_json origin_bot reply_idx reply_body
   local ref parse_rc post_reason post_rc disp_rc origin_db_id
   local issue_json issue_comments verdict
@@ -1137,7 +1137,11 @@ resolve_deferred_bot_threads() {
       continue
     fi
 
-    acv_latest_maintainer_disposition "$comments_json" "$bot_user" >/dev/null && disp_rc=0 || disp_rc=$?
+    # Pass a sentinel instead of ${bot_user}: in production BOT_USER is the same
+    # account the human maintainer uses, so excluding by login would hide the
+    # maintainer's own "required" disposition. The marker (our deferral reply carries
+    # `<!-- dev-lead:deferred`) is what tells our comments apart.
+    acv_latest_maintainer_disposition "$comments_json" "__no-such-account__" >/dev/null && disp_rc=0 || disp_rc=$?
     if [ "$disp_rc" -ne 1 ]; then
       echo "::notice::skipping thread ${id} — a maintainer disposition is present (or unparseable); a deferral cannot overrule it; leaving unresolved (#2045)"
       continue
@@ -1160,9 +1164,12 @@ resolve_deferred_bot_threads() {
       echo "::notice::resolved deferred bot thread ${id} (tracked in #${ref})"
     else
       echo "::warning::failed to resolve deferred bot thread ${id}"
+      failed_count=$((failed_count + 1))
     fi
   done <<< "$ids"
   echo "::notice::resolve_deferred_bot_threads: resolved ${resolved_count} deferred bot thread(s) on PR #${PR_NUMBER}"
+  # A verified deferral whose resolve mutation failed must not read as success.
+  [ "$failed_count" -eq 0 ]
 }
 
 # resolve_dispositioned_comments: the issue-comment sibling of
@@ -3068,7 +3075,7 @@ case "$INTENT_TYPE" in
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Deferred bot threads (#2045) are verified against their tracking issue,
         # not the diff, so they resolve outside the head-advance gate below.
-        resolve_deferred_bot_threads "fix-reviews"
+        resolve_deferred_bot_threads "fix-reviews" || rc=1
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
         if resolution_gate_open "$cp_rc"; then
@@ -3108,6 +3115,9 @@ case "$INTENT_TYPE" in
         || echo "::warning::resolve_dispositioned_comments failed on a failed fix-reviews pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-reviews" failed || true
+      # A deferral is verified against its tracking issue, not a commit, so it can
+      # clear even when the engine failed after posting it.
+      resolve_deferred_bot_threads "fix-reviews" || true
     fi
     exit "$rc"
     ;;
@@ -3176,7 +3186,7 @@ case "$INTENT_TYPE" in
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Deferred bot threads (#2045): verified against the tracking issue, so
         # outside the head-advance gate below.
-        resolve_deferred_bot_threads "fix-bot-comment"
+        resolve_deferred_bot_threads "fix-bot-comment" || rc=1
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
         if resolution_gate_open "$cp_rc"; then
@@ -3202,6 +3212,7 @@ case "$INTENT_TYPE" in
         || echo "::warning::resolve_dispositioned_comments failed on a failed fix-bot-comment pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-bot-comment" failed || true
+      resolve_deferred_bot_threads "fix-bot-comment" || true
     fi
     exit "$rc"
     ;;
