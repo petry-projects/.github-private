@@ -35,6 +35,8 @@ fetch_open_review_threads() {
       }' \
       -F owner="${repo%%/*}" -F repo="${repo##*/}" -F pr="$pr" \
       --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' \
-      2>/dev/null) || { echo "[]"; return 0; }
-  printf '%s\n' "$pages" | jq -sc '[ .[] | arrays | .[] ]' 2>/dev/null || echo "[]"
+      2>/dev/null) || { echo "::warning::fetch_open_review_threads: thread fetch failed for ${repo}#${pr}; continuing with no threads" >&2; echo "[]"; return 0; }
+  # Fail closed: a page that is not an array (e.g. null) means a partial snapshot.
+  printf '%s\n' "$pages" | jq -sce 'if all(.[]; type == "array") then [ .[][] ] else error("non-array page") end' 2>/dev/null \
+    || { echo "::warning::fetch_open_review_threads: incomplete thread pages for ${repo}#${pr}; continuing with no threads" >&2; echo "[]"; }
 }

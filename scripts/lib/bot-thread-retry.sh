@@ -125,7 +125,8 @@ btr_retry_decisions() {
     | ([ $notes[] | select((.retry | length) > 0) | .t ] | max) as $last_retry
     | ([ $notes[] | .notice[] ] | unique) as $noticed
     | [ $threads[] | objects
-        | select((.isResolved // false) == false and (.isOutdated // false) == false)
+        | select((.isResolved | type) == "boolean" and (.isOutdated | type) == "boolean"
+                 and .isResolved == false and .isOutdated == false)
         | ((.comments?.nodes // []) | if type == "array" then . else [] end) as $cs
         | select(($cs | length) > 0)
         | ($cs[0].author?.login // "" | tostring | bare) as $l
@@ -135,7 +136,8 @@ btr_retry_decisions() {
         | ($cs[0].createdAt | epoch) as $ct
         | ([ $cs[1:][] | select((.author?.login // "" | tostring | bare) as $r | ($auto | index($r)) != null) ]
            | length > 0) as $replied
-        | (((.comments?.totalCount // ($cs | length)) | tonumber? // 0) > ($cs | length)) as $truncated
+        | (.comments?.totalCount) as $tc
+        | (if ($tc | type) == "number" then $tc > ($cs | length) else true end) as $truncated
         | [ $notes[] | .t as $t | .retry[] | select(index($id) != null) | $t ] as $retries
         | ($retries | length) as $attempts
         | ([ $retries[] | select($last_hold == null or . > $last_hold) ] | length) as $counted

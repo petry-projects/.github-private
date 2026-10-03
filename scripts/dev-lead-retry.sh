@@ -825,6 +825,10 @@ scan_pr_for_unreplied_bot_threads() {
     echo "  [skip] bot-thread retry: PR ${pr_number} in ${repo} is ${pr_state:-unknown}" >&2
     echo "0"; return 0
   fi
+  if [ -z "$head_sha" ]; then
+    echo "  [warn] bot-thread retry: could not resolve HEAD SHA for PR ${pr_number} in ${repo} — skipping" >&2
+    echo "0"; return 0
+  fi
   # Authorship gate (#1311), as in the bot-comment retry: fix-reviews only pushes
   # to PRs dev-lead authored, with a same-repository head.
   if [ -z "$pr_author" ] || [ "$pr_author" != "$(dev_lead_identity)" ] \

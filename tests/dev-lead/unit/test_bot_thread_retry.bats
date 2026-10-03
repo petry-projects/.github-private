@@ -522,7 +522,25 @@ GHEOF
   source "$THREADS_LIB"
   run fetch_open_review_threads "petry-projects/.github-private" 1953
   [ "$status" -eq 0 ]
-  [ "$output" = "[]" ]
+  [[ "$output" == *"::warning::"* ]]
+  [ "${lines[${#lines[@]}-1]}" = "[]" ]
+}
+
+@test "open threads: a non-array page fails closed instead of being dropped from the snapshot" {
+  MOCK_BIN="$(mktemp -d)"
+  export PATH="$MOCK_BIN:$PATH"
+  cat > "$MOCK_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+echo '[{"id":"T1","isResolved":false}]'
+echo 'null'
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+  # shellcheck source=/dev/null
+  source "$THREADS_LIB"
+  run fetch_open_review_threads "petry-projects/.github-private" 1953
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [ "${lines[${#lines[@]}-1]}" = "[]" ]
 }
 
 @test "open threads: both fix-reviews and review-changes build OPEN_THREADS_JSON from the paginated helper" {
