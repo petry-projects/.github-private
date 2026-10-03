@@ -114,10 +114,11 @@ btr_retry_decisions() {
     | [ $comments[] | objects
         | select((.author?.login // "" | tostring | bare) as $l | ($auto | index($l)) != null)
         | select(((.authorAssociation // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a)) != null)
-        | {t: (.createdAt | epoch),
+        | (.createdAt | epoch) as $t
+        | {t: $t,
            hold: (markers("dev-lead-fix-reviews") | map(select(attr("intent") == "fix-reviews"))
                   | map(select(attr("status") == "rate-limited" or attr("status") == "blocked"))
-                  | map(attr("reset") | vepoch)),
+                  | map((attr("reset") | vepoch) // ($t + $pending))),
            retry: (markers($retry_name) | map(ids)),
            notice: (markers($notice_name) | map(ids) | add // [])} ] as $notes
     | ([ $notes[] | select((.hold | length) > 0) | .t ] | max) as $last_hold
