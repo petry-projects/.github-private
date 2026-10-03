@@ -195,6 +195,7 @@ seed_pass() {
   mkrec "$FILE" "2026-09-26T12:00:00Z" pr-review deep claude-opus-4-8 \
     1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/777" 900
   run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
   [[ "$output" == *"Deep-tier fallback calls (excluded from both arms)"* ]]
   [[ "$output" == *"| \`claude-opus-4-8\` | 1 |"* ]]
 }

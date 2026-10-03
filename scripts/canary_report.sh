@@ -638,9 +638,9 @@ collect_repo_jsonl() {
     return 1
   fi
 
-  local workdir; workdir="$(mktemp -d)" || { echo "ERROR: failed to create temporary directory" >&2; return 3; }
+  local workdir; workdir="$(mktemp -d)" || { echo "ERROR: failed to create temporary directory" >&2; return 1; }
   # shellcheck disable=SC2064
-  trap "rm -rf '$workdir'" RETURN
+  trap "rm -rf '$workdir'; trap - RETURN" RETURN
   export ARTIFACT_OP_TIMEOUT
   export COLLECT_JSONL_DIR="$jsonl_dir" COLLECT_WORKDIR="$workdir"
   export COLLECT_MARKER_DIR="$workdir/markers"
