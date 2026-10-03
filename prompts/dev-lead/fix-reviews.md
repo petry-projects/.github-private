@@ -96,13 +96,29 @@ So: edit, **commit locally**, then reply citing that commit's SHA. If you end up
 
 For a thread that is `isOutdated: true` with no code change, a reply is optional — a one-line note that the referenced code no longer exists is helpful but not required.
 
+#### Deferring a valid bot finding that is out of scope (#2045)
+
+When a **bot** thread's finding is real but does not belong in this PR, do not leave a bare skip note: that thread can never be resolved and blocks merge. Defer it to the repo's **single** deferred-findings tracking issue instead (AC6 — the same issue you use for issue-comment `out-of-scope` dispositions; never one issue per finding):
+
+1. Find that issue: `gh issue list --repo ${REPO} --state open --search 'in:title "dev-lead: deferred review findings"' --json number,title`. If none is open, create it with exactly that title. Concurrent runs can race here, so after creating it search again and, if more than one open issue carries the title, use the lowest-numbered one (and note the duplicate on it).
+2. Fetch the originating comment's URL — the supplied thread JSON omits it — by querying the thread node by its `id`: `gh api graphql -f query='query($id:ID!){node(id:$id){... on PullRequestReviewThread{comments(first:1){nodes{url}}}}}' -f id=<thread id>`. Append the finding to the issue with that URL (`…/pull/${PR_NUMBER}#discussion_r<id>`) plus a one-line summary: `gh issue comment <n> --repo ${REPO} --body "…"`.
+3. Reply to the thread saying why it is deferred and where it is tracked, ending with **exactly one** deferral marker, and **no** addressed-marker or claim:
+
+```
+Valid, but deferring — out of scope for this PR: <reason>. Tracked in #<n>.
+
+<!-- dev-lead:deferred ref=#<n> -->
+```
+
+The harness resolves the thread on its own, on commit and no-commit passes alike, but only when your latest reply on the thread carries exactly one such marker and `#<n>` is an **open issue** whose body or comments link the thread. A missing, closed or non-linking issue, or a second marker, leaves the thread open. Deferral is for **bot** threads only. Never defer a marker-less maintainer thread. Reply without a marker and leave it for the maintainer. If a maintainer marked the finding required, fix it instead.
+
 #### Resolution is the harness's responsibility — never call `resolveReviewThread`
 
-**Do not resolve review threads yourself.** You have a shell, but resolution is not yours to perform: you must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance. Thread resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them once this pass commits your fix.** A pass that advances the PR head triggers resolution; a no-commit pass resolves nothing (the #1617 resolution gate — a pass that produced no commit resolves zero threads).
+**Do not resolve review threads yourself.** You have a shell, but resolution is not yours to perform: you must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance. Thread resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them once this pass commits your fix.** A pass that advances the PR head triggers resolution; a no-commit pass resolves no *addressed* threads (the #1617 resolution gate — a pass that produced no commit resolves zero addressed/outdated threads). The one exception is a bot thread carrying a verified deferral marker (see above), which the harness resolves regardless.
 
 Your reply and its marker are the *only* lever you have on resolution — which is why the reply above is mandatory. The harness resolves by exactly this scope (outdated status never overrides marker ownership for human threads):
 
-- **Bot threads** (`comments.nodes[0].author.__typename` is `"Bot"` — the GitHub GraphQL API sets this for all bot accounts; note that GraphQL omits the `[bot]` suffix from `comments.nodes[0].author.login` for bots, so the login field alone is not a reliable bot indicator): the harness resolves every bot thread you addressed with an our-account `<!-- dev-lead:addressed -->` reply **and** every thread with `isOutdated: true`, **regardless of which reviewer triggered this run**. So stamp the addressed-marker on your reply whenever you genuinely fixed a bot thread — a thread you addressed must not be left open just because a different bot's comment triggered the run.
+- **Bot threads** (`comments.nodes[0].author.__typename` is `"Bot"` — the GitHub GraphQL API sets this for all bot accounts; note that GraphQL omits the `[bot]` suffix from `comments.nodes[0].author.login` for bots, so the login field alone is not a reliable bot indicator): the harness resolves every bot thread you addressed with an our-account `<!-- dev-lead:addressed -->` reply, every bot thread you deferred with a verified `<!-- dev-lead:deferred ref=#<n> -->` reply (see above — this one also on no-commit passes), **and** every thread with `isOutdated: true`, **regardless of which reviewer triggered this run**. So stamp the addressed-marker on your reply whenever you genuinely fixed a bot thread — a thread you addressed must not be left open just because a different bot's comment triggered the run.
 - **Human threads** (`comments.nodes[0].author.__typename` is `"User"`): **a maintainer's review thread is never resolved** — not by you, not by the harness — unless its originating comment carries one of our automation markers. You run as the owner account `don-petry` — the *same* account a human maintainer uses — so `comments.nodes[0].author.login` (even when it matches `${TRIGGERING_REVIEWER}`) **cannot** tell your own thread apart from the maintainer's. The harness discriminates by the **automation marker** in the thread's originating comment (`comments.nodes[0].body`):
   - If the originating comment carries one of **our** markers — `<!-- pr-review-agent … -->`, `<!-- persona:… -->`, `<!-- dev-lead … -->`, `<!-- dependency-advisory -->` — the thread is ours and the harness may resolve it once addressed.
   - If it carries **no** marker, it is a **maintainer finding**: post your fix reply, **but the thread stays open** for the maintainer to resolve. Resolving it would clear the maintainer's own review gate — exactly the PR #1413 defect this rule closes (#1415). A marker that cannot be determined is treated as a maintainer finding and left open (fail closed).
@@ -174,7 +190,7 @@ For **every other** comment (bot or human alike — a bot conflict report or tri
 
 **AC5 — human maintainer comments.** A comment whose `author.__typename` is `"User"` (a person, using an account like a human maintainer) is auto-resolved by the harness **only** on a verified `fixed`. For any other disposition you still post your reply, but the comment stays open for the human to resolve — you can never dismiss a person's finding by arguing it away. Bot comments (`__typename` = `"Bot"`) resolve on any verified disposition.
 
-**AC6 — one tracking issue per repo.** When you defer findings (`out-of-scope`) or route `informational` follow-ups, funnel them into a **single** tracking issue per repository rather than opening one per comment; reference that issue's number in `ref=`.
+**AC6 — one tracking issue per repo.** When you defer findings (`out-of-scope`) or route `informational` follow-ups, funnel them into a **single** tracking issue per repository rather than opening one per comment; reference that issue's number in `ref=`. It is the same `dev-lead: deferred review findings` issue that review-thread deferrals use (see *Deferring a valid bot finding*).
 
 **Never minimize a comment yourself** (no `minimizeComment` mutation). As with review threads, resolution is the harness's job: it verifies your disposition reply and minimizes the original comment RESOLVED. Your reply + its marker are your only lever.
 
@@ -209,6 +225,7 @@ Read every changed line as if you are the reviewer seeing the response:
 - For every thread you fix, post a reply naming the specific change — never reply-less. End the reply with the addressed-marker `<!-- dev-lead:addressed -->` **only** on bot threads and marker-carrying human threads; on a marker-less human (maintainer) thread, reply **without** the marker so it stays open for the maintainer
 - **Never resolve a thread yourself**: do not call the `resolveReviewThread` (or `unresolveReviewThread`) mutation. Resolution is the harness's job — it resolves every bot thread you addressed (via your our-account addressed-marker reply) and every outdated bot thread, and it leaves every marker-less (maintainer) thread open (#1415). Your only lever is the addressed-marker on your reply
 - For a thread you are skipping due to ambiguity, post a skip note **without** the addressed-marker and leave it in your output
+- For a bot thread whose finding is valid but out of scope, defer it with a `<!-- dev-lead:deferred ref=#<n> -->` reply pointing at the repo's single deferred-findings tracking issue, which must link the thread (see "Deferring a valid bot finding")
 - Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - Never revert or undo the PR's own committed changes to satisfy a neutral `COMMENTED`/overview review — that produces a net-zero diff that silently cancels the fix (#1340)
 - If a review thread is ambiguous, apply the most conservative interpretation
@@ -225,6 +242,7 @@ Addressed N threads:
 - Thread <id>: <brief description of fix> — maintainer thread [reply without marker, left open]
 - Thread <id>: outdated — replied (harness resolves)                                   # bot thread
 - Thread <id>: outdated — maintainer thread — replied [reply without marker, left open]
+- Thread <id>: deferred — <reason> [replied + deferred ref=#<n>]                         # bot thread
 - Thread <id>: skipped — <reason> [reply without marker]
 Test verification: <pass/fail — paste output if relevant>
 Files changed: <list of files>
