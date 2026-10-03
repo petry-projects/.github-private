@@ -77,12 +77,16 @@ estimate_tokens_from_file() {
 # empty the field is JSON `null` (never 0), so latency aggregates can tell
 # "unknown" apart from "instant". Existing callers that pass no duration keep
 # working unchanged.
+# key_index (#2030) is optional: the Gemini API key INDEX (1 = primary slot,
+# N = GOOGLE_API_KEY_N — never the key) that served the call. When given, the record
+# gains a `key_index` field the Gemini quota gate meters per key (numeric, or a
+# string like "1b" for a second primary credential); when omitted the field is absent, so other records are byte-for-byte unchanged.
 emit_token_record() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
 
   local workflow="$1" tier="$2" engine="$3" model="$4"
   local input="${5:-0}" cache="${6:-0}" output="${7:-0}" context="${8:-}"
-  local cache_write="${9:-0}" duration_ms="${10:-}"
+  local cache_write="${9:-0}" duration_ms="${10:-}" key_index="${11:-}"
 
   # Drop empty, model-less records: no model (empty or "-") AND zero usage across
   # every token count. These carry no signal — a dev-lead error/fallback branch can
@@ -118,6 +122,7 @@ emit_token_record() {
     --arg run_id "$run_id" \
     --arg context "$context" \
     --arg duration_ms "$duration_ms" \
+    --arg key_index "$key_index" \
     '{
       ts: $ts,
       workflow: $workflow,
@@ -132,7 +137,10 @@ emit_token_record() {
       run_id: $run_id,
       context: $context,
       duration_ms: (if $duration_ms == "" then null else ($duration_ms | tonumber? // null) end)
-    }' 2>/dev/null) || return 0
+    } + (if ($key_index | test("^[0-9]+$")) then { key_index: ($key_index | tonumber) }
+        elif ($key_index | test("^[0-9]+[a-z]+$")) then { key_index: $key_index }
+        else {} end)
+    ' 2>/dev/null) || return 0
 
   printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
 }
@@ -281,7 +289,7 @@ reset_engine_usage() {
   LAST_CACHE_WRITE_TOKENS=0
   LAST_OUTPUT_TOKENS=0
   local f; f="$(_engine_usage_sidecar)"
-  [ -n "$f" ] && rm -f "$f" 2>/dev/null || true
+  [ -n "$f" ] && rm -f "$f" "${f}.key" 2>/dev/null || true
 }
 
 # _usage_all_numeric <a> <b> <c> <d>
