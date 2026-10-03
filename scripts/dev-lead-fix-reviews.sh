@@ -676,7 +676,10 @@ list_unresolved_bot_thread_ids() {
   while [ "$has_next_page" = "true" ]; do
     page_response=$(gh api graphql -f query="$bot_threads_query" \
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      "${cursor_args[@]}" 2>/dev/null || echo "{}")
+      "${cursor_args[@]}" 2>/dev/null) || {
+      echo "::error::failed to enumerate review threads for PR #${PR_NUMBER}" >&2
+      return 1
+    }
     page_ids=$(printf '%s' "$page_response" | jq -r \
       '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
        | map(select(.isResolved == false
@@ -751,7 +754,7 @@ resolve_addressed_bot_threads() {
   # replied to (#codeant-666). The authorizing state is re-read per candidate via a
   # fresh node(id) fetch taken immediately before the mutation below.
   local ids
-  ids=$(list_unresolved_bot_thread_ids)
+  ids=$(list_unresolved_bot_thread_ids) || ids=""
 
   if [ -z "$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no addressed unresolved bot threads on PR #${PR_NUMBER}"
@@ -944,7 +947,10 @@ resolve_deferred_bot_threads() {
 
   local bot_user="${BOT_USER:-donpetry-bot}"
   local ids
-  ids=$(list_unresolved_bot_thread_ids)
+  ids=$(list_unresolved_bot_thread_ids) || {
+    echo "::error::resolve_deferred_bot_threads: could not enumerate review threads on PR #${PR_NUMBER}"
+    return 1
+  }
   if [ -z "$ids" ]; then
     echo "::notice::no unresolved bot threads to check for deferrals on PR #${PR_NUMBER}"
     return 0
@@ -1018,9 +1024,22 @@ resolve_deferred_bot_threads() {
     issue_comments=$(gh api --paginate "repos/${REPO}/issues/${ref}/comments?per_page=100" 2>/dev/null \
       | jq -cs 'add // []' 2>/dev/null) || issue_comments="[]"
     local verdict_rc=0
-    verdict=$(dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$id" "$origin_db_id") || verdict_rc=$?
+    verdict=$(dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$id" "$origin_db_id" "$REPO" "$PR_NUMBER") || verdict_rc=$?
     if [ "$verdict_rc" -ne 0 ]; then
       echo "::notice::skipping thread ${id} — tracking issue #${ref} cannot back the deferral (${verdict}); leaving unresolved (#2045)"
+      continue
+    fi
+
+    # The tracking-issue calls above took time: re-read the thread and require it to
+    # be unchanged (still unresolved, same comments) so a reply that landed meanwhile
+    # is never overridden.
+    local fresh_json fresh_comments
+    fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
+    fresh_comments=$(printf '%s' "$fresh_json" | jq -c \
+      'if .data.node.isResolved == false and .data.node.comments.pageInfo.hasNextPage == false
+       then .data.node.comments.nodes else "changed" end' 2>/dev/null || echo '"changed"')
+    if [ "$fresh_comments" != "$comments_json" ]; then
+      echo "::notice::skipping thread ${id} — thread changed while verifying the tracking issue; leaving unresolved (#2045)"
       continue
     fi
 
