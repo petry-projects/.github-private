@@ -15,10 +15,11 @@
 # fetch_open_review_threads <repo> <pr_number>
 #   Echo a JSON array of the PR's unresolved review threads, each
 #   {id, isResolved, isOutdated, line, path, comments{nodes[{body, author{login,
-#   __typename}}]}} (the first 5 comments). `gh --paginate` applies the --jq filter
-#   to each page and prints one array per page, which are concatenated here. On
-#   any API failure it echoes "[]" (the previous single-page fallback), never a
-#   partial concatenation.
+#   __typename}}]}} (the first 100 comments). `gh --paginate` applies the --jq
+#   filter to each page and prints one array per page, which are concatenated
+#   here. It fails closed (non-zero, nothing on stdout) on any API failure, a
+#   malformed page, or an unresolved thread with more than 100 comments, so a
+#   pass never runs on an incomplete snapshot.
 fetch_open_review_threads() {
   local repo="$1" pr="$2" pages
   # shellcheck disable=SC2016  # $owner/$repo/$pr/$endCursor are GraphQL variables
@@ -28,15 +29,15 @@ fetch_open_review_threads() {
           pullRequest(number:$pr) {
             reviewThreads(first:100, after:$endCursor) {
               pageInfo { hasNextPage endCursor }
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
+              nodes { id isResolved isOutdated line path comments(first:100) { pageInfo { hasNextPage } nodes { body author { login __typename } } } }
             }
           }
         }
       }' \
       -F owner="${repo%%/*}" -F repo="${repo##*/}" -F pr="$pr" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' \
-      2>/dev/null) || { echo "::warning::fetch_open_review_threads: thread fetch failed for ${repo}#${pr}; continuing with no threads" >&2; echo "[]"; return 0; }
+      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false)) | if any(.[]; .comments.pageInfo.hasNextPage) then error("open thread has more than 100 comments") else . end' \
+      2>/dev/null) || { echo "::error::fetch_open_review_threads: thread fetch failed for ${repo}#${pr}" >&2; return 1; }
   # Fail closed: a page that is not an array (e.g. null) means a partial snapshot.
   printf '%s\n' "$pages" | jq -sce 'if all(.[]; type == "array") then [ .[][] ] else error("non-array page") end' 2>/dev/null \
-    || { echo "::warning::fetch_open_review_threads: incomplete thread pages for ${repo}#${pr}; continuing with no threads" >&2; echo "[]"; }
+    || { echo "::error::fetch_open_review_threads: incomplete thread pages for ${repo}#${pr}" >&2; return 1; }
 }

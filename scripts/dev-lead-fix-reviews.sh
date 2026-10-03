@@ -2658,7 +2658,8 @@ case "$INTENT_TYPE" in
     # fall back to it when ACTOR is not set explicitly.
     export ACTOR="${ACTOR:-${TRIGGERING_REVIEWER:-}}"
     # Every unresolved thread, all pages, from every reviewer (#2046).
-    OPEN_THREADS_JSON=$(fetch_open_review_threads "$REPO" "$PR_NUMBER")
+    OPEN_THREADS_JSON=$(fetch_open_review_threads "$REPO" "$PR_NUMBER") \
+      || { echo "::error::could not fetch review threads for ${REPO}#${PR_NUMBER}" >&2; exit 1; }
     export OPEN_THREADS_JSON
     fetch_pr_context
     rc=0
@@ -2860,7 +2861,8 @@ case "$INTENT_TYPE" in
     # workflow's review-changes step passes ACTOR via env.INTENT_ACTOR.
     export REPO ACTOR="${ACTOR:-}" PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
     # Every unresolved thread, all pages, from every reviewer (#2046).
-    OPEN_THREADS_JSON=$(fetch_open_review_threads "$REPO" "$PR_NUMBER")
+    OPEN_THREADS_JSON=$(fetch_open_review_threads "$REPO" "$PR_NUMBER") \
+      || { echo "::error::could not fetch review threads for ${REPO}#${PR_NUMBER}" >&2; exit 1; }
     export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
     fetch_pr_context
     rc=0

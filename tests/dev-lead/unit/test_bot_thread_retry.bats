@@ -509,7 +509,7 @@ GHEOF
   grep -q 'map(select(.isResolved == false))' "$GH_LOG"
 }
 
-@test "open threads: an API failure yields an empty list, never a partial concatenation" {
+@test "open threads: an API failure fails closed with no partial output" {
   MOCK_BIN="$(mktemp -d)"
   export PATH="$MOCK_BIN:$PATH"
   cat > "$MOCK_BIN/gh" <<'GHEOF'
@@ -521,9 +521,9 @@ GHEOF
   # shellcheck source=/dev/null
   source "$THREADS_LIB"
   run fetch_open_review_threads "petry-projects/.github-private" 1953
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"::warning::"* ]]
-  [ "${lines[${#lines[@]}-1]}" = "[]" ]
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" != *"T1"* ]]
 }
 
 @test "open threads: a non-array page fails closed instead of being dropped from the snapshot" {
@@ -538,9 +538,14 @@ GHEOF
   # shellcheck source=/dev/null
   source "$THREADS_LIB"
   run fetch_open_review_threads "petry-projects/.github-private" 1953
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"::warning::"* ]]
-  [ "${lines[${#lines[@]}-1]}" = "[]" ]
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" != *"T1"* ]]
+}
+
+@test "open threads: the query fails closed on an unresolved thread with more than 100 comments" {
+  grep -q 'comments(first:100) { pageInfo { hasNextPage }' "$THREADS_LIB"
+  grep -q 'more than 100 comments' "$THREADS_LIB"
 }
 
 @test "open threads: both fix-reviews and review-changes build OPEN_THREADS_JSON from the paginated helper" {
