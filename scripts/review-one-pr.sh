@@ -489,6 +489,24 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
           gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to a PR issue comment lacking a verified disposition (#1813)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
         fi
       fi
+      # Act on this verdict instead of waiting (#2017). When a blocking comment is
+      # a registered reviewer bot's, only dev-lead's fix-bot-comment pass can
+      # disposition it — and if that run was lost (superseded while pending in the
+      # per-PR lane, #2009), nothing else ever would. Run the SAME deduplicated
+      # retry scan the dev-lead-retry cron uses for this PR: it dispatches at most
+      # one fix-bot-comment pass (by comment node id), only for registered-bot
+      # comments with no covering disposition, and never one already pending.
+      # It never minimizes anything — the gate is unchanged. Best-effort.
+      if [ "${DRY_RUN:-false}" != "true" ] && [ -n "$_OWNER_REPO" ] \
+         && [[ "$PR_URL" =~ /pull/([0-9]+) ]]; then
+        _bcr_pr="${BASH_REMATCH[1]}"
+        _bcr_log=$( (
+          # shellcheck source=dev-lead-retry.sh
+          source "$SCRIPT_DIR/dev-lead-retry.sh"
+          scan_pr_for_undispositioned_bot_comments "$_OWNER_REPO" "$_bcr_pr"
+        ) 2>&1 ) || true
+        printf '%s\n' "$_bcr_log" | sed 's/^/    [bot-comment-retry] /'
+      fi
       emit_verdict skip undispositioned-pr-comment "dev-lead posts a verified disposition reply and the harness minimizes the comment RESOLVED, or an @mention (FORCE_REVIEW) overrides the gate"
       exit 100
     elif [ "$mc_gate_rc" -eq 2 ]; then
