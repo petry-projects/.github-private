@@ -5546,7 +5546,7 @@ _succeed_fix_bot_comment() {
   run bash "$FIX_REVIEWS_SCRIPT" 2>&1
 
   # The failure is not swallowed: the pass ends non-zero.
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"failed to unminimize comment IC_ORIG after a failed post-edit re-verification"* ]]
   [[ "$output" == *"resolve_dispositioned_comments: failed to unminimize"* ]]
   # The loop did not stop at the failure: IC_B, after IC_ORIG, was re-opened.
@@ -5581,7 +5581,7 @@ _succeed_fix_bot_comment() {
 
   run bash "$FIX_REVIEWS_SCRIPT" 2>&1
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"failed to unminimize comment IC_ORIG (edited after its latest disposition)"* ]]
   ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
 }
