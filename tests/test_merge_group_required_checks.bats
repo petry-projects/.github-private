@@ -173,7 +173,8 @@ PY
 # the required `CodeQL` check green. Execute the job's script for each result.
 _codeql_agg_run() {
   local script
-  script="$(_wf "$WORKFLOWS/codeql.yml" "jobs['CodeQL']['steps'][0]['run']")"
+  script="$(_wf "$WORKFLOWS/codeql.yml" "jobs['CodeQL']['steps'][0]['run']")" || return 1
+  [ -n "$script" ] || return 1
   ANALYZE_RESULT="$1" bash -c "$script"
 }
 
@@ -200,6 +201,14 @@ _codeql_agg_run() {
   run _wf "$WORKFLOWS/sonarcloud.yml" "all('refs/heads/' not in str(s.get('with', {}).get('args', '')) and 'merge_group.base_ref' not in str(s.get('with', {}).get('args', '')) for s in jobs['sonarcloud']['steps'])"
   [ "$status" -eq 0 ]
   [ "$output" = "True" ]
+}
+
+# Both scanner steps must actually consume the resolved branch output; without
+# this the test above passes even if the branch argument is dropped entirely.
+@test "sonarcloud.yml scan and retry steps both use the resolved branch output (AC1)" {
+  run _wf "$WORKFLOWS/sonarcloud.yml" "[('-Dsonar.branch.name' in str(s['with']['args']) and 'steps.branch.outputs.name' in str(s['with']['args'])) for s in jobs['sonarcloud']['steps'] if 'sonarqube-scan-action' in str(s.get('uses', ''))]"
+  [ "$status" -eq 0 ]
+  [ "$output" = "[True, True]" ]
 }
 
 @test "sonarcloud.yml strips refs/heads/ in the branch-resolution step (AC1)" {
