@@ -208,6 +208,21 @@ OUT
   [[ "$output" == "[]" ]]
 }
 
+@test "_trg_run: allowlisted env and no git credential reach the suite (#2013)" {
+  d="$BATS_TEST_TMPDIR/credrepo"; mkdir -p "$d"; cd "$d"
+  git init -q
+  git config http.https://github.com/.extraheader "AUTHORIZATION: basic FAKE_GIT_CRED_9f3"
+  printf '[http "https://github.com/"]\n\textraheader = FAKE_INCLUDED_CRED_7a1\n' > "$BATS_TEST_TMPDIR/inc.cfg"
+  git config include.path "$BATS_TEST_TMPDIR/inc.cfg"
+  export GH_PAT_DON_PETRY=FAKE_PAT_1 COPILOT_GITHUB_TOKEN=FAKE_PAT_2 GOOGLE_API_KEY=FAKE_G1 GEMINI_API_KEY=FAKE_G2 SOME_NEW_SECRET=FAKE_N3
+  run _trg_run 'env; git config --list --show-origin 2>&1; cat .git/config 2>&1; git config --global --list 2>&1; echo END'
+  [[ "$output" == *END* ]]
+  [[ "$output" != *FAKE_* ]]
+  [[ "$output" != *extraheader* ]]
+  # the real checkout's git config is untouched
+  [[ "$(git config --get-all http.https://github.com/.extraheader)" == *FAKE_GIT_CRED_9f3* ]]
+}
+
 @test "trg_scan_pass: an unbaselinable base (unknown sha) is unbaselined and not blocked" {
   d="$BATS_TEST_TMPDIR/repo"; mkdir -p "$d"; cd "$d"
   git init -q; git -c user.email=t@t -c user.name=T commit -q --allow-empty -m i

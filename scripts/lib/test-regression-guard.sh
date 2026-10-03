@@ -150,25 +150,49 @@ trg_discover_cmd() {
   return 1
 }
 
-# _trg_run <cmd> — run the suite in the current directory with a time limit; combined
+# _trg_stage <scratch> [base_sha] — fill <scratch>/tree with a credential-free copy of
+# the current working tree (everything but .git, so installed deps come along). With
+# <base_sha>, the tracked files are replaced by that commit's. A fresh `git init` gives
+# git-using tests a repo; it carries none of the real checkout's git config, so the
+# saved checkout credential (http.*.extraheader) does not exist in the copy.
+_trg_stage() {
+  local scratch="$1" base="${2:-}" f
+  mkdir -p "$scratch/tree" "$scratch/home" "$scratch/tmp"
+  tar --exclude=.git -cf - . | tar -xf - -C "$scratch/tree"
+  if [[ -n "$base" ]]; then
+    # Drop head-tracked files, then lay the base commit's files over the copy.
+    while IFS= read -r -d '' f; do
+      rm -rf -- "${scratch:?}/tree/$f"
+    done < <(git ls-files -z 2>/dev/null)
+    git archive "$base" | tar -xf - -C "$scratch/tree"
+  fi
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -C "$scratch/tree" init -q 2>/dev/null || true
+}
+
+# _trg_run <cmd> [base_sha] — run the suite with a time limit in a scratch copy of the
+# tree (never the real checkout, so a killed run cannot leave it changed); combined
 # output on stdout, the exit status as the return code.
 _trg_run() {
-  local cmd="$1" limit="${DEV_LEAD_TEST_TIMEOUT:-1500}"
-  # PR-controlled code runs here: strip every write-capable credential from the
-  # test process's environment.
-  local -a scrub=(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u ANTHROPIC_API_KEY
-    -u CLAUDE_CODE_OAUTH_TOKEN -u DEV_LEAD_APP_TOKEN -u APP_PRIVATE_KEY)
+  local cmd="$1" base="${2:-}" limit="${DEV_LEAD_TEST_TIMEOUT:-1500}" scratch rc=0
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/trg.XXXXXX") || return 1
+  _trg_stage "$scratch" "$base"
+  # PR-controlled code runs here: an ALLOWLIST environment (env -i), not a denylist, so
+  # no token — whatever its name — reaches the test process.
+  local -a runner=(env -i "PATH=${PATH}" "HOME=${scratch}/home" "TMPDIR=${scratch}/tmp"
+    "LANG=${LANG:-C.UTF-8}" "CI=${CI:-true}" "TERM=${TERM:-dumb}"
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1)
   if command -v timeout >/dev/null 2>&1; then
-    "${scrub[@]}" timeout "$limit" bash -c "$cmd" 2>&1
-  else
-    "${scrub[@]}" bash -c "$cmd" 2>&1
+    runner+=(timeout "$limit")
   fi
+  ( cd "$scratch/tree" && "${runner[@]}" bash -c "$cmd" 2>&1 ) || rc=$?
+  rm -rf -- "$scratch"
+  return "$rc"
 }
 
 # trg_scan_pass <base_sha>
 #   The single impure gatherer. Runs the suite on the CURRENT checkout (the pass's
-#   result). Only when it is red, checks out <base_sha> (detached), runs it again, and
-#   restores the checkout. Echoes `<verdict>\t<cmd>` on the first line, then the
+#   result). Only when it is red, runs it again against <base_sha> in a scratch copy
+#   (the real checkout is never touched). Echoes `<verdict>\t<cmd>` on the first line, then the
 #   offending tests. Returns 1 only for `regression`.
 trg_scan_pass() {
   local base="${1:-}" cmd out head_rc=0 head_fail base_out base_rc="" base_fail="" base_ran=false
@@ -179,15 +203,10 @@ trg_scan_pass() {
   out=$(_trg_run "$cmd") || head_rc=$?
   head_fail=$(printf '%s\n' "$out" | trg_extract_failures)
   if (( head_rc != 0 && head_rc != 124 )) && [[ -n "$base" ]] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
-    local orig
-    orig=$(git symbolic-ref -q --short HEAD 2>/dev/null || git rev-parse HEAD)
-    if git checkout -q --detach "$base" 2>/dev/null; then
-      base_rc=0
-      base_out=$(_trg_run "$cmd") || base_rc=$?
-      base_fail=$(printf '%s\n' "$base_out" | trg_extract_failures)
-      base_ran=true
-      git checkout -q "$orig" 2>/dev/null || { echo "::error::test-regression guard could not restore ${orig}" >&2; printf 'regression\t%s\n(checkout not restored)\n' "$cmd"; return 1; }
-    fi
+    base_rc=0
+    base_out=$(_trg_run "$cmd" "$base") || base_rc=$?
+    base_fail=$(printf '%s\n' "$base_out" | trg_extract_failures)
+    base_ran=true
   fi
   local verdict_out rc=0
   verdict_out=$(trg_classify "$base_ran" "$base_rc" "$base_fail" "$head_rc" "$head_fail") || rc=$?
