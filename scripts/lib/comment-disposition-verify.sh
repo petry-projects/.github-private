@@ -255,7 +255,9 @@ cdv_removed_token() {
 #   Pure.
 cdv_diff_token_verdict() {
   local diff="${1:-}" tokens="${2:-}" added tok
-  if [[ -z "$(sed '/^[[:space:]]*$/d' <<< "$tokens")" ]]; then
+  local cleaned_tokens
+  cleaned_tokens=$(sed '/^[[:space:]]*$/d' <<< "$tokens") || true
+  if [[ -z "$cleaned_tokens" ]]; then
     echo "no-tokens"
     return 1
   fi
