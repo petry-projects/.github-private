@@ -243,15 +243,47 @@ render_gemini_quota() {
   local dir="$1"
   local files=("$dir"/*.jsonl)
   [ -e "${files[0]}" ] || return 0
+  # Day buckets follow the configured daily reset (settings rows daily_reset_time /
+  # daily_reset_tz in the caps file), not UTC calendar days: bucket = local date of
+  # (ts − reset time), so a call just before/after local reset lands in different
+  # days. The UTC offset is resolved per distinct UTC hour (handles DST changes).
+  local rtime="" rtz="" daylabel="UTC calendar days (daily reset not configured)"
+  if declare -F gq_setting >/dev/null 2>&1; then
+    rtime="$(gq_setting daily_reset_time)"; rtz="$(gq_setting daily_reset_tz)"
+  fi
+  local reset_sec=0 offsets='{}' hr off
+  if [[ "$rtime" =~ ^([01][0-9]|2[0-3]):([0-5][0-9])$ ]] && [ -n "$rtz" ] && [ "$rtz" != "unknown" ] \
+     && TZ="$rtz" date +%z >/dev/null 2>&1 && [ "$(TZ="$rtz" date -d '2026-01-01T00:00:00Z' +%Y 2>/dev/null)" != "" ]; then
+    reset_sec=$(( 10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 ))
+    offsets="$(
+      jq -r 'select(type == "object" and .engine == "gemini" and .key_index != null and .ts != null)
+          | .ts[0:13]' "${files[@]}" 2>/dev/null | sort -u \
+      | while IFS= read -r hr; do
+          off="$(TZ="$rtz" date -d "${hr}:00:00Z" +%z 2>/dev/null)" || continue
+          [[ "$off" =~ ^([+-])([0-9]{2})([0-9]{2})$ ]] || continue
+          printf '%s\t%s\n' "$hr" "$(( ${BASH_REMATCH[1]}1 * (10#${BASH_REMATCH[2]} * 3600 + 10#${BASH_REMATCH[3]} * 60) ))"
+        done | jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): (.[1] | tonumber)}) | add // {}'
+    )"
+    [ -n "$offsets" ] || offsets='{}'
+    daylabel="${rtime} ${rtz} reset"
+  fi
+
   local rows
-  rows="$(jq -r 'select(type == "object" and .engine == "gemini" and .key_index != null)
-      | [ (.kind // "token_usage"), (.key_index | tostring), (.model // "-"), (.ts // ""),
-          ((.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0)) ]
+  rows="$(jq -r --argjson off "$offsets" --argjson rs "$reset_sec" '
+      select(type == "object" and .engine == "gemini" and .key_index != null)
+      | (.ts // "") as $ts
+      | (if $ts != "" and ($off[$ts[0:13]] != null)
+           then ((try ($ts | fromdateiso8601) catch null) as $e
+                 | if $e == null then $ts[0:10]
+                   else ($e + $off[$ts[0:13]] - $rs | strftime("%Y-%m-%d")) end)
+           else $ts[0:10] end) as $day
+      | [ (.kind // "token_usage"), (.key_index | tostring), (.model // "-"), $ts,
+          ((.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0)), $day ]
       | @tsv' "${files[@]}" 2>/dev/null \
     | awk -F'\t' '
         $1 == "token_usage" && $4 != "" {
           k = $2 "\t" $3; seen[k] = 1; calls[k]++
-          m = k SUBSEP substr($4, 1, 16); d = k SUBSEP substr($4, 1, 10)
+          m = k SUBSEP substr($4, 1, 16); d = k SUBSEP $6
           rm[m]++; tm[m] += $5; rd[d]++
           if (rm[m] > prm[k]) prm[k] = rm[m]
           if (tm[m] > ptm[k]) ptm[k] = tm[m]
@@ -265,7 +297,7 @@ render_gemini_quota() {
 
   printf '## Gemini quota (per key index)\n\n'
   printf 'Peak usage per window over the lookback, metered from the ledger against '
-  printf '`scripts/lib/gemini-quota-caps.tsv` (#2030). Minutes and days are UTC buckets. '
+  printf '`scripts/lib/gemini-quota-caps.tsv` (#2030). Minutes are UTC buckets; days use: %s. ' "$daylabel"
   printf '`unknown` = cap not filled yet — the headroom gate treats that key as constrained.\n\n'
   printf '| Key | Model | Tier | Calls | Peak req/min | Peak tok/min | Peak req/day | Cooldowns |\n'
   printf '|---:|---|---|---:|---:|---:|---:|---:|\n'

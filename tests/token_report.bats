@@ -540,3 +540,23 @@ JSONL
   # The cooldown record is not a priced call.
   [[ "$output" == *"5 LLM calls"* ]]
 }
+
+@test "render_gemini_quota: daily window buckets by configured reset tz (Pacific midnight, not UTC)" {
+  local d caps; d="$(mktemp -d)"; caps="$(mktemp)"
+  # 2026-06-01T06:59:00Z = 23:59 PDT May 31; 07:01Z = 00:01 PDT Jun 1 (same UTC date, different Pacific days).
+  # 2026-01-15T07:30Z = 23:30 PST Jan 14; 08:30Z = 00:30 PST Jan 15 (DST offset differs).
+  cat > "$d/run.jsonl" <<'JSONL'
+{"ts":"2026-06-01T06:59:00Z","engine":"gemini","model":"m","input_tokens":1,"output_tokens":1,"key_index":1,"repo":"r"}
+{"ts":"2026-06-01T07:01:00Z","engine":"gemini","model":"m","input_tokens":1,"output_tokens":1,"key_index":1,"repo":"r"}
+{"ts":"2026-01-15T07:30:00Z","engine":"gemini","model":"m","input_tokens":1,"output_tokens":1,"key_index":2,"repo":"r"}
+{"ts":"2026-01-15T08:30:00Z","engine":"gemini","model":"m","input_tokens":1,"output_tokens":1,"key_index":2,"repo":"r"}
+JSONL
+  printf 'setting\tdaily_reset_time\t00:00\nsetting\tdaily_reset_tz\tAmerica/Los_Angeles\n' > "$caps"
+  GEMINI_QUOTA_CAPS="$caps" run render_gemini_quota "$d"
+  rm -rf "$d" "$caps"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"00:00 America/Los_Angeles reset"* ]]
+  # Each call is the only one in its Pacific day → peak req/day 1 (UTC day buckets would give 2 for key 1).
+  [[ "$output" == *'| 1 | `m` | unknown | 2 | 1 / unknown | 2 / unknown | 1 / unknown | 0 |'* ]]
+  [[ "$output" == *'| 2 | `m` | unknown | 2 | 1 / unknown | 2 / unknown | 1 / unknown | 0 |'* ]]
+}

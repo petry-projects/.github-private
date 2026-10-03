@@ -884,8 +884,16 @@ _gemini_api_key_names() {
 _gemini_note_key_index() {
   [ -n "${1:-}" ] || return 0
   declare -F _engine_usage_sidecar >/dev/null 2>&1 || return 0
-  local f; f="$(_engine_usage_sidecar)"
-  [ -n "$f" ] && printf '%s\n' "$1" > "${f}.key" 2>/dev/null || true
+  # Strictly call-unique: only the per-call _ENGINE_USAGE_OUT path qualifies. The
+  # shared $$ fallback could be overwritten by a concurrent call and charge usage
+  # to the wrong key, so without a unique path the record is left UNATTRIBUTED
+  # (no key_index) — the metering never charges an unattributed record to any key.
+  [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
+  if [ -z "${_ENGINE_USAGE_OUT:-}" ]; then
+    echo "[gemini] no call-unique usage sidecar — token record carries no key_index (unattributed)" >&2
+    return 0
+  fi
+  printf '%s\n' "$1" > "${_ENGINE_USAGE_OUT}.key" 2>/dev/null || true
 }
 
 # _gemini_invoke <prompt_file> <timeout_sec> <model> [extra_args...]

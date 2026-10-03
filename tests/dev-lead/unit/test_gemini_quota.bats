@@ -459,6 +459,38 @@ _ledger_call() {
   ! grep -q "fake-secret" "$TOKEN_LOG_FILE"
 }
 
+@test "ledger: concurrent calls on different keys each record their own key index" {
+  export DEV_LEAD_ENGINES="gemini"
+  _source_engine gemini
+  local pf="$BATS_TEST_TMPDIR/p.txt" of="$BATS_TEST_TMPDIR/o.txt"
+  echo prompt > "$pf"; echo out > "$of"
+  local i
+  for i in 1 2 3 4; do
+    (
+      export _ENGINE_USAGE_OUT="$BATS_TEST_TMPDIR/call$i.usage"
+      _gemini_note_key_index "$i"
+      sleep 0.2   # all four notes land before any record is written
+      _record_engine_tokens deep gemini "m$i" "$pf" "$of"
+    ) &
+  done
+  wait
+  for i in 1 2 3 4; do
+    [ "$(jq -r --arg m "m$i" 'select(.model == $m) | .key_index' "$TOKEN_LOG_FILE")" = "$i" ]
+  done
+}
+
+@test "ledger: without a call-unique sidecar the record is unattributed, never a shared key file" {
+  export DEV_LEAD_ENGINES="gemini"
+  _source_engine gemini
+  unset _ENGINE_USAGE_OUT
+  local pf="$BATS_TEST_TMPDIR/p.txt"; echo prompt > "$pf"
+  run _gemini_note_key_index 2
+  [[ "$output" == *"unattributed"* ]]
+  [ -z "$(ls "$BATS_TEST_TMPDIR" | grep -F '.key' || true)" ]
+  _record_engine_tokens deep gemini mx "$pf" "$pf"
+  [ "$(jq -r 'select(.model == "mx") | has("key_index")' "$TOKEN_LOG_FILE")" = "false" ]
+}
+
 @test "key index: primary slot is 1, GOOGLE_API_KEY_N is N" {
   source "$QUOTA_LIB"
   [ "$(gq_key_index GEMINI_API_KEY)" = "1" ]

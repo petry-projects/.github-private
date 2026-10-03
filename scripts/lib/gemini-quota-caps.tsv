@@ -39,6 +39,6 @@
 3	gemini-3.1-pro-preview	unknown	unknown	unknown	unknown
 4	gemini-3.8-flash	unknown	unknown	unknown	unknown
 4	gemini-3.1-pro-preview	unknown	unknown	unknown	unknown
-setting	daily_reset_time	unknown
-setting	daily_reset_tz	unknown
+setting	daily_reset_time	00:00
+setting	daily_reset_tz	America/Los_Angeles
 setting	default_cooldown_sec	60
