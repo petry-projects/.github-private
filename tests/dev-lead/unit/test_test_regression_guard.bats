@@ -193,7 +193,9 @@ OUT
 FAIL src/a.test.js
 --- FAIL: TestThing (0.00s)
 OUT
-  [[ "$output" == *"TestThing"* && "$output" == *"src/a.test.js"* ]]
+  [[ "${lines[0]}" == "TestThing" ]]
+  [[ "${lines[1]}" == "src/a.test.js" ]]
+  [[ "${#lines[@]}" -eq 2 ]]
 }
 
 @test "trg_classify: a timed-out baseline is unbaselined, not preexisting" {
@@ -212,4 +214,14 @@ OUT
   DEV_LEAD_TEST_CMD="echo 'not ok 1 broken'; exit 1" run trg_scan_pass "0000000000000000000000000000000000000000"
   [[ "${lines[0]}" == $'unbaselined\t'* ]]
   [[ "$status" -eq 0 ]]
+}
+
+@test "dev-lead-reusable.yml installs bats before the first Run step and maps DEV_LEAD_TEST_CMD from vars (#2013)" {
+  local wf="$BATS_TEST_DIRNAME/../../../.github/workflows/dev-lead-reusable.yml"
+  local inst run
+  inst=$(grep -n -- '- name: Install bats' "$wf" | head -1 | cut -d: -f1)
+  run=$(grep -n -- '- name: Run ' "$wf" | head -1 | cut -d: -f1)
+  [[ -n "$inst" && -n "$run" && "$inst" -lt "$run" ]]
+  grep -q 'apt-get install -y bats' "$wf"
+  grep -qF 'DEV_LEAD_TEST_CMD: ${{ vars.DEV_LEAD_TEST_CMD }}' "$wf"
 }
