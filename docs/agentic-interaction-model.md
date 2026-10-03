@@ -232,6 +232,7 @@ keeps its own file) carries **no** job qualifier and remains exactly one row.
 > | `.github/workflows/lint.yml` | CI infrastructure — linter, not an agentic role |
 > | `.github/workflows/dependency-audit.yml` | CI infrastructure — dependency audit, not an agentic role |
 > | `.github/workflows/sonarcloud.yml` | CI infrastructure — code-quality scan, not an agentic role |
+> | `.github/workflows/codeql.yml` | CI infrastructure — code-scanning (CodeQL advanced setup), not an agentic role |
 > | `.github/workflows/copilot-setup-steps.yml` | CI infrastructure — runner setup, not an agentic role |
 > | `.github/workflows/test.yml` | CI test workflow, not an agentic role |
 > | `.github/workflows/test-dev-lead.yml` | CI test workflow, not an agentic role |
