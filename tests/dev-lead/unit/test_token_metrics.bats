@@ -231,6 +231,12 @@ teardown() {
   [ "$(jq '.key_index' < "$TOKEN_LOG_FILE")" = "3" ]
 }
 
+@test "emit_token_record: records alphanumeric key_index (1b) as a string" {
+  emit_token_record "dev-lead" "action" "gemini" "gemini-3.8-flash" 1000 0 100 "" 0 50 1b
+  [ "$(jq -r '.key_index' < "$TOKEN_LOG_FILE")" = "1b" ]
+  [ "$(jq -r '.key_index | type' < "$TOKEN_LOG_FILE")" = "string" ]
+}
+
 @test "emit_token_record: key_index is absent when omitted (other records unchanged)" {
   emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 1000 200 100 "" 350 1234
   [ "$(jq 'has("key_index")' < "$TOKEN_LOG_FILE")" = "false" ]
