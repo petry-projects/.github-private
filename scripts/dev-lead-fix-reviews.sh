@@ -189,7 +189,9 @@ post_reviews_terminal() {
   # #2037: a comment the resolver failed to unminimize stays RESOLVED without a
   # verified disposition. An applied/no-changes marker would record the pass as a
   # success, and the retry cron and the #2008 stale-edit dedup would then skip it.
-  # Downgrade to partial, which neither counts, so the comment is retried.
+  # Downgrade to partial, which neither counts as done. The cron does not
+  # re-dispatch a partial marker itself (that would loop on a persistent unminimize
+  # failure); the next pass for this PR re-attempts the comment.
   if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
     case "$status" in
       applied|no-changes)
