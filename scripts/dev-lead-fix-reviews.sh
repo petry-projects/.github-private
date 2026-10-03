@@ -1011,12 +1011,6 @@ resolve_dispositioned_comments() {
     git fetch --quiet origin "refs/heads/${BASE_REF:-main}:refs/remotes/origin/${BASE_REF:-main}" >/dev/null 2>&1 || true
   fi
 
-  # Base ancestry is only trustworthy on full history (a shallow clone can report
-  # "not an ancestor" for a base commit), so deepen once, best-effort.
-  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
-    git fetch --quiet --unshallow origin >/dev/null 2>&1 || true
-  fi
-
   local resolved_count=0
   local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
   local reverify edited_at chosen_created stale_rc
@@ -1151,13 +1145,19 @@ resolve_dispositioned_comments() {
         # is exactly the sha PR #1977's disposition wrongly cited. cdv_verify_fixed
         # decides; any unknowable fact fails closed.
         local facts on_head own_files on_base sha_date finding_date fixed_reason
+        # Base ancestry is only trustworthy on full history (a shallow clone can
+        # report "not an ancestor" for a base commit), so deepen here — only the
+        # `fixed` path needs it — best-effort.
+        if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+          git fetch --quiet --unshallow origin >/dev/null 2>&1 || true
+        fi
         facts=$(acv_gather_commit_facts "$sha")
         on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
         own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
         on_base="unknown"
-        # A shallow clone can make --is-ancestor return nonzero for a commit that IS
-        # on base, so ancestry is unknown (fails closed) unless history is complete.
-        if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != "true" ] \
+        # Ancestry stays unknown (fails closed) unless history is explicitly known
+        # complete: an empty/failed probe must not count as complete history.
+        if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "false" ] \
            && git rev-parse -q --verify "origin/${BASE_REF:-main}^{commit}" >/dev/null 2>&1; then
           if git merge-base --is-ancestor "$sha" "origin/${BASE_REF:-main}" 2>/dev/null; then
             on_base="true"
