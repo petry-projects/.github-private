@@ -129,7 +129,10 @@ _norm_iso() {
   # (month 13, Feb 30, 25:99, second 60) by round-tripping through date(1) — a
   # normalizing parser changes an invalid value, so any mismatch means invalid.
   local rt
-  if ! rt="$(date -u -d "$n" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || [ "$rt" != "$n" ]; then
+  # GNU date uses -d; BSD/macOS date needs -j -f (same fallback as the other scripts).
+  if ! rt="$(date -u -d "$n" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -j -f %Y-%m-%dT%H:%M:%SZ "$n" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" \
+      || [ "$rt" != "$n" ]; then
     echo "ERROR: invalid UTC timestamp '${t}': not a real calendar date/time." >&2
     return 1
   fi
