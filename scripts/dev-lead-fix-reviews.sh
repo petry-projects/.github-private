@@ -176,9 +176,14 @@ post_reviews_terminal() {
     case "$status" in
       applied|no-changes)
         status="partial"
-        summary="${summary:+${summary}
+        local msg="**Not complete:** a dispositioned PR comment could not be re-opened (unminimize failed), so it stays resolved without a verified disposition. It needs another dev-lead pass."
+        if [ -n "$summary" ]; then
+          summary="${summary}
 
-}**Not complete:** a dispositioned PR comment could not be re-opened (unminimize failed), so it stays resolved without a verified disposition. It needs another dev-lead pass."
+${msg}"
+        else
+          summary="$msg"
+        fi
         ;;
     esac
   fi
@@ -1074,8 +1079,8 @@ resolve_dispositioned_comments() {
 
   if [ -z "$(printf '%s' "$candidate_ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no undispositioned PR issue comments on PR #${PR_NUMBER}"
-    _rdc_unminimize_status "$unminimize_failed"
-    return
+    _rdc_unminimize_status "$unminimize_failed" || return 1
+    return 0
   fi
 
   local resolved_count=0
@@ -1348,7 +1353,7 @@ resolve_dispositioned_comments() {
     fi
   done <<< "$candidate_ids"
   echo "::notice::resolve_dispositioned_comments: minimized ${resolved_count} dispositioned comment(s) on PR #${PR_NUMBER}"
-  _rdc_unminimize_status "$unminimize_failed"
+  _rdc_unminimize_status "$unminimize_failed" || return 1
 }
 
 # _rdc_unminimize_status <unminimize_failed> — resolve_dispositioned_comments'
@@ -2861,7 +2866,7 @@ case "$INTENT_TYPE" in
         else
           echo "::notice::resolution gate closed (#1609): the fix-bot-comment pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
-        try_enable_auto_merge
+        [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] || try_enable_auto_merge
       fi
       # #2037: the pass ends failed so it is visibly not done.
       [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
