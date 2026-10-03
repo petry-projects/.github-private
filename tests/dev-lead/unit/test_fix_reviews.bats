@@ -1617,8 +1617,8 @@ _2045_run_case() {
   git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
   base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
 
-  jq -cn --argjson c "$DEFER_THREAD_COMMENTS" \
-    '{data:{node:{isResolved:false,path:"scripts/canary_report.sh",comments:{nodes:$c}}}}' > "$fx/node.json"
+  jq -cn --argjson c "$DEFER_THREAD_COMMENTS" --argjson more "${DEFER_HAS_NEXT_PAGE:-false}" \
+    '{data:{node:{isResolved:false,path:"scripts/canary_report.sh",comments:{pageInfo:{hasNextPage:$more},nodes:$c}}}}' > "$fx/node.json"
   jq -cn --arg t "${DEFER_ORIGIN_TYPENAME:-Bot}" '{data:{repository:{pullRequest:{reviewThreads:{
       pageInfo:{hasNextPage:false,endCursor:""},
       nodes:[{id:"PRRT_2045",isResolved:false,isOutdated:false,
@@ -1734,6 +1734,17 @@ _2045_open_issue() {
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+}
+
+@test "resolve_deferred_bot_threads (#2045): thread with more than one page of comments -> stays open" {
+  export DEFER_HAS_NEXT_PAGE=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"more than 100 comments"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
 }
 
 @test "resolve_deferred_bot_threads (#2045): missing ref -> stays open" {

@@ -63,6 +63,12 @@ dtv_parse_deferral() {
     return 1
   fi
   attrs=" ${rest%%"$_DTV_MARKER_SUFFIX"*}"
+  # The marker must END the reply: only whitespace may follow its closing `-->`.
+  local trailing="${rest#*"$_DTV_MARKER_SUFFIX"}"
+  if [[ "$trailing" =~ [^[:space:]] ]]; then
+    echo "malformed"
+    return 1
+  fi
 
   local refs
   refs=$( { grep -oE '[[:space:]]ref=[^[:space:]]*' <<<"$attrs" || true; } | wc -l | tr -d '[:space:]')
@@ -106,8 +112,8 @@ dtv_latest_own_reply_index() {
 
 # dtv_text_mentions_thread <text> <thread_id> <origin_database_id>
 #   0 when <text> links the review thread: it names the thread node id
-#   (`PRRT_…`) or the originating comment's anchor `discussion_r<databaseId>` (which
-#   every review-comment URL carries). Matches are bounded so `discussion_r12` does
+#   (`PRRT_…`) or the originating comment's anchor `discussion_r<databaseId>` inside a
+#   review-comment URL (`…/pull/<n>#discussion_r<id>`; bare prose tokens don't count). Matches are bounded so `discussion_r12` does
 #   not match `discussion_r123`. An identifier with an unexpected shape is ignored
 #   rather than used as a pattern; with neither identifier usable this returns 1.
 #   Pure.
@@ -119,7 +125,7 @@ dtv_text_mentions_thread() {
     return 0
   fi
   if [[ "$db_id" =~ ^[1-9][0-9]*$ ]] \
-     && [[ "$text" =~ discussion_r${db_id}([^0-9]|$) ]]; then
+     && [[ "$text" =~ /pull/[0-9]+#discussion_r${db_id}([^0-9]|$) ]]; then
     return 0
   fi
   return 1
@@ -148,11 +154,14 @@ dtv_verify_tracking_issue() {
     echo "missing"
     return 1
   fi
-  if [[ "$(jq -r '.kind' <<<"$facts")" != "issue" ]]; then
+  local kind state
+  kind=$(jq -r '.kind' <<<"$facts" 2>/dev/null) || kind=""
+  state=$(jq -r '.state' <<<"$facts" 2>/dev/null) || state=""
+  if [[ "$kind" != "issue" ]]; then
     echo "not-an-issue"
     return 1
   fi
-  if [[ "$(jq -r '.state' <<<"$facts")" != "open" ]]; then
+  if [[ "$state" != "open" ]]; then
     echo "closed"
     return 1
   fi
