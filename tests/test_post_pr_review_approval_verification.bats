@@ -50,6 +50,22 @@ if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
   if [[ "$args" == *"comments"* ]]; then echo '{"comments":[]}'; exit 0; fi
   echo '{}'; exit 0
 fi
+if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
+  # Decision-gate-4 review-thread query (#1766). Default to a complete snapshot
+  # with zero unresolved threads so the gate clears and the approve path runs;
+  # a test may override REVIEW_THREADS_GRAPHQL to exercise the gate directly.
+  if [[ "$args" == *"reviewThreads"* ]]; then
+    if [ -n "${REVIEW_THREADS_GRAPHQL:-}" ]; then
+      printf '%s' "$REVIEW_THREADS_GRAPHQL"
+    else
+      printf '%s' '{"data":{"resource":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}'
+    fi
+  else
+    echo "Unmapped graphql query: $args" >&2
+    exit 1
+  fi
+  exit 0
+fi
 if [ "$1" = "api" ]; then
   if [[ "$args" == *"/reviews"* ]]; then
     printf '%s' "${READBACK_REVIEWS:-[]}"
