@@ -4470,7 +4470,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"reviews"*) echo '[]' ;;
-  *"graphql"*) echo '${threads_json}' ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":${threads_json}}}}}}' ;;
   *"issues/"*"comments"*) echo '${comments_json}' ;;
   *"issues/comments/"*) exit 0 ;;
   *"pulls/"*) echo '{"head":{"sha":"'"${EV_HEAD_SHA}"'"},"auto_merge":null,"state":"open"}' ;;
@@ -4758,10 +4758,10 @@ case "$ARGS" in
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
   *"on IssueComment"*)
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
-  *"pageInfo"*)
-    printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$COMMENTS_NODES"'}}}}}'; exit 0 ;;
   *"reviewThreads"*)
     printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'; exit 0 ;;
+  *"pageInfo"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$COMMENTS_NODES"'}}}}}'; exit 0 ;;
   *"graphql"*)
     printf '%s' '{"data":{}}'; exit 0 ;;
   *"pr view"*)

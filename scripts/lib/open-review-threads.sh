@@ -35,9 +35,14 @@ fetch_open_review_threads() {
         }
       }' \
       -F owner="${repo%%/*}" -F repo="${repo##*/}" -F pr="$pr" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false)) | if any(.[]; .comments.pageInfo.hasNextPage) then error("open thread has more than 100 comments") else . end' \
       2>/dev/null) || { echo "::error::fetch_open_review_threads: thread fetch failed for ${repo}#${pr}" >&2; return 1; }
-  # Fail closed: a page that is not an array (e.g. null) means a partial snapshot.
-  printf '%s\n' "$pages" | jq -sce 'if all(.[]; type == "array") then [ .[][] ] else error("non-array page") end' 2>/dev/null \
+  # Filter locally (not via gh --jq). Fail closed: a page whose thread list is not
+  # an array is a partial snapshot, and so is an open thread with >100 comments.
+  printf '%s\n' "$pages" | jq -sce '
+      [ .[] | .data.repository.pullRequest.reviewThreads.nodes
+        | if type == "array" then . else error("non-array page") end ]
+      | [ .[][] | select(.isResolved == false) ]
+      | if any(.[]; .comments.pageInfo.hasNextPage == true)
+        then error("open thread has more than 100 comments") else . end' 2>/dev/null \
     || { echo "::error::fetch_open_review_threads: incomplete thread pages for ${repo}#${pr}" >&2; return 1; }
 }

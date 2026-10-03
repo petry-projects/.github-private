@@ -478,8 +478,7 @@ _comments_page() {
   MOCK_BIN="$(mktemp -d)"
   export PATH="$MOCK_BIN:$PATH"
   export GH_LOG="$MOCK_BIN/gh.log"
-  # gh --paginate with --jq applies the filter to each page and prints one result
-  # per page. Page 1 holds the oldest review's threads (five deferred Codex threads
+  # gh --paginate prints one raw GraphQL page per call; the helper filters locally. Page 1 holds the oldest review's threads (five deferred Codex threads
   # plus resolved ones); page 2 holds the newer cubic and Codex threads — exactly
   # what a single `first:50` page never reached on PR #1953.
   cat > "$MOCK_BIN/gh" <<'GHEOF'
@@ -487,8 +486,8 @@ _comments_page() {
 printf '%s\n' "$*" >> "$GH_LOG"
 case "$*" in
   *"--paginate"*)
-    echo '[{"id":"T_codex_old","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector","__typename":"Bot"}}]}}]'
-    echo '[{"id":"T_cubic","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"cubic-dev-ai","__typename":"Bot"}}]}},{"id":"T_codex_new","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector","__typename":"Bot"}}]}}]'
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T_codex_old","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector","__typename":"Bot"}}]}},{"id":"T_done","isResolved":true}]}}}}}'
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T_cubic","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"cubic-dev-ai","__typename":"Bot"}}]}},{"id":"T_codex_new","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector","__typename":"Bot"}}]}}]}}}}}'
     ;;
   *) echo '[{"id":"T_codex_old","isResolved":false}]' ;;
 esac
@@ -505,8 +504,8 @@ GHEOF
   grep -q 'endCursor' "$GH_LOG"
   grep -q 'reviewThreads(first:100, after:$endCursor)' "$GH_LOG"
   ! grep -qi 'author:\|reviewer' <(grep -o 'query=[^$]*' "$GH_LOG" | head -1)
-  # Unresolved only.
-  grep -q 'map(select(.isResolved == false))' "$GH_LOG"
+  # Unresolved only: the resolved thread on page 1 is filtered out.
+  [[ "$output" != *"T_done"* ]]
 }
 
 @test "open threads: an API failure fails closed with no partial output" {
@@ -531,8 +530,8 @@ GHEOF
   export PATH="$MOCK_BIN:$PATH"
   cat > "$MOCK_BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
-echo '[{"id":"T1","isResolved":false}]'
-echo 'null'
+echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T1","isResolved":false}]}}}}}'
+echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":null}}}}}'
 GHEOF
   chmod +x "$MOCK_BIN/gh"
   # shellcheck source=/dev/null
@@ -544,8 +543,19 @@ GHEOF
 }
 
 @test "open threads: the query fails closed on an unresolved thread with more than 100 comments" {
-  grep -q 'comments(first:100) { pageInfo { hasNextPage }' "$THREADS_LIB"
-  grep -q 'more than 100 comments' "$THREADS_LIB"
+  MOCK_BIN="$(mktemp -d)"
+  export PATH="$MOCK_BIN:$PATH"
+  cat > "$MOCK_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T1","isResolved":false,"comments":{"pageInfo":{"hasNextPage":true},"nodes":[]}}]}}}}}'
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+  # shellcheck source=/dev/null
+  source "$THREADS_LIB"
+  run fetch_open_review_threads "petry-projects/.github-private" 1953
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" != *"T1"* ]]
 }
 
 @test "open threads: both fix-reviews and review-changes build OPEN_THREADS_JSON from the paginated helper" {
