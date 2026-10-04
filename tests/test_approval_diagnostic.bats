@@ -237,6 +237,27 @@ _registry_advisory_count() {
   [ "$(jq -r '.advisory.missing | index("gemini-code-assist") != null' <<<"$output")" = "true" ]
 }
 
+@test "diagnostic: classifies comments like the gate — cubic trial-ended, CodeRabbit summary scope, lastEditedAt (#1902)" {
+  local snap='{
+    "reviewDecision": "REVIEW_REQUIRED",
+    "headRefOid": "abc123",
+    "reviews": [],
+    "labels": [],
+    "comments": [
+      {"author": {"login": "cubic-dev-ai"}, "body": "Your cubic free trial ended.", "createdAt": "2026-09-21T11:00:00Z"},
+      {"author": {"login": "coderabbitai"}, "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nWalkthrough mentions rate limit handling.", "createdAt": "2026-09-21T11:00:00Z"},
+      {"author": {"login": "gemini-code-assist"}, "body": "usage limit reached", "createdAt": "2026-09-21T10:00:00Z", "lastEditedAt": "2026-09-21T12:00:00Z"},
+      {"author": {"login": "gemini-code-assist"}, "body": "real review", "createdAt": "2026-09-21T11:00:00Z"}
+    ]
+  }'
+  run diagnose_approval "$snap" '["cubic-dev-ai","coderabbitai","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  # cubic: RATE_LIMITED (not participating); coderabbit summary: COMMENTED (participating);
+  # gemini: the EDITED rate-limit notice is latest by lastEditedAt (not participating).
+  [ "$(jq -r '.advisory.submitted' <<<"$output")" = "1" ]
+  [ "$(jq -c '.advisory.missing' <<<"$output")" = '["cubic-dev-ai","gemini-code-assist"]' ]
+}
+
 @test "diagnostic: when every AVAILABLE advisory bot submitted and one is unavailable, the gate is NOT waiting (effective denominator, #657)" {
   # The runtime advisory gate decides against effective_total = required − unavailable,
   # dropping RATE_LIMITED/UNSUPPORTED bots. gemini submitted a real review; copilot is

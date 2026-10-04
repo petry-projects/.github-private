@@ -133,6 +133,23 @@ diagnose_approval() {
   local head_date="${5:-}"
   [ -n "$advisory" ] || advisory="$(_approval_diag_default_advisory_json)"
 
+  # Classifier pieces shared with advisory-review-gate.sh so the two paths cannot
+  # drift: the section-aware rl_scope jq def, the cubic-only clause, and the
+  # canonical regex. Loaded in a subshell (the gate declares readonly vars and
+  # ADVISORY_BOTS, which must not leak into or collide with the caller). Falls back
+  # to the local regex with an identity scope if the gate cannot be sourced.
+  local _rl_scope_jq='def rl_scope: (.body // "" | tostring);'
+  local _cubic_login='cubic-dev-ai' _cubic_re='cubic.{0,40}(trial|free trial) (ended|expired)'
+  local _rl_re="$_APPROVAL_DIAG_RATE_LIMIT_RE" _gate_out=""
+  # shellcheck disable=SC1091
+  if _gate_out="$(
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/advisory-review-gate.sh" >/dev/null 2>&1 || exit 1
+    printf '%s\x1f%s\x1f%s\x1f%s' "$_ADVISORY_RL_SCOPE_JQ" "$ADVISORY_CUBIC_LOGIN" \
+      "$ADVISORY_CUBIC_RATE_LIMIT_RE" "$ADVISORY_RATE_LIMIT_RE"
+  )" && [ -n "$_gate_out" ]; then
+    IFS=$'\x1f' read -r -d '' _rl_scope_jq _cubic_login _cubic_re _rl_re <<<"$_gate_out" || true
+  fi
+
   # Extract the raw facts in a single jq pass. A parse failure (malformed snapshot,
   # or a value that can't be indexed) exits non-zero → fail closed.
   local facts
@@ -140,7 +157,8 @@ diagnose_approval() {
     --argjson advisory "$advisory" \
     --arg approver "$approver" \
     --arg markers "$_APPROVAL_DIAG_AGENT_MARKERS" \
-    --arg ratelimit "$_APPROVAL_DIAG_RATE_LIMIT_RE" '
+    --arg ratelimit "$_rl_re" \
+    --arg cubic "$_cubic_login" --arg cubicre "$_cubic_re" "$_rl_scope_jq"'
       def approver_logins: [$approver, ($approver | if endswith("[bot]") then .[0:-5] else . end)];
       # Validate the snapshot BEFORE deriving a verdict (#1902). An incomplete
       # snapshot (not an object, or missing the head SHA / reviews array) must NOT
@@ -166,9 +184,13 @@ diagnose_approval() {
                   state: (.state // ""),
                   time: (.submittedAt // "") } ]
           + [ (.comments // [])[]
-              | { bot: (.author.login // "" | ascii_downcase),
-                  state: (if ((.body // "") | test($ratelimit; "i")) then "RATE_LIMITED" else "COMMENTED" end),
-                  time: (.createdAt // "") } ]
+              | (.author.login // "" | ascii_downcase) as $who
+              | ({bot: $who, body: (.body // "")} | rl_scope) as $scoped
+              | { bot: $who,
+                  state: (if (($scoped | test($ratelimit; "i"))
+                              or ($who == ($cubic | ascii_downcase) and ($scoped | test($cubicre; "i"))))
+                          then "RATE_LIMITED" else "COMMENTED" end),
+                  time: (.lastEditedAt // .createdAt // "") } ]
           | map(select(.bot as $b | $adv | index($b)))
           | group_by(.bot)
           | map(sort_by(.time) | last)
