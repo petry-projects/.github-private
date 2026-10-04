@@ -754,6 +754,25 @@ scan_pr_for_undispositioned_bot_comments() {
       withdraw_bot_comment_retry_marker "$repo" "$marker_id"
       echo "0"; return 0
     fi
+    # A thread-retry marker posted concurrently shares the per-PR lane: the
+    # earliest in-window one wins, so both kinds cannot each dispatch.
+    local sib_pending sib_first
+    sib_pending="${BOT_THREAD_RETRY_PENDING_SEC:-9000}"
+    [[ "$sib_pending" =~ ^[0-9]+$ ]] || sib_pending=9000
+    sib_first=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+      --jq '.[] | select((.user.login // "" | sub("\\[bot\\]$"; "")) as $l | '"${logins_jq}"' | index($l) != null)
+            | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
+            | select((.body // "") | contains("<!-- dev-lead-bot-thread-retry threads="))
+            | {id, created_at}' 2>/dev/null \
+      | jq -rs --argjson now "$(get_now_epoch)" --argjson pending "$sib_pending" '
+        [ .[] | objects | select((.id | type) == "number")
+          | select($now - ((.created_at // "") | (try fromdateiso8601 catch 0)) < $pending) | .id ]
+        | min // empty' 2>/dev/null || true)
+    if [[ "$sib_first" =~ ^[0-9]+$ ]] && [ "$sib_first" -lt "$marker_id" ]; then
+      echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent thread retry already recorded a retry" >&2
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      echo "0"; return 0
+    fi
     if [ "$first_marker" != "$marker_id" ]; then
       echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent scan already recorded a retry" >&2
       withdraw_bot_comment_retry_marker "$repo" "$marker_id"
@@ -908,7 +927,9 @@ scan_pr_for_unreplied_bot_threads() {
       echo "0"; return 0
     fi
     # Two concurrent scans can both have seen no pending marker. The earliest
-    # trusted thread-retry marker inside the pending window wins. The decision
+    # trusted retry marker (thread or bot-comment: they share one per-PR lane,
+    # and scan_pr_for_undispositioned_bot_comments arbitrates against this kind
+    # too) inside the pending window wins. The decision
     # above found none pending, so any other in-window marker was posted
     # concurrently. An expired marker from a lost run is outside the window and
     # never beats this claim. As with the bot-comment retry this is a best-effort
@@ -923,7 +944,7 @@ scan_pr_for_unreplied_bot_threads() {
     if ! listing=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
       --jq '.[] | select((.user.login // "" | sub("\\[bot\\]$"; "")) as $l | '"${logins_jq}"' | index($l) != null)
             | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
-            | select((.body // "") | contains("<!-- dev-lead-bot-thread-retry threads="))
+            | select((.body // "") | (contains("<!-- dev-lead-bot-thread-retry threads=") or contains("<!-- dev-lead-bot-comment-retry id=")))
             | {id, created_at}' \
       2>/dev/null); then
       echo "  [warn] bot-thread retry: could not re-read retry markers on PR ${pr_number} — withdrawing and not dispatching (fail closed)" >&2

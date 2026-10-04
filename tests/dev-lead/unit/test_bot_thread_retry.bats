@@ -143,6 +143,13 @@ _retry_marker() { # <threads_csv> <attempt> <at>
   [ "$(_reason_for "$out" PRRT_cubic)" = "retry-pending" ]
 }
 
+@test "btr: an expired bot-comment retry marker does not hold the thread dispatch" {
+  out="$(_decide "$(_threads \
+      "$(_thread PRRT_cubic cubic-dev-ai 2026-10-01T10:00:00Z)")" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_x version=2026-10-01T20:00:00Z attempt=1 at=2026-10-01T20:00:00Z -->' 2026-10-01T20:00:00Z)")"
+  [ "$(_dispatch_ids "$out")" = "PRRT_cubic" ]
+}
+
 @test "btr: a retry marker inside the pending window holds EVERY thread on the PR" {
   out="$(_decide "$(_threads \
       "$(_thread PRRT_cubic cubic-dev-ai)" \

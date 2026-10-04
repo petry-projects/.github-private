@@ -18,7 +18,8 @@
 #   __typename}}]}} (the first 100 comments). `gh --paginate` applies the --jq
 #   filter to each page and prints one array per page, which are concatenated
 #   here. It fails closed (non-zero, nothing on stdout) on any API failure, a
-#   malformed page, or an unresolved thread with more than 100 comments, so a
+#   malformed page, a page that reports GraphQL errors, or an unresolved thread with
+#   more than 100 comments, so a
 #   pass never runs on an incomplete snapshot.
 fetch_open_review_threads() {
   local repo="$1" pr="$2" pages
@@ -39,10 +40,17 @@ fetch_open_review_threads() {
   # Filter locally (not via gh --jq). Fail closed: a page whose thread list is not
   # an array is a partial snapshot, and so is an open thread with >100 comments.
   printf '%s\n' "$pages" | jq -sce '
-      [ .[] | .data.repository.pullRequest.reviewThreads.nodes
+      [ .[] | if ((.errors // []) | length) > 0 then error("page reported errors") else . end
+        | .data.repository.pullRequest.reviewThreads.nodes
         | if type == "array" then . else error("non-array page") end ]
       | [ .[][] | select(.isResolved == false) ]
       | if any(.[]; .comments.pageInfo.hasNextPage == true)
-        then error("open thread has more than 100 comments") else . end' 2>/dev/null \
+        then error("open thread has more than 100 comments") else . end
+      # Bound the snapshot: it is exported as one environment string (Linux caps
+      # that near 128 KiB), so trim comment bodies, then keep only the first
+      # comment of each thread if it is still too large.
+      | map(.comments.nodes |= (if type == "array" then map(.body = ((.body // "")[0:2000])) else . end))
+      | if (tojson | length) > 100000
+        then map(.comments.nodes |= (if type == "array" then (.[0:1] | map(.body = .body[0:500])) else . end)) else . end' 2>/dev/null \
     || { echo "::error::fetch_open_review_threads: incomplete thread pages for ${repo}#${pr}" >&2; return 1; }
 }
