@@ -1068,6 +1068,18 @@ rdc_find_fixing_commit() {
 #
 # A deferral produces no commit, so callers run this OUTSIDE the #1617 head-advance
 # resolution gate — on commit and no-commit passes alike.
+# _dtv_fetch_and_verify_tracker <ref> <thread_id> <origin_db_id>: fetches the
+# tracking issue and its comments fresh and runs dtv_verify_tracking_issue on them.
+# Echoes the verdict and returns its status; an unreadable issue fails closed.
+_dtv_fetch_and_verify_tracker() {
+  local ref="$1" thread_id="$2" origin_db_id="$3"
+  local issue_json issue_comments
+  issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>/dev/null) || issue_json=""
+  issue_comments=$(gh api --paginate "repos/${REPO}/issues/${ref}/comments?per_page=100" 2>/dev/null \
+    | jq -cs 'add // []' 2>/dev/null) || issue_comments="[]"
+  dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$thread_id" "$origin_db_id" "$REPO" "$PR_NUMBER"
+}
+
 resolve_deferred_bot_threads() {
   local intent="$1"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
@@ -1102,7 +1114,7 @@ resolve_deferred_bot_threads() {
   local resolved_count=0 failed_count=0
   local id node_json cur_resolved comments_json origin_bot reply_idx reply_body
   local ref parse_rc post_reason post_rc disp_rc origin_db_id
-  local issue_json issue_comments verdict
+  local verdict
   while IFS= read -r id; do
     [ -z "$id" ] && continue
     node_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
@@ -1125,11 +1137,12 @@ resolve_deferred_bot_threads() {
        then "yes" else "no" end' 2>/dev/null || echo "no")
     [ "$origin_bot" = "yes" ] || continue
 
-    reply_idx=$(dtv_latest_own_reply_index "$comments_json" "$bot_user")
+    # Expected nonzero returns are captured via `||` so `set -e` never aborts the pass.
+    reply_idx=$(dtv_latest_own_reply_index "$comments_json" "$bot_user") || continue
     [ -n "$reply_idx" ] || continue
     reply_body=$(printf '%s' "$comments_json" | jq -r --argjson i "$reply_idx" '.[$i].body // ""' 2>/dev/null || echo "")
-    ref=$(dtv_parse_deferral "$reply_body")
-    parse_rc=$?
+    parse_rc=0
+    ref=$(dtv_parse_deferral "$reply_body") || parse_rc=$?
     if [ "$parse_rc" -ne 0 ]; then
       # Most threads simply carry no deferral; only report a malformed one.
       if [ "$ref" != "no-deferral" ]; then
@@ -1138,9 +1151,9 @@ resolve_deferred_bot_threads() {
       continue
     fi
 
-    post_reason=$(acv_post_marker_clear "$comments_json" "$reply_idx" "$bot_user")
-    post_rc=$?
-    if [ "${post_rc:-0}" -ne 0 ]; then
+    post_rc=0
+    post_reason=$(acv_post_marker_clear "$comments_json" "$reply_idx" "$bot_user") || post_rc=$?
+    if [ "$post_rc" -ne 0 ]; then
       echo "::notice::skipping thread ${id} — an unaddressed comment landed after our deferral (${post_reason}); leaving unresolved (#2045)"
       continue
     fi
@@ -1156,14 +1169,8 @@ resolve_deferred_bot_threads() {
     fi
 
     origin_db_id=$(printf '%s' "$comments_json" | jq -r '.[0].databaseId // ""' 2>/dev/null || echo "")
-    issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>/dev/null) || issue_json=""
-    local issue_comments_output
-    issue_comments_output=$(gh api --paginate "repos/${REPO}/issues/${ref}/comments?per_page=100" 2>/dev/null \
-      | jq -cs 'add // []' 2>/dev/null) || issue_comments_output="[]"
-    issue_comments="$issue_comments_output"
-    local verdict_rc
-    verdict=$(dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$id" "$origin_db_id" "$REPO" "$PR_NUMBER")
-    verdict_rc=$?
+    local verdict_rc=0
+    verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
     if [ "$verdict_rc" -ne 0 ]; then
       echo "::notice::skipping thread ${id} — tracking issue #${ref} cannot back the deferral (${verdict}); leaving unresolved (#2045)"
       continue
@@ -1179,6 +1186,15 @@ resolve_deferred_bot_threads() {
        then .data.node.comments.nodes else "changed" end' 2>/dev/null || echo '"changed"')
     if [ "$fresh_comments" != "$comments_json" ]; then
       echo "::notice::skipping thread ${id} — thread changed while verifying the tracking issue; leaving unresolved (#2045)"
+      continue
+    fi
+
+    # Re-fetch and re-verify the tracking issue immediately before the mutation: it
+    # may have been closed, converted, or edited to drop the thread link meanwhile.
+    verdict_rc=0
+    verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
+    if [ "$verdict_rc" -ne 0 ]; then
+      echo "::notice::skipping thread ${id} — tracking issue #${ref} no longer backs the deferral (${verdict}); leaving unresolved (#2045)"
       continue
     fi
 
@@ -3331,7 +3347,7 @@ case "$INTENT_TYPE" in
       fi
       # Deferred bot threads (#2045): verified against the tracking issue, so
       # outside the head-advance gate below.
-      resolve_deferred_bot_threads "review-changes"
+      resolve_deferred_bot_threads "review-changes" || rc=1
       # Resolution gate (#1617): auto-resolve threads only when this pass advanced
       # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
       if resolution_gate_open "$cp_rc"; then
@@ -3359,6 +3375,8 @@ case "$INTENT_TYPE" in
       # fix-reviews failure branch above for why running the resolver here is safe.
       resolve_dispositioned_comments "review-changes" failed \
         || echo "::warning::resolve_dispositioned_comments failed on a failed review-changes pass — keeping the pass's exit code ${rc} (#2037)"
+      # A deferral is independently verifiable even when the pass failed (#2045).
+      resolve_deferred_bot_threads "review-changes" || true
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "review-changes" failed || true
     fi

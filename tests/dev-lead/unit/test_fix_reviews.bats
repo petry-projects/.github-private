@@ -1873,6 +1873,15 @@ _2045_open_issue() {
   [ "$status" -eq 1 ]
 }
 
+@test "resolve_deferred_bot_threads (#2045): thread with no reply from us does not abort under set -e" {
+  export DEFER_THREAD_COMMENTS='[{"author":{"login":"chatgpt-codex-connector","__typename":"Bot"},"body":"P2: finding","createdAt":"2026-10-01T09:00:00Z","databaseId":2401234567}]'
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
 @test "resolve_deferred_bot_threads (#2045): missing ref -> stays open" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred -->')"
   export DEFER_ISSUE_JSON="$(_2045_open_issue)"
