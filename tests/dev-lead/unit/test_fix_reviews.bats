@@ -162,7 +162,9 @@ _setup_rebase_failure_stubs() {
   # dispatch (worktree add/checkout/rev-parse/merge --abort), but intercept the two
   # commands a hermetic test cannot satisfy: the network `fetch`, and the unmerged-
   # path listing that drives the large-conflict guard (emit STUB_NUM_CONFLICTS
-  # synthetic paths).
+  # synthetic paths). Because fetch is faked, the #2053 history guard is faked
+  # with it: origin/<base> resolves and HEAD shares a merge base with it, so these
+  # tests behave the same on a depth-1 CI checkout that has no origin/main.
   export REAL_GIT
   REAL_GIT="$(command -v git)"
   cat > "$STUB_BIN_DIR/git" <<'GITEOF'
@@ -171,6 +173,8 @@ ARGS="$*"
 case "$ARGS" in
   "fetch"*)
     exit 0 ;;
+  "rev-parse --verify --quiet origin/"*|"merge-base HEAD origin/"*)
+    echo "0000000000000000000000000000000000000000"; exit 0 ;;
   *"diff --name-only --diff-filter=U"*)
     i=1
     while [ "$i" -le "${STUB_NUM_CONFLICTS:-0}" ]; do
@@ -265,6 +269,128 @@ GHEOF
   [[ "$output" == *"intent=rebase status=failed"* ]]
 
   rm -f "$ENGINE_CALLED_FILE"
+}
+
+# ── shallow-checkout history guard (#2053) ─────────────────────────────────────
+# The rebase arm runs on a depth-1 checkout. It must deepen history before the
+# conflict list or the engine see it, and when the remote cannot be deepened it
+# must say so — not report a conflict / "unrelated histories", and not record a
+# status=failed marker that counts toward the #865 exhaustion limit.
+
+# _shallow_rebase_repo <dir>: bare remote with main + feat diverged after shared
+# history, cloned at depth 1 (what actions/checkout leaves) with feat checked out.
+_shallow_rebase_repo() {
+  local dir="$1" remote="$BATS_TEST_TMPDIR/remote.git" seed="$BATS_TEST_TMPDIR/seed"
+  local g=(git -c user.email=t@test -c user.name=T -c init.defaultBranch=main)
+  "${g[@]}" init -q --bare "$remote"
+  "${g[@]}" init -q "$seed"
+  printf 'line1\nline2\n' > "$seed/conflict.txt"
+  "${g[@]}" -C "$seed" add .
+  "${g[@]}" -C "$seed" commit -qm "base"
+  "${g[@]}" -C "$seed" checkout -qb feat
+  printf 'line1\nfeat\n' > "$seed/conflict.txt"
+  "${g[@]}" -C "$seed" commit -qam "feat"
+  "${g[@]}" -C "$seed" checkout -q main
+  printf 'line1\nmain\n' > "$seed/conflict.txt"
+  "${g[@]}" -C "$seed" commit -qam "main"
+  "${g[@]}" -C "$seed" push -q "file://$remote" main feat
+  "${g[@]}" clone -q --depth 1 --no-single-branch "file://$remote" "$dir"
+  "${g[@]}" -C "$dir" checkout -q feat
+}
+
+@test "fix-reviews: rebase on an un-deepenable shallow checkout reports an infra failure, not a conflict, and does not count toward #865 (#2053)" {
+  local git_repo="$BATS_TEST_TMPDIR/clone"
+  export ENGINE_CALLED_FILE="$BATS_TEST_TMPDIR/engine_called"
+  : > "$ENGINE_CALLED_FILE"
+  _shallow_rebase_repo "$git_repo"
+  # The remote disappears: neither --unshallow nor the deep fetch can succeed.
+  git -C "$git_repo" remote set-url origin "file://$BATS_TEST_TMPDIR/gone.git"
+
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" <<'STUB'
+#!/usr/bin/env bash
+echo "invoked" >> "$ENGINE_CALLED_FILE"
+exit 0
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"api"*"repos/"*"issues/"*"comments"*) echo "[]" ;;
+  *"pr comment"*) echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
+  *"api"*"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=rebase DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 HEAD_REF=feat REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 1 ]
+  # Says what happened, in those words.
+  [[ "$output" == *"history could not be deepened"* ]]
+  # The engine never ran on a history it could not see.
+  [ ! -s "$ENGINE_CALLED_FILE" ]
+  # Not recorded as a counted failure, not escalated as exhausted.
+  [[ "$output" == *"intent=rebase status=history-unavailable"* ]]
+  [[ "$output" != *"status=failed"* ]]
+  [[ "$output" != *"status=exhausted"* ]]
+  [[ "$output" != *"too large for automated resolution"* ]]
+}
+
+@test "fix-reviews: rebase on a depth-1 checkout deepens history before conflict detection and the engine (#2053)" {
+  local git_repo="$BATS_TEST_TMPDIR/clone"
+  export ENGINE_SEEN_FILE="$BATS_TEST_TMPDIR/engine_seen"
+  : > "$ENGINE_SEEN_FILE"
+  _shallow_rebase_repo "$git_repo"
+
+  # Engine stub records what the model would see, then fails so the run stops
+  # before push/mergeability checks.
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" <<'STUB'
+#!/usr/bin/env bash
+{
+  echo "shallow=$(git rev-parse --is-shallow-repository)"
+  git merge-base HEAD origin/main >/dev/null 2>&1 && echo "merge-base=ok"
+  echo "conflicts=${CONFLICTING_FILES}"
+} >> "$ENGINE_SEEN_FILE"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"api"*"repos/"*"issues/"*"comments"*) echo "[]" ;;
+  *"pr comment"*) echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
+  *"api"*"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=rebase DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 HEAD_REF=feat REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  grep -q "merge-base=ok" "$ENGINE_SEEN_FILE"
+  grep -qx "conflicts=conflict.txt" "$ENGINE_SEEN_FILE"
+  [[ "$output" != *"history could not be deepened"* ]]
 }
 
 @test "fix-reviews: unknown INTENT_TYPE → exits 1" {

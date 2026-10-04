@@ -21,6 +21,12 @@ ${CONFLICTING_FILES}
 
 ## Task
 
+The harness has already deepened this checkout's git history so the merge base
+with `${BASE_REF}` resolves; you do not need to un-shallow it. If `git rebase`
+still reports unrelated histories, the branch genuinely shares no ancestor with
+`${BASE_REF}` — abort and explain that on the PR rather than replaying the
+whole history.
+
 Resolve the merge conflicts and rebase the branch onto `${BASE_REF}`:
 
 1. Check out the PR branch: `gh pr checkout ${PR_NUMBER}`

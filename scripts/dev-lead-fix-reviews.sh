@@ -42,6 +42,10 @@ source "$(dirname "$0")/lib/redact.sh"
 # Rebase exhaustion handling (#865): abort cleanly on hard conflicts instead of
 # timing out (exit 124), and dampen sentinel bursts.
 source "$(dirname "$0")/lib/rebase-exhaustion.sh"
+# Shallow-checkout history deepening (#2053): git_history_deepen /
+# git_ensure_merge_base — the one copy of the un-shallow logic, used by the
+# rebase arm before conflict detection and by pr_nets_to_zero.
+source "$(dirname "$0")/lib/git-history.sh"
 # CI gate status (#1859, completes #1795): the blocker check delegates to
 # compute_ci_status so a failing NON-required check never stops the
 # fix/disposition pass — the same library review-one-pr.sh and the sweeps use.
@@ -2082,13 +2086,8 @@ pr_nets_to_zero() {
   # ancestor "${baseref}...HEAD" needs. A plain `git fetch origin "$base"` does NOT
   # deepen a shallow checkout, so the merge-base stays absent, the diff below errors,
   # and the guard silently fails OPEN (returns 1 → "not net-zero" → push proceeds).
-  # Deepen to full history first so the merge-base resolves; fall back to a bounded
-  # fetch if --unshallow is unavailable.
-  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
-    git fetch --quiet --unshallow origin 2>/dev/null \
-      || git fetch --quiet --depth=2147483647 origin "$base" 2>/dev/null \
-      || true
-  fi
+  # Deepen to full history first so the merge-base resolves (lib/git-history.sh).
+  git_history_deepen "$base"
   if ! git rev-parse --verify --quiet "${baseref}^{commit}" >/dev/null 2>&1; then
     git fetch --quiet origin "$base" 2>/dev/null || {
       echo "::warning::no-op guard: could not resolve ${baseref} — skipping net-zero check" >&2
@@ -2974,7 +2973,23 @@ case "$INTENT_TYPE" in
       echo "::error::could not retrieve PR #${PR_NUMBER} comments to check rebase exhaustion — failing closed, not invoking engine (#865)"
       exit 1
     fi
-    git fetch origin "$BASE_REF"
+    # Full history before anything reads it (#2053). The checkout is depth-1, so
+    # the branch and base look unrelated until history is deepened; doing it here
+    # makes the conflict list and the engine's rebase see the real merge base,
+    # instead of depending on the model to un-shallow. If history cannot be
+    # deepened, that is an infrastructure failure: say so, and record it with a
+    # status that is NOT `failed`, so it never counts toward the #865 limit.
+    history_rc=0
+    history_msg=$(git_ensure_merge_base "$BASE_REF" "$HEAD_REF") || history_rc=$?
+    if [ "$history_rc" -eq 2 ]; then
+      echo "::error::rebase: ${history_msg} — infrastructure failure, not a conflict; not counted toward the rebase exhaustion limit (#2053)"
+      git merge --abort >/dev/null 2>&1 || true
+      git rebase --abort >/dev/null 2>&1 || true
+      post_reviews_terminal "rebase" "history-unavailable" "Automated rebase did not run: ${history_msg}. This is an infrastructure failure, not a merge conflict, and it does not count toward the rebase exhaustion limit. The next rebase trigger will retry."
+      exit 1
+    elif [ "$history_rc" -eq 1 ]; then
+      echo "::warning::rebase: history is complete but HEAD shares no merge base with origin/${BASE_REF} — the histories are genuinely unrelated (#2053)"
+    fi
     CONFLICTING_FILES=$(detect_conflicting_paths "$BASE_REF")
     export CONFLICTING_FILES
     # Up-front large-conflict guard (#865): a conflict spanning more files than
