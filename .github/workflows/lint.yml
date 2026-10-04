@@ -8,6 +8,7 @@ on:
       # All of .github, not just workflows: check-model-pins scans the whole dir.
       - '.github/**'
       - 'tests/**'
+      - 'docs/initiatives/agent-ingress-collapse-markets.md'  # read by agent_ingress_markets_package.bats
       - 'prompts/**'
       - 'agents/**'
       - 'personas/**'
@@ -25,6 +26,7 @@ on:
     paths:
       - 'scripts/**'
       - 'tests/**'
+      - 'docs/initiatives/agent-ingress-collapse-markets.md'  # read by agent_ingress_markets_package.bats
       - 'prompts/**'
       - '.github/workflows/**'
       - '.github/**'  # check-model-pins scans all of .github
@@ -77,6 +79,7 @@ jobs:
         run: |
           scripts/run-bats.sh \
             tests/test_duplicate_decl_gate.bats \
+            tests/agent_ingress_markets_package.bats \
             tests/test_vendored_installed_tools.bats \
             tests/fleet_report.bats \
             tests/fleet_stub_drift.bats \
