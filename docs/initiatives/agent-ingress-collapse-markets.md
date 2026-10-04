@@ -45,7 +45,9 @@ of per-role Class-1 caller stubs on `main`, read live on 2026-09-29:
 
 The collapse is **behavior-preserving**: each job in the ingress copies its
 source stub's pin, `permissions:`, `secrets:`, and event subscription verbatim,
-modulo the mechanical `on:`→union / per-role `if:` reconstruction below.
+modulo the mechanical `on:`→union / per-role `if:` reconstruction below. The
+one exception is the ADR-0010 concurrency re-rendering, which changes how
+non-PR events are grouped for `pr-auto-review` and `pr-review` (stated in §4b).
 
 ---
 
@@ -107,13 +109,14 @@ reconstructs that role's original subscription.
 > collapse must not silently "fix" a pin in the same change that moves it; the
 > corrections are separate follow-ups.
 >
-> **Design-point flag — job-level `concurrency:` (see §4).** Three source stubs
-> carry a *workflow-level* `concurrency:` block. A single collapsed workflow
-> cannot host three workflow-level groups, so they are rendered as **job-level**
-> `concurrency:` below. ADR-0007's enumerated ingress schema
-> (`on:`/`permissions:`/`jobs:` with `uses`/`with`/`secrets`/`if`/`permissions`/
-> `name`) does **not** list `concurrency:`. This needs an explicit ruling before
-> merge (§4).
+> **Job-level `concurrency:` — ruled by ADR-0010, accepted (see §4).** Three
+> source stubs carry a *workflow-level* `concurrency:` block. A single collapsed
+> workflow cannot host three workflow-level groups, so they are rendered as
+> **job-level** `concurrency:` below. ADR-0010 admits this one key into
+> ADR-0007's ingress schema, with bounds. Each group is a role-prefixed literal
+> head plus event-payload parts only, and each `cancel-in-progress` is a literal
+> boolean. The `pr-auto-review` and `pr-review` blocks were re-rendered to those
+> bounds (#2038). §4b states what this changes for non-PR events.
 
 ```yaml
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,15 +210,16 @@ jobs:
           && contains(fromJSON('["submitted","dismissed"]'), github.event.action))
       || github.event_name == 'check_suite'
       || github.event_name == 'workflow_run'
-    # Workflow-level concurrency in the source stub → job-level here (see §4).
+    # Workflow-level concurrency in the source stub → job-level here, bounded per
+    # ADR-0010. PR events keep their per-PR slot; check_suite / workflow_run
+    # share one slot per head SHA (no run_id — see §4b).
     concurrency:
       group: >-
-        ${{
-        (github.event_name == 'pull_request' && format('pr-auto-review-ready-check-pr-{0}', github.event.pull_request.number))
-        || (github.event_name == 'pull_request_review' && format('pr-auto-review-ready-check-pr-{0}', github.event.pull_request.number))
-        || format('pr-auto-review-ready-check-unique-{0}', github.run_id)
+        pr-auto-review-ready-check-${{
+          (github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number))
+          || format('sha-{0}', github.event.check_suite.head_sha || github.event.workflow_run.head_sha)
         }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' }}
+      cancel-in-progress: true
     permissions:
       pull-requests: read
       checks: read
@@ -239,14 +243,17 @@ jobs:
         || (github.event_name == 'repository_dispatch' && github.event.action == 'pr-review-mention')
       )
       && (github.event_name != 'check_suite' || github.event.check_suite.pull_requests[0] != null)
+    # Job-level concurrency, bounded per ADR-0010: payload parts only (no inputs.*,
+    # no run_id). A sweep with no PR shares the 'enumerate' slot. The fallback is
+    # NOT 'batch', because the pinned reusable declares pr-review-batch (§4b).
     concurrency:
       group: >-
         pr-review-${{
           (github.event.pull_request && github.event.pull_request.number)
           || (github.event.check_suite && github.event.check_suite.pull_requests[0] && github.event.check_suite.pull_requests[0].number)
-          || inputs.pr_url
+          || github.event.inputs.pr_url
           || (github.event.client_payload && github.event.client_payload.pr_url)
-          || github.run_id
+          || 'enumerate'
         }}
       cancel-in-progress: true
     permissions:
@@ -324,7 +331,7 @@ vars/secrets/needs/hashFiles/repo-identity/default_branch/standing-labels.
 
 ---
 
-## 4. Design-point flag — job-level `concurrency:` needs a ruling
+## 4. Job-level `concurrency:` — ruled: ADR-0010 (accepted)
 
 `pr-auto-review.yml`, `pr-review.yml`, and `ci-failure-analyst.yml` each carry a
 **workflow-level** `concurrency:` block in their source stubs; `dev-lead.yml`
@@ -334,22 +341,109 @@ cancellation, so §3 renders each as a **job-level** `concurrency:` block —
 GitHub Actions supports job-level concurrency, and it preserves each role's
 grouping in isolation.
 
-**The ruling needed:** ADR-0007's enumerated ingress schema is
-`on:`/`permissions:`/`jobs:` (with `uses`/`with`/`secrets`/`if`/`permissions`/
-`name`). It does **not** enumerate `concurrency:`. Two readings:
+**The ruling (delivered):**
+[ADR-0010](../architecture/adr/0010-ingress-job-level-concurrency-and-exhaustive-schema.md),
+status **accepted** (Solution Architect ruling #2001, accepted in #2036). It
+extends ADR-0007 without superseding it. It admits exactly one key,
+`concurrency:`, into ADR-0007's ingress schema, with these bounds:
 
-1. **Allow job-level `concurrency:`** as a non-logic, declarative grouping key
-   (it carries no `steps:`/`run:` and is not a repo-state reach) — the reading
-   §3 assumes, because dropping it would regress the duplicate-run collapse the
-   source stubs added (#1126, cancelled-runs fix).
-2. **Forbid it** as outside the enumerated schema — which would force the
-   concurrency grouping down into each reusable.
+- `group` reads only the event-payload surface a job-level `if:` may read. It is
+  checked by the same `viif_forbidden` predicate.
+- `cancel-in-progress` is a literal boolean (`true` or `false`), never an
+  expression.
+- Every result the group can begin with carries the role name as a prefix
+  (`<role>-…`).
+- The group does not match a group that the role's pinned reusable declares.
 
-**Recommendation:** ratify reading (1) with a one-line schema addendum to
-ADR-0007 (concurrency is a declarative grouping key, not logic). Do this
-*before* the markets PR merges, so the ingress is not blocked on an unresolved
-schema question. Reading (2) is viable but is a reusable change per role and
-should not gate the pilot.
+ADR-0010 also records that ADR-0007's schema is an **exhaustive allowlist**.
+This package therefore uses no `strategy:`, `env:` or `continue-on-error:`. The
+ADR-0007 addendum this section used to recommend was not available, because an
+accepted ADR is immutable. ADR-0010 is the delivered form of that reading.
+
+### 4a. Conformance of the §3 blocks
+
+| Role | `group` (leading literal) | `cancel-in-progress` | Pinned reusable's groups | Collision |
+| --- | --- | --- | --- | --- |
+| `pr-auto-review` | `pr-auto-review-ready-check-…` | `true` | none (`pr-auto-review-reusable.yml@pr-auto-review/v1-stable`) | none |
+| `pr-review` | `pr-review-…` | `true` | `pr-review-pr-{…}`, `pr-review-batch` (`pr-review.yml@pr-review/stable`) | none (see the `enumerate` note in §4b) |
+| `ci-failure-analyst` | `ci-failure-analyst-…` (unchanged) | `false` (unchanged) | none (`ci-failure-analyst-reusable.yml@7974717…`) | none |
+| `dev-lead`, `pr-review-mention` | no caller block | — | — | — |
+
+Both guards pass on the §3 ingress as rendered: `scripts/validate-ingress-if.sh`
+(event surface, role prefix, literal boolean) and
+`scripts/validate-caller-inputs.sh` (no collision at the pinned ref).
+`tests/agent_ingress_markets_package.bats` extracts the §3 YAML from this file
+and runs both guards on it, so the package cannot drift out of conformance
+unnoticed.
+
+### 4b. What changes versus the source stubs (the cost of dropping `run_id`)
+
+ADR-0010 forbids the `github.run_id` and `inputs.*` fallbacks. Without
+`run_id`, an event that names no PR no longer gets its own slot that is never
+cancelled. Each role resolves this as follows.
+
+**`pr-auto-review`.** The source stub used `pr-auto-review-ready-check-pr-<n>`
+for `pull_request` and `pull_request_review`, with cancel enabled. It gave every
+`check_suite` and `workflow_run` event a unique `…-unique-<run_id>` slot that was
+never cancelled.
+
+- PR events are **unchanged**. They use `pr-auto-review-ready-check-pr-<n>` with
+  `cancel-in-progress: true`.
+- Non-PR events now **share one slot per commit**:
+  `pr-auto-review-ready-check-sha-<head_sha>`, keyed on
+  `check_suite.head_sha` or `workflow_run.head_sha`. Uniqueness is not kept in
+  the reusable, because `pr-auto-review-reusable.yml` declares no concurrency at
+  its pin.
+- **Behavior change:** a later `check_suite` or `workflow_run` completion for
+  the **same head SHA** now cancels an in-flight readiness check for that SHA.
+  Before, both ran to completion. Events for different SHAs still run in
+  parallel. PR events and non-PR events still never share a slot (`pr-…` and
+  `sha-…`).
+- **Why the cancellation is acceptable:** the readiness check only reads the
+  state of that commit. The later event sees at least as many completed checks,
+  so the cancelled run's answer was already stale. The visible cost is a
+  `cancelled` run in the Actions log when several suites complete close
+  together.
+- **Why not `cancel-in-progress: false`:** the value is one literal for the
+  whole job. `false` would make PR events queue behind a run for a stale head
+  instead of superseding it, which changes the source stub's PR-event behavior.
+- **Edge case:** a payload with no `head_sha` (not expected for these two
+  events) resolves to the single literal slot `pr-auto-review-ready-check-sha-`.
+
+**`pr-review`.** The source stub used
+`pr-review-<PR number | check_suite PR | inputs.pr_url | client_payload.pr_url | run_id>`
+with cancel enabled.
+
+- Every event that names a PR is **unchanged**. That covers `pull_request`,
+  `pull_request_review`, `check_suite` (the `if:` already drops a check_suite
+  with no PR), `workflow_dispatch` with `pr_url`, and a `pr-review-mention`
+  dispatch with `client_payload.pr_url`. They use the same slot as before with
+  `cancel-in-progress: true`. For a `workflow_dispatch` run,
+  `github.event.inputs.pr_url` is the event payload and holds the value the
+  source stub read through the `inputs` context. The `inputs` context itself is
+  not read.
+- A `workflow_dispatch` with no `pr_url` (a whole-repo sweep, including dry
+  runs), or a mention dispatch with no `client_payload.pr_url`, now **shares one
+  literal slot, `pr-review-enumerate`**.
+- **Behavior change:** a later sweep now **cancels an in-flight sweep**, and the
+  latest request wins. Before, each sweep had a unique caller slot. Sweeps still
+  ran one at a time with one pending, through the reusable's own
+  `pr-review-batch` group (cancel off), so a second sweep queued instead of
+  cancelling the first. A dry-run sweep and a live sweep now cancel each other.
+  Do not start one while the other is in flight.
+- **Uniqueness inside the reusable:** the reusable keeps its own per-PR and
+  per-SHA slots (`pr-review-pr-…`) and its `pr-review-batch` slot. Nothing is
+  added to it.
+- **Why the fallback is `enumerate` and not `batch`:** a caller literal of
+  `batch` would resolve to `pr-review-batch`, the reusable's own group, and the
+  caller would queue behind or cancel its own nested run. The ADR-0010 stem check
+  would not catch that, because the stems `pr-review-` and `pr-review-batch`
+  differ. The regression test pins the `enumerate` literal.
+
+**`ci-failure-analyst`.** Unchanged:
+`ci-failure-analyst-${{ github.event.check_run.head_sha }}` with
+`cancel-in-progress: false`. It already conformed, so its behavior does not
+change.
 
 ---
 
@@ -461,8 +555,11 @@ performed here.
 3. **Run the #1725 if-linter** over `agent-ingress.yml` — every job `if:` must
    pass as a pure event filter (validates the three "ALLOW-consistent" predicates
    in §3a).
-4. **Resolve the §4 concurrency ruling** — job-level `concurrency:` must be
-   ratified (or the blocks removed and pushed into the reusables) before merge.
+4. **§4 concurrency ruling — ratified** (ADR-0010, accepted). Job-level
+   `concurrency:` is permitted within ADR-0010's bounds. Re-run
+   `validate-ingress-if.sh` and `validate-caller-inputs.sh` over
+   `agent-ingress.yml`. Both must pass: bounded groups, literal
+   `cancel-in-progress`, no collision with a group the pinned reusable declares.
 5. **Confirm byte-identity** of each job block against the canonical
    agent-ingress template once published (§9) via `caller_stub_freeze.sh` /
    `fleet_monitor.sh` role-path.
@@ -484,7 +581,9 @@ can block a merge:
   Both `agent-ingress.yml` and the old stubs fire → each role runs *twice* per
   event. Wasteful and log-noisy, but not a correctness or gating failure (agentic
   roles are idempotent per-head-SHA; `pr-review`/`pr-auto-review` concurrency
-  groups collapse duplicates). **Rollback:** revert the ingress add; the stubs
+  groups collapse duplicates only where the old and new groups coincide — PR-keyed
+  events; the old `check_suite`/`workflow_run` stub groups were unique per run, so
+  those events may still double-run in this window). **Rollback:** revert the ingress add; the stubs
   alone resume normal single dispatch.
 - **State B — stubs deleted, ingress not yet added (coverage gap window).**
   No event-driven agent runs in markets until the ingress lands. No required
@@ -554,6 +653,10 @@ its owner.
 Activation lands after the markets PR merges and the canonical template is
 published — this package hands both artifacts to that follow-up.
 
+The Bats ingress checks use trimmed reusable snapshots. Changes to checked
+inputs or concurrency declarations behind channel refs are not detected until
+the snapshots are refreshed.
+
 ---
 
 ## 10. Companion issue for `petry-projects/markets` (prepared; filing is remaining)
@@ -586,7 +689,8 @@ docs/initiatives/agent-ingress-collapse-markets.md
   atomic ruleset rename in §8d in the same PR.
 - Run the #1725 if-linter over agent-ingress.yml (every job if: is a pure event
   filter — §3a).
-- Confirm the §4 job-level concurrency ruling is ratified.
+- The §4 job-level concurrency ruling is ratified (ADR-0010, accepted). Confirm
+  validate-ingress-if.sh and validate-caller-inputs.sh pass on agent-ingress.yml.
 - Keep the 6 carve-out stubs (§2b) and both required-gate stubs (§2c) untouched.
 
 ## Known follow-ups (do NOT bundle into this PR — §5)
@@ -610,6 +714,6 @@ docs/initiatives/agent-ingress-collapse-markets.md
 | Companion issue filed in markets | **Prepared, not filed** | Cross-repo write from `.github-private` not available in this run. Body is committed in §10. |
 | Canonical `agent-ingress.yml` template published | **Deferred (§9b)** | Write to `petry-projects/.github`; cross-repo. |
 | `STUB_REGISTRY` rows activated in fleet_monitor.sh | **Prepared, not applied (§9a)** | Would 404 against an unpublished canonical path and can't be ALIGNED-verified pre-collapse (§9c). |
-| §4 job-level concurrency schema ruling | **Flagged, needs decision** | ADR-0007 schema doesn't enumerate `concurrency:`; recommendation is reading (1). |
+| §4 job-level concurrency schema ruling | **Ratified — ADR-0010, accepted** | ADR-0010 admits bounded job-level `concurrency:`. §3 was re-rendered to the bounds (#2038), and §4b states the non-PR-event behavior change. |
 | pin corrections (§5a/§5b) | **Named, not applied** | Behavior-preserving collapse must not change pins; separate follow-ups. |
 | Dedicated baseline doc at the brief's cited path | **Does not exist (§1)** | Not fabricated; real baseline is the reference file + live stubs. |
