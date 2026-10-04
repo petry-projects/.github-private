@@ -5,7 +5,7 @@ on:
 engine: claude
 
 models:
-  claude: [sonnet]
+  providers: {}
 
 permissions:
   issues: read

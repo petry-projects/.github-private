@@ -12,7 +12,7 @@ permissions:
 engine: claude
 
 models:
-  claude: [sonnet]
+  providers: {}
 
 tools:
   github:
