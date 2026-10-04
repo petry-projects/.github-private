@@ -477,8 +477,10 @@ _record_partial_evidence() {
 
 # check_advisory_reviews <pr_url>
 #   Instant (non-blocking) check of advisory bot review status. Returns 0 when all
-#   detected advisory bots have submitted their reviews; returns 1 when still waiting,
-#   applying head-age and quiescence timeouts (#1193) for absent bots.
+#   detected advisory bots have submitted their reviews (or the head-age/quiescence
+#   timeouts (#1193) for absent bots apply); returns 1 when still waiting; returns 2
+#   when the GitHub API query or jq parse fails — callers must fail closed, not treat
+#   it as "waiting".
 check_advisory_reviews() {
   local pr_url="${1:-}"
   if [[ -z "$pr_url" ]]; then
