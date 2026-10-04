@@ -135,6 +135,14 @@ _retry_marker() { # <threads_csv> <attempt> <at>
 
 # ── dedup, rate-limit awareness, attempt caps (AC1 / AC3) ────────────────────
 
+@test "btr: a pending bot-comment retry marker holds every thread (shared per-PR lane)" {
+  out="$(_decide "$(_threads \
+      "$(_thread PRRT_cubic cubic-dev-ai)")" \
+    "$(_ours '<!-- dev-lead-bot-comment-retry id=IC_x version=2026-10-02T00:00:00Z attempt=1 at=2026-10-02T00:30:00Z -->' 2026-10-02T00:30:00Z)")"
+  [ "$(_dispatch_ids "$out")" = "" ]
+  [ "$(_reason_for "$out" PRRT_cubic)" = "retry-pending" ]
+}
+
 @test "btr: a retry marker inside the pending window holds EVERY thread on the PR" {
   out="$(_decide "$(_threads \
       "$(_thread PRRT_cubic cubic-dev-ai)" \

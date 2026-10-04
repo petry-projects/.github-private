@@ -91,6 +91,7 @@ btr_retry_decisions() {
     --arg automation "$automation_csv" \
     --arg retry_name "$BTR_RETRY_MARKER_NAME" \
     --arg notice_name "$BTR_EXHAUSTED_MARKER_NAME" \
+    --arg sibling_name "dev-lead-bot-comment-retry" \
     --argjson now "$now_epoch" \
     --argjson min_age "$min_age" \
     --argjson pending "$pending" \
@@ -120,10 +121,13 @@ btr_retry_decisions() {
                   | map(select(attr("status") == "rate-limited" or attr("status") == "blocked"))
                   | map((attr("reset") | vepoch) // ($t + $pending))),
            retry: (markers($retry_name) | map(ids)),
+           sibling: (markers($sibling_name) | length),
            notice: (markers($notice_name) | map(ids) | add // [])} ] as $notes
     | ([ $notes[] | select((.hold | length) > 0) | .t ] | max) as $last_hold
     | ([ $notes[] | .hold[] | select(. != null) ] | max) as $hold_until
-    | ([ $notes[] | select((.retry | length) > 0) | .t ] | max) as $last_retry
+    # A pending bot-comment retry holds the per-PR lane too: a second dispatch
+    # would supersede it, so it counts as pending here.
+    | ([ $notes[] | select((.retry | length) > 0 or .sibling > 0) | .t ] | max) as $last_retry
     | ([ $notes[] | .notice[] ] | unique) as $noticed
     | [ $threads[] | objects
         | select((.isResolved | type) == "boolean" and (.isOutdated | type) == "boolean"
