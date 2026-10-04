@@ -573,6 +573,24 @@ GHEOF
   [[ "$output" != *"T1"* ]]
 }
 
+@test "open threads: an oversized snapshot fails closed with its own ::error:: and no stdout" {
+  MOCK_BIN="$(mktemp -d)"
+  export PATH="$MOCK_BIN:$PATH"
+  cat > "$MOCK_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+body=$(head -c 100500 /dev/zero | tr '\0' 'x')
+echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"T1","isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"body":"'"$body"'"}]}}]}}}}}'
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+  # shellcheck source=/dev/null
+  source "$THREADS_LIB"
+  bats_require_minimum_version 1.5.0
+  run --separate-stderr fetch_open_review_threads "petry-projects/.github-private" 1953
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"::error::"*"exceeds 100000 bytes"* ]]
+}
+
 @test "open threads: both fix-reviews and review-changes build OPEN_THREADS_JSON from the paginated helper" {
   driver="$SCRIPT_DIR/scripts/dev-lead-fix-reviews.sh"
   [ "$(grep -c 'OPEN_THREADS_JSON=$(fetch_open_review_threads ' "$driver")" -eq 2 ]

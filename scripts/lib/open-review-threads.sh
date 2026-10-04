@@ -39,16 +39,21 @@ fetch_open_review_threads() {
       2>/dev/null) || { echo "::error::fetch_open_review_threads: thread fetch failed for ${repo}#${pr}" >&2; return 1; }
   # Filter locally (not via gh --jq). Fail closed: a page whose thread list is not
   # an array is a partial snapshot, and so is an open thread with >100 comments.
-  printf '%s\n' "$pages" | jq -sce '
+  local snapshot
+  snapshot=$(printf '%s\n' "$pages" | jq -sce '
       [ .[] | if ((.errors // []) | length) > 0 then error("page reported errors") else . end
         | .data.repository.pullRequest.reviewThreads.nodes
         | if type == "array" then . else error("non-array page") end ]
       | [ .[][] | select(.isResolved == false) ]
       | if any(.[]; .comments.pageInfo.hasNextPage == true)
-        then error("open thread has more than 100 comments") else . end
-      # Fail closed rather than drop review text: the snapshot is exported as one
-      # environment string (Linux caps that near 128 KiB), so refuse an oversized one.
-      | if (tojson | utf8bytelength) > 100000
-        then error("open-thread snapshot exceeds 100000 bytes") else . end' 2>/dev/null \
+        then error("open thread has more than 100 comments") else . end' 2>/dev/null) \
     || { echo "::error::fetch_open_review_threads: incomplete thread pages for ${repo}#${pr}" >&2; return 1; }
+  # Fail closed rather than drop review text: the snapshot is exported as one
+  # environment string (Linux caps that near 128 KiB), so refuse an oversized one.
+  # Checked separately so the operator sees the real cause, not "incomplete pages".
+  if [ "$(printf '%s' "$snapshot" | wc -c)" -gt 100000 ]; then
+    echo "::error::fetch_open_review_threads: open-thread snapshot exceeds 100000 bytes for ${repo}#${pr}" >&2
+    return 1
+  fi
+  printf '%s\n' "$snapshot"
 }
