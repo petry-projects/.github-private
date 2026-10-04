@@ -363,3 +363,173 @@ _stale() {
   _stale "2026-10-01T20:35:00Z" "not-a-time"
   [ "$status" -eq 2 ]
 }
+
+# ── #2004: a `fixed` disposition is verified by the cited commit's DIFF CONTENT ──
+# On PR #1977 a `fixed` disposition cited 89f46597, the commit that INTRODUCED the
+# finding (it added `--emit-workflow-only`), not e7e7008b, the commit that removed
+# it. The cited diff must REMOVE a distinctive token from the finding and must not
+# ADD it. A date-only basis is used only when the finding carries no token.
+#   cdv_finding_tokens <body>                  → one token per line
+#   cdv_diff_token_verdict <diff> <tokens>     → content-removes-token (rc0) |
+#       content-adds-token | content-no-token-removed | no-tokens (rc1)
+#   cdv_removed_token <diff> <tokens>          → the token the diff removes (rc0)
+#   cdv_fixed_verdict <on_head> <in_base> <own_files> <commit_date> <finding_created> <content>
+#       → content-removes-token | date-only (rc0), else a reason token (rc1)
+
+_tokens() {
+  run bash -c "source '$LIB'; cdv_finding_tokens \"\$1\"" _ "$1"
+}
+
+_diff_verdict() {
+  run bash -c "source '$LIB'; cdv_diff_token_verdict \"\$1\" \"\$2\"" _ "$1" "$2"
+}
+
+_fixed_verdict() {
+  run bash -c "source '$LIB'; cdv_fixed_verdict \"\$@\"" _ "$@"
+}
+
+# The #1977 CodeAnt nitpick, the introducing diff, and the fixing diff.
+_1977_FINDING='**Nitpick:** this comment names a nonexistent `--emit-workflow-only` mode in `scripts/template_stub_drift.sh`; the real mode is "--emit-workflow".'
+_1977_INTRODUCING='diff --git a/scripts/template_stub_drift.sh b/scripts/template_stub_drift.sh
+--- a/scripts/template_stub_drift.sh
++++ b/scripts/template_stub_drift.sh
+@@ -10,0 +11 @@
++# the --emit-workflow-only REFERENCE_MANIFEST mode'
+_1977_FIXING='diff --git a/scripts/template_stub_drift.sh b/scripts/template_stub_drift.sh
+--- a/scripts/template_stub_drift.sh
++++ b/scripts/template_stub_drift.sh
+@@ -11 +11 @@
+-#  --emit-workflow-only
++#  --emit-workflow'
+
+@test "tokens(#2004): backticked spans, flags and quoted identifiers are extracted" {
+  _tokens "$_1977_FINDING"
+  [ "$status" -eq 0 ]
+  grep -qxF -- '--emit-workflow-only' <<< "$output"
+  grep -qxF -- 'scripts/template_stub_drift.sh' <<< "$output"
+  grep -qxF -- '--emit-workflow' <<< "$output"
+}
+
+@test "tokens(#2004): HTML comments and fenced code blocks are ignored; short spans dropped" {
+  _tokens 'See `x` and <!-- `hidden_token` --> here.
+```suggestion
+`fenced_token`
+```
+Also `real_token`.'
+  [ "$status" -eq 0 ]
+  [ "$output" = "real_token" ]
+}
+
+@test "tokens(#2004): a finding with no distinctive token yields nothing" {
+  _tokens "Please double-check the null path."
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "tokens(#2004): an apostrophe in prose is not a quoted identifier" {
+  _tokens "It's fine, but don't skip it."
+  [ -z "$output" ]
+}
+
+@test "diff verdict(#2004): the INTRODUCING diff (adds the token) is content-adds-token" {
+  _diff_verdict "$_1977_INTRODUCING" "$(bash -c "source '$LIB'; cdv_finding_tokens \"\$1\"" _ "$_1977_FINDING")"
+  [ "$status" -eq 1 ]
+  [ "$output" = "content-adds-token" ]
+}
+
+@test "diff verdict(#2004): the FIXING diff (removes the token) is content-removes-token" {
+  _diff_verdict "$_1977_FIXING" "$(bash -c "source '$LIB'; cdv_finding_tokens \"\$1\"" _ "$_1977_FINDING")"
+  [ "$status" -eq 0 ]
+  [ "$output" = "content-removes-token" ]
+  run bash -c "source '$LIB'; cdv_removed_token \"\$1\" \"\$2\"" _ "$_1977_FIXING" "--emit-workflow-only"
+  [ "$status" -eq 0 ]
+  [ "$output" = "--emit-workflow-only" ]
+}
+
+@test "diff verdict(#2004): an UNRELATED diff is content-no-token-removed" {
+  _diff_verdict 'diff --git a/other.txt b/other.txt
+--- a/other.txt
++++ b/other.txt
+@@ -1 +1 @@
+-hello
++world' $'--emit-workflow-only\nscripts/template_stub_drift.sh'
+  [ "$status" -eq 1 ]
+  [ "$output" = "content-no-token-removed" ]
+}
+
+@test "diff verdict(#2004): a token removed on one line and re-added on another does not count" {
+  _diff_verdict '--- a/f
++++ b/f
+@@ -1 +1 @@
+-run --emit-workflow-only now
++run --emit-workflow-only later' "--emit-workflow-only"
+  [ "$status" -eq 1 ]
+  [ "$output" = "content-adds-token" ]
+}
+
+@test "diff verdict(#2004): file headers never count as removed or added lines" {
+  _diff_verdict '--- a/scripts/template_stub_drift.sh
++++ b/scripts/template_stub_drift.sh
+@@ -1 +1 @@
+-a
++b' "scripts/template_stub_drift.sh"
+  [ "$status" -eq 1 ]
+  [ "$output" = "content-no-token-removed" ]
+}
+
+@test "diff verdict(#2004): no tokens → no-tokens" {
+  _diff_verdict "$_1977_FIXING" ""
+  [ "$status" -eq 1 ]
+  [ "$output" = "no-tokens" ]
+}
+
+@test "fixed verdict(#2004): a content-verified ancestor commit after the finding verifies" {
+  _fixed_verdict true false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" content-removes-token
+  [ "$status" -eq 0 ]
+  [ "$output" = "content-removes-token" ]
+}
+
+@test "fixed verdict(#2004): no token → date-only (the weaker basis is named)" {
+  _fixed_verdict true false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" no-tokens
+  [ "$status" -eq 0 ]
+  [ "$output" = "date-only" ]
+}
+
+@test "fixed verdict(#2004): each failure has its own reason token" {
+  _fixed_verdict false false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" content-removes-token
+  [ "$status" -eq 1 ]; [ "$output" = "not-on-head" ]
+  _fixed_verdict true unknown 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" content-removes-token
+  [ "$status" -eq 1 ]; [ "$output" = "base-unknown" ]
+  _fixed_verdict true true 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" content-removes-token
+  [ "$status" -eq 1 ]; [ "$output" = "on-base-branch" ]
+  _fixed_verdict true false 0 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" content-removes-token
+  [ "$status" -eq 1 ]; [ "$output" = "empty-diff" ]
+  _fixed_verdict true false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" content-adds-token
+  [ "$status" -eq 1 ]; [ "$output" = "content-adds-token" ]
+  _fixed_verdict true false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" content-no-token-removed
+  [ "$status" -eq 1 ]; [ "$output" = "content-no-token-removed" ]
+  _fixed_verdict true false 1 "" "2026-10-02T10:00:00Z" content-removes-token
+  [ "$status" -eq 1 ]; [ "$output" = "undated" ]
+  _fixed_verdict true false 1 "2026-10-02T09:00:00Z" "2026-10-02T10:00:00Z" content-removes-token
+  [ "$status" -eq 1 ]; [ "$output" = "predates-finding" ]
+}
+
+@test "fixed verdict(#2004): date-only never verifies a commit that predates the finding" {
+  _fixed_verdict true false 1 "2026-10-02T09:00:00Z" "2026-10-02T10:00:00Z" no-tokens
+  [ "$status" -eq 1 ]
+  [ "$output" = "predates-finding" ]
+}
+
+@test "fixed verdict(#2004): an unknown content verdict fails closed" {
+  _fixed_verdict true false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" ""
+  [ "$status" -eq 1 ]
+  [ "$output" = "content-unknown" ]
+}
+
+@test "diff verdict(#2051): token match is whole-token, not substring" {
+  local d=$'--- a/x\n+++ b/x\n@@ -1 +0,0 @@\n-run --emit-workflow-only now'
+  run bash -c "source '$LIB'; cdv_removed_token \"\$1\" \"\$2\"" _ "$d" "--emit-workflow"
+  [ "$status" -eq 1 ]
+  run bash -c "source '$LIB'; cdv_removed_token \"\$1\" \"\$2\"" _ "$d" "--emit-workflow-only"
+  [ "$status" -eq 0 ]
+}
