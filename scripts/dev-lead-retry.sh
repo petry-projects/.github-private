@@ -431,9 +431,14 @@ scan_pr_for_rate_limits() {
           2>/dev/null || echo "CI failure")
         if [ "$guard_posted" -eq 0 ]; then
           # Fetch fresh comments to re-check for concurrent guards posted while we were evaluating
-          local fresh_guard_check
+          local fresh_guard_check rc=0
           fresh_guard_check=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-            --jq '[.[].body]' 2>/dev/null | jq -s 'add // []' || echo "[]")
+            --jq '[.[].body]' 2>/dev/null | jq -s 'add // []') || rc=$?
+          # If the read failed (rc != 0), skip dispatch to avoid potentially duplicating work
+          if [ "$rc" -ne 0 ]; then
+            echo "  [skip] PR ${pr_number} could not verify dispatch guard (read failed) — skipping to avoid duplicate dispatch" >&2
+            return 0
+          fi
           if has_dispatch_guard "$fresh_guard_check" "$head_sha"; then
             echo "  [skip] PR ${pr_number} SHA ${head_sha:0:8} concurrent guard detected — skipping dispatch" >&2
             return 0
@@ -513,9 +518,14 @@ scan_pr_for_rate_limits() {
 
       if [ "$guard_posted" -eq 0 ]; then
         # Fetch fresh comments to re-check for concurrent guards posted while we were evaluating
-        local fresh_guard_check
+        local fresh_guard_check rc=0
         fresh_guard_check=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-          --jq '[.[].body]' 2>/dev/null | jq -s 'add // []' || echo "[]")
+          --jq '[.[].body]' 2>/dev/null | jq -s 'add // []') || rc=$?
+        # If the read failed (rc != 0), skip dispatch to avoid potentially duplicating work
+        if [ "$rc" -ne 0 ]; then
+          echo "  [skip] PR ${pr_number} could not verify dispatch guard (read failed) — skipping to avoid duplicate dispatch" >&2
+          continue
+        fi
         if has_dispatch_guard "$fresh_guard_check" "$head_sha"; then
           echo "  [skip] PR ${pr_number} SHA ${head_sha:0:8} concurrent guard detected — skipping dispatch" >&2
           continue
@@ -542,10 +552,13 @@ scan_pr_for_rate_limits() {
       echo "  [stale-disposition] PR ${pr_number}: a bot comment was edited after its dev-lead disposition — re-dispatching fix-reviews (#2008)" >&2
       if [ "$guard_posted" -eq 0 ]; then
         # Fetch fresh comments to re-check for concurrent guards posted while we were evaluating
-        local fresh_guard_check
+        local fresh_guard_check rc=0
         fresh_guard_check=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-          --jq '[.[].body]' 2>/dev/null | jq -s 'add // []' || echo "[]")
-        if has_dispatch_guard "$fresh_guard_check" "$head_sha"; then
+          --jq '[.[].body]' 2>/dev/null | jq -s 'add // []') || rc=$?
+        # If the read failed (rc != 0), skip dispatch to avoid potentially duplicating work
+        if [ "$rc" -ne 0 ]; then
+          echo "  [skip] PR ${pr_number} could not verify dispatch guard (read failed) — skipping to avoid duplicate dispatch" >&2
+        elif has_dispatch_guard "$fresh_guard_check" "$head_sha"; then
           echo "  [skip] PR ${pr_number} SHA ${head_sha:0:8} concurrent guard detected — skipping dispatch" >&2
         else
           post_dispatch_guard "$repo" "$pr_number" "$head_sha"

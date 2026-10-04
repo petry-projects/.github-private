@@ -57,7 +57,7 @@ compute_cancellation_metrics() {
     | [ $canc[]
         | select(
             (.run_started_at == null) and
-            (((.updated_at // .run_started_at // .created_at) | fromdateiso8601)
+            (((.updated_at // .created_at) | fromdateiso8601)
              - (.created_at | fromdateiso8601)) < $thr
           ) ] as $never
     | ($never | length) as $never_ran
