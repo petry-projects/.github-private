@@ -124,6 +124,7 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   dlpb_backfill_pr_body "$PR_NUMBER" "$REPO" || true
 fi
 
+# build_and_run: load a prompt template, substitute variables, and run the writer engine.
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
@@ -1003,6 +1004,7 @@ fbc_target_resolved() {
              else "no" end' 2>/dev/null || echo "unknown"
 }
 
+# resolve_dispositioned_comments: minimize PR issue comments that carry a verified disposition.
 resolve_dispositioned_comments() {
   local intent="$1"
   # $2 = "failed" when called from a failed/timed-out pass. On that path a
@@ -2168,6 +2170,7 @@ ${retry_msg}"
   fi
 }
 
+# handle_rate_limit: post a rate-limit marker on the PR and exit with status 2.
 handle_rate_limit() {
   local intent="$1"
   echo "::warning::All engines rate-limited for intent=${intent} — posting rate-limited marker"
