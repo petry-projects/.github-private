@@ -1125,10 +1125,11 @@ resolve_deferred_bot_threads() {
        then "yes" else "no" end' 2>/dev/null || echo "no")
     [ "$origin_bot" = "yes" ] || continue
 
-    reply_idx=$(dtv_latest_own_reply_index "$comments_json" "$bot_user") || continue
+    reply_idx=$(dtv_latest_own_reply_index "$comments_json" "$bot_user")
+    [ -n "$reply_idx" ] || continue
     reply_body=$(printf '%s' "$comments_json" | jq -r --argjson i "$reply_idx" '.[$i].body // ""' 2>/dev/null || echo "")
-    parse_rc=0
-    ref=$(dtv_parse_deferral "$reply_body") || parse_rc=$?
+    ref=$(dtv_parse_deferral "$reply_body")
+    parse_rc=$?
     if [ "$parse_rc" -ne 0 ]; then
       # Most threads simply carry no deferral; only report a malformed one.
       if [ "$ref" != "no-deferral" ]; then
@@ -1137,7 +1138,8 @@ resolve_deferred_bot_threads() {
       continue
     fi
 
-    post_reason=$(acv_post_marker_clear "$comments_json" "$reply_idx" "$bot_user") && post_rc=0 || post_rc=$?
+    post_reason=$(acv_post_marker_clear "$comments_json" "$reply_idx" "$bot_user")
+    post_rc=$?
     if [ "${post_rc:-0}" -ne 0 ]; then
       echo "::notice::skipping thread ${id} — an unaddressed comment landed after our deferral (${post_reason}); leaving unresolved (#2045)"
       continue
@@ -1155,10 +1157,13 @@ resolve_deferred_bot_threads() {
 
     origin_db_id=$(printf '%s' "$comments_json" | jq -r '.[0].databaseId // ""' 2>/dev/null || echo "")
     issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>/dev/null) || issue_json=""
-    issue_comments=$(gh api --paginate "repos/${REPO}/issues/${ref}/comments?per_page=100" 2>/dev/null \
-      | jq -cs 'add // []' 2>/dev/null) || issue_comments="[]"
-    local verdict_rc=0
-    verdict=$(dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$id" "$origin_db_id" "$REPO" "$PR_NUMBER") || verdict_rc=$?
+    local issue_comments_output
+    issue_comments_output=$(gh api --paginate "repos/${REPO}/issues/${ref}/comments?per_page=100" 2>/dev/null \
+      | jq -cs 'add // []' 2>/dev/null) || issue_comments_output="[]"
+    issue_comments="$issue_comments_output"
+    local verdict_rc
+    verdict=$(dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$id" "$origin_db_id" "$REPO" "$PR_NUMBER")
+    verdict_rc=$?
     if [ "$verdict_rc" -ne 0 ]; then
       echo "::notice::skipping thread ${id} — tracking issue #${ref} cannot back the deferral (${verdict}); leaving unresolved (#2045)"
       continue

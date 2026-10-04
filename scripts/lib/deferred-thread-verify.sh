@@ -186,7 +186,7 @@ dtv_verify_tracking_issue() {
     return 1
   fi
   local text
-  text=$(jq -r '.body' <<<"$facts")
+  text=$(jq -r '.body' <<<"$facts" 2>/dev/null) || text=""
   if dtv_text_mentions_thread "$text" "$thread_id" "$db_id" "$repo" "$pr"; then
     echo "ok"
     return 0
