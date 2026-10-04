@@ -44,12 +44,12 @@ ort_fetch_open_threads() {
   local cursor_args=()
   while :; do
     page_no=$((page_no + 1))
-    if ! page_response=$(gh api graphql -f query="$query" \
+    page_response=$(gh api graphql -f query="$query" \
         -F owner="${repo%%/*}" -F repo="${repo##*/}" -F pr="$pr" \
-        "${cursor_args[@]}" 2>/dev/null); then
+        "${cursor_args[@]}" 2>/dev/null) || {
       echo "::error::ort_fetch_open_threads: review-thread page ${page_no} fetch failed for ${repo}#${pr}" >&2
       return 1
-    fi
+    }
     # Validate the page before trusting it: a missing nodes array or an `errors`
     # payload is a failure, never an empty page.
     if ! printf '%s' "$page_response" | jq -e '

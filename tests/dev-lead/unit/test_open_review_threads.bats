@@ -184,7 +184,7 @@ make_fixture() {
   make_fixture 101 1 101
   export GH_FAIL_PAGE=2
   run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" 7
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
 }
 
@@ -192,7 +192,7 @@ make_fixture() {
   make_fixture 10 5
   export GH_FAIL_PAGE=1
   run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" 7
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
 }
 
@@ -201,7 +201,7 @@ make_fixture() {
   export GH_PAGE_OVERRIDE=1
   export GH_PAGE_BODY='{"data":null,"errors":[{"message":"Something went wrong"}]}'
   run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" 7
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
 }
 
@@ -210,7 +210,7 @@ make_fixture() {
   export GH_PAGE_OVERRIDE=1
   export GH_PAGE_BODY='{}'
   run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" 7
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
 }
 
@@ -219,7 +219,7 @@ make_fixture() {
   export GH_PAGE_OVERRIDE=1
   export GH_PAGE_BODY='<html>502</html>'
   run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" 7
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
 }
 
@@ -228,15 +228,15 @@ make_fixture() {
   export GH_PAGE_OVERRIDE=1
   export GH_PAGE_BODY='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}'
   run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" 7
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
 }
 
 @test "ort_fetch_open_threads: missing repo or PR argument → non-zero without calling gh" {
   run --separate-stderr ort_fetch_open_threads "" 7
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" ""
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ ! -s "$GH_CALLS_FILE" ]
 }
 

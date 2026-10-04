@@ -5612,7 +5612,7 @@ GHEOF
 
   run bash "$FIX_REVIEWS_SCRIPT"
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"could not read open review threads"* ]]
   # The engine never ran on a list it could not read.
   [[ "$output" != *"would run engine"* ]]
