@@ -118,6 +118,7 @@ bcr_retry_decisions() {
     --arg trusted "$trusted_csv" \
     --arg automation "$automation_csv" \
     --arg retry_name "$BCR_RETRY_MARKER_NAME" \
+    --arg sibling_name "dev-lead-bot-thread-retry" \
     --argjson info "$info_patterns" \
     --argjson now "$now_epoch" \
     --argjson min_age "$min_age" \
@@ -148,12 +149,16 @@ bcr_retry_decisions() {
            pass: ($fr | map(select(attr("comment") != null))),
            hold: ($fr | map(select(attr("status") == "rate-limited" or attr("status") == "blocked"))
                       | map(attr("reset") | vepoch)),
-           retry: markers($retry_name)} ] as $notes
+           retry: markers($retry_name),
+           sibling: (markers($sibling_name) | length)} ] as $notes
     # A fix-bot-comment pass that ended rate-limited/blocked names no comment, so it
     # holds every comment on the PR: until its reset= time, and it ends the count
     # of attempts that ran into it.
     | ([ $notes[] | select((.hold | length) > 0) | .t ] | max) as $last_hold
     | ([ $notes[] | .hold[] | select(. != null) ] | max) as $hold_until
+    # A pending bot-thread retry holds the per-PR lane: a second dispatch would
+    # supersede it.
+    | ([ $notes[] | select(.sibling > 0) | .t ] | max) as $sibling_retry
     | [ .[] | objects
         | (.author?.login // "" | tostring | bare) as $l
         | select($l != "" and ($tb | index($l)) != null)
@@ -188,6 +193,8 @@ bcr_retry_decisions() {
         + ( if $covered then {decision: "skip", reason: "dispositioned"}
             elif $ran then {decision: "skip", reason: "pass-completed"}
             elif ($last_retry != null and ($now - $last_retry) < $pending)
+              then {decision: "skip", reason: "retry-pending"}
+            elif ($sibling_retry != null and ($now - $sibling_retry) < $pending)
               then {decision: "skip", reason: "retry-pending"}
             elif ($hold_until != null and $hold_until > $now) then {decision: "skip", reason: "rate-limited"}
             elif ($counted >= $max_attempts or $attempts >= $max_total)

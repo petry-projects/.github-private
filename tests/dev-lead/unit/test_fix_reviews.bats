@@ -4432,10 +4432,10 @@ GITEOF
 # thread naming doc.md line 5 for every graphql query, (b) records comments,
 # labels and merges. The engine (claude stub) rewrites doc.md to the
 # caller-provided content, simulating what a fix pass changed.
-# The review-changes branch assigns OPEN_THREADS_JSON via `gh api graphql … --jq
-# '…reviewThreads.nodes | map(select(.isResolved == false))'`. A real gh applies
-# that server-side jq; the stub cannot, so it must echo the ALREADY-EXTRACTED
-# array shape (what the --jq would have produced), not the raw GraphQL wrapper.
+# The review-changes branch assigns OPEN_THREADS_JSON via fetch_open_review_threads
+# (open-review-threads.sh), which pages the raw GraphQL response and filters
+# unresolved threads locally with jq. The stub therefore returns raw GraphQL
+# pages (wrapping this nodes array), not a pre-extracted array.
 _ev_named_thread_json='[{"id":"T1","isResolved":false,"isOutdated":false,"line":5,"path":"doc.md","comments":{"nodes":[{"body":"Please rework line 5.","author":{"login":"humanreviewer","__typename":"User"}}]}}]'
 
 _ev_setup_repo() {
@@ -4470,7 +4470,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"reviews"*) echo '[]' ;;
-  *"graphql"*) echo '${threads_json}' ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":${threads_json}}}}}}' ;;
   *"issues/"*"comments"*) echo '${comments_json}' ;;
   *"issues/comments/"*) exit 0 ;;
   *"pulls/"*) echo '{"head":{"sha":"'"${EV_HEAD_SHA}"'"},"auto_merge":null,"state":"open"}' ;;
@@ -4758,10 +4758,10 @@ case "$ARGS" in
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
   *"on IssueComment"*)
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
-  *"pageInfo"*)
-    printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$COMMENTS_NODES"'}}}}}'; exit 0 ;;
   *"reviewThreads"*)
     printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'; exit 0 ;;
+  *"pageInfo"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$COMMENTS_NODES"'}}}}}'; exit 0 ;;
   *"graphql"*)
     printf '%s' '{"data":{}}'; exit 0 ;;
   *"pr view"*)

@@ -10,6 +10,8 @@ source "$(dirname "$0")/lib/auto-merge.sh"
 source "$(dirname "$0")/lib/git-push-guard.sh"
 source "$(dirname "$0")/lib/pr-automation-budget.sh"
 source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
+# Paginated unresolved-thread enumeration for OPEN_THREADS_JSON (#2046).
+source "$(dirname "$0")/lib/open-review-threads.sh"
 source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
@@ -124,6 +126,7 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   dlpb_backfill_pr_body "$PR_NUMBER" "$REPO" || true
 fi
 
+# build_and_run <template_name>: loads a prompt template, substitutes variables, and runs the agent.
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
@@ -933,6 +936,7 @@ fbc_target_resolved() {
              else "no" end' 2>/dev/null || echo "unknown"
 }
 
+# resolve_dispositioned_comments <intent> [pass_outcome]: verifies and minimizes resolved PR issue comments.
 resolve_dispositioned_comments() {
   local intent="$1"
   # $2 = "failed" when called from a failed/timed-out pass. On that path a
@@ -2057,6 +2061,7 @@ ${retry_msg}"
   fi
 }
 
+# handle_rate_limit <intent>: posts a rate-limited marker and exits when all engines hit rate limits.
 handle_rate_limit() {
   local intent="$1"
   echo "::warning::All engines rate-limited for intent=${intent} — posting rate-limited marker"
@@ -2655,18 +2660,9 @@ case "$INTENT_TYPE" in
     # comparison). The workflow passes the actor via TRIGGERING_REVIEWER, so
     # fall back to it when ACTOR is not set explicitly.
     export ACTOR="${ACTOR:-${TRIGGERING_REVIEWER:-}}"
-    OPEN_THREADS_JSON=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!) {
-        repository(owner:$owner, name:$repo) {
-          pullRequest(number:$pr) {
-            reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
-            }
-          }
-        }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
+    # Every unresolved thread, all pages, from every reviewer (#2046).
+    OPEN_THREADS_JSON=$(fetch_open_review_threads "$REPO" "$PR_NUMBER") \
+      || { echo "::error::could not fetch review threads for ${REPO}#${PR_NUMBER}" >&2; exit 1; }
     export OPEN_THREADS_JSON
     fetch_pr_context
     rc=0
@@ -2867,18 +2863,9 @@ case "$INTENT_TYPE" in
     # threads from the triggering reviewer in the no-changes branch. The
     # workflow's review-changes step passes ACTOR via env.INTENT_ACTOR.
     export REPO ACTOR="${ACTOR:-}" PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
-    OPEN_THREADS_JSON=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!) {
-        repository(owner:$owner, name:$repo) {
-          pullRequest(number:$pr) {
-            reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
-            }
-          }
-        }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
+    # Every unresolved thread, all pages, from every reviewer (#2046).
+    OPEN_THREADS_JSON=$(fetch_open_review_threads "$REPO" "$PR_NUMBER") \
+      || { echo "::error::could not fetch review threads for ${REPO}#${PR_NUMBER}" >&2; exit 1; }
     export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
     fetch_pr_context
     rc=0
