@@ -5110,7 +5110,7 @@ _resolved_bot_comment() {
   end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   [ -n "$start" ] && [ -n "$end" ]
   block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   applied=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
   nochg=$(grep -n 'post_no_changes "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$applied" ] && [ -n "$nochg" ]
@@ -5132,7 +5132,7 @@ _resolved_bot_comment() {
   start=$(grep -n '^  fix-bot-comment)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   guard=$(grep -n 'RDC_STATE_UNKNOWN:-0}" = "1"' <<< "$block" | head -1 | cut -d: -f1)
   post=$(grep -n 'case "\$_fbc_terminal" in' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$guard" ] && [ -n "$post" ]
@@ -5221,7 +5221,7 @@ _target_state() {
   local block
   block="$(sed -n '/build_and_run "fix-bot-comment"/,/try_enable_auto_merge/p' "$FIX_REVIEWS_SCRIPT")"
   local resolver check terminal
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   check=$(grep -n 'fbc_target_resolved' <<< "$block" | head -1 | cut -d: -f1)
   terminal=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$check" ] && [ -n "$terminal" ]
