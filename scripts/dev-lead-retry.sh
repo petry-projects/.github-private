@@ -437,10 +437,12 @@ scan_pr_for_rate_limits() {
           # If the read failed (rc != 0), skip dispatch to avoid potentially duplicating work
           if [ "$rc" -ne 0 ]; then
             echo "  [skip] PR ${pr_number} could not verify dispatch guard (read failed) — skipping to avoid duplicate dispatch" >&2
+            echo "$dispatched"
             return 0
           fi
           if has_dispatch_guard "$fresh_guard_check" "$head_sha"; then
             echo "  [skip] PR ${pr_number} SHA ${head_sha:0:8} concurrent guard detected — skipping dispatch" >&2
+            echo "$dispatched"
             return 0
           fi
           post_dispatch_guard "$repo" "$pr_number" "$head_sha"
