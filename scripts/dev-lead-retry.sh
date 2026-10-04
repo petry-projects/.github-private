@@ -756,18 +756,22 @@ scan_pr_for_undispositioned_bot_comments() {
     fi
     # A thread-retry marker posted concurrently shares the per-PR lane: the
     # earliest in-window one wins, so both kinds cannot each dispatch.
-    local sib_pending sib_first
+    local sib_pending sib_first sib_raw
     sib_pending="${BOT_THREAD_RETRY_PENDING_SEC:-9000}"
     [[ "$sib_pending" =~ ^[0-9]+$ ]] || sib_pending=9000
-    sib_first=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+    if ! sib_raw=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
       --jq '.[] | select((.user.login // "" | sub("\\[bot\\]$"; "")) as $l | '"${logins_jq}"' | index($l) != null)
             | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
             | select((.body // "") | contains("<!-- dev-lead-bot-thread-retry threads="))
-            | {id, created_at}' 2>/dev/null \
-      | jq -rs --argjson now "$(get_now_epoch)" --argjson pending "$sib_pending" '
+            | {id, created_at}' 2>/dev/null) \
+      || ! sib_first=$(printf '%s\n' "$sib_raw" | jq -rs --argjson now "$(get_now_epoch)" --argjson pending "$sib_pending" '
         [ .[] | objects | select((.id | type) == "number")
           | select($now - ((.created_at // "") | (try fromdateiso8601 catch 0)) < $pending) | .id ]
-        | min // empty' 2>/dev/null || true)
+        | min // empty' 2>/dev/null); then
+      echo "  [warn] bot-comment retry: could not re-read thread retry markers on PR ${pr_number} — withdrawing and not dispatching (fail closed)" >&2
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      echo "0"; return 0
+    fi
     if [[ "$sib_first" =~ ^[0-9]+$ ]] && [ "$sib_first" -lt "$marker_id" ]; then
       echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent thread retry already recorded a retry" >&2
       withdraw_bot_comment_retry_marker "$repo" "$marker_id"

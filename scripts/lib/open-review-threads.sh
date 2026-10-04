@@ -46,11 +46,9 @@ fetch_open_review_threads() {
       | [ .[][] | select(.isResolved == false) ]
       | if any(.[]; .comments.pageInfo.hasNextPage == true)
         then error("open thread has more than 100 comments") else . end
-      # Bound the snapshot: it is exported as one environment string (Linux caps
-      # that near 128 KiB), so trim comment bodies, then keep only the first
-      # comment of each thread if it is still too large.
-      | map(.comments.nodes |= (if type == "array" then map(.body = ((.body // "")[0:2000])) else . end))
-      | if (tojson | length) > 100000
-        then map(.comments.nodes |= (if type == "array" then (.[0:1] | map(.body = .body[0:500])) else . end)) else . end' 2>/dev/null \
+      # Fail closed rather than drop review text: the snapshot is exported as one
+      # environment string (Linux caps that near 128 KiB), so refuse an oversized one.
+      | if (tojson | utf8bytelength) > 100000
+        then error("open-thread snapshot exceeds 100000 bytes") else . end' 2>/dev/null \
     || { echo "::error::fetch_open_review_threads: incomplete thread pages for ${repo}#${pr}" >&2; return 1; }
 }
