@@ -40,7 +40,7 @@ readonly _DTV_TRACKER_TITLE='dev-lead: deferred review findings'
 #   Extract the tracking-issue number from the single deferral marker in a reply.
 #   On success echoes the bare issue number (e.g. "2050") and returns 0. On failure
 #   echoes a reason token and returns 1: no-deferral | multiple-deferrals |
-#   malformed | missing-ref | bad-ref. A ref must be exactly `#<n>` in this repo;
+#   malformed | missing-ref | bad-ref | mixed-addressed. A ref must be exactly `#<n>` in this repo;
 #   a repeated `ref=` key is ambiguous and rejected. Pure.
 dtv_parse_deferral() {
   local body="${1:-}"
@@ -48,6 +48,12 @@ dtv_parse_deferral() {
   count=$( { grep -oF "$_DTV_MARKER_PREFIX" <<<"$body" || true; } | wc -l | tr -d '[:space:]')
   if [[ "$count" == "0" ]]; then
     echo "no-deferral"
+    return 1
+  fi
+  # A deferral reply must carry no addressed-marker or claim: that contract is
+  # verified against the diff, and a mixed reply would bypass it.
+  if grep -qE '<!--[[:space:]]*dev-lead:(addressed|claim)' <<<"$body"; then
+    echo "mixed-addressed"
     return 1
   fi
   if [[ "$count" != "1" ]]; then

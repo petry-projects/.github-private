@@ -36,6 +36,16 @@ setup() {
   [ "$output" = "2050" ]
 }
 
+@test "dtv_parse_deferral: a reply that also carries an addressed-marker or claim is rejected" {
+  run dtv_parse_deferral "Deferring. Tracked in #2050.
+
+<!-- dev-lead:addressed -->
+<!-- dev-lead:claim {\"v\":1} -->
+<!-- dev-lead:deferred ref=#2050 -->"
+  [ "$status" -eq 1 ]
+  [ "$output" = "mixed-addressed" ]
+}
+
 @test "dtv_parse_deferral: no marker -> no-deferral" {
   run dtv_parse_deferral "Valid, but deferring — out of scope for this PR."
   [ "$status" -eq 1 ]

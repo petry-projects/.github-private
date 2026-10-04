@@ -797,7 +797,12 @@ resolve_addressed_bot_threads() {
   # replied to (#codeant-666). The authorizing state is re-read per candidate via a
   # fresh node(id) fetch taken immediately before the mutation below.
   local ids
-  ids=$(list_unresolved_bot_thread_ids) || ids=""
+  # A failed enumeration (e.g. a later pagination page) must not read as "no
+  # candidates": propagate it so the caller records the pass as failed.
+  ids=$(list_unresolved_bot_thread_ids) || {
+    echo "::error::resolve_addressed_bot_threads: could not enumerate review threads on PR #${PR_NUMBER}"
+    return 1
+  }
 
   if [ -z "$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no addressed unresolved bot threads on PR #${PR_NUMBER}"
@@ -1117,10 +1122,18 @@ resolve_deferred_bot_threads() {
   local verdict
   while IFS= read -r id; do
     [ -z "$id" ] && continue
-    node_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
+    # An unreadable candidate snapshot is a resolver failure, not "not resolvable":
+    # a verified deferral may remain merge-blocking and a terminal marker may already
+    # suppress retry, so surface it via failed_count.
+    node_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null) || node_json=""
     cur_resolved=$(printf '%s' "$node_json" | jq -r \
       'if .data.node.isResolved == null then "unknown"
        elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+    if [ "$cur_resolved" = "unknown" ]; then
+      echo "::warning::could not read review thread ${id} while checking deferrals"
+      failed_count=$((failed_count + 1))
+      continue
+    fi
     [ "$cur_resolved" = "false" ] || continue
     # Fail closed on a thread longer than one page: later replies could supersede
     # the deferral and we would not see them.
@@ -1180,7 +1193,12 @@ resolve_deferred_bot_threads() {
     # be unchanged (still unresolved, same comments) so a reply that landed meanwhile
     # is never overridden.
     local fresh_json fresh_comments
-    fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
+    fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null) || fresh_json=""
+    if [ "$(printf '%s' "$fresh_json" | jq -r 'if .data.node.isResolved == null then "unknown" else "ok" end' 2>/dev/null || echo unknown)" = "unknown" ]; then
+      echo "::warning::could not re-read review thread ${id} before resolving its deferral"
+      failed_count=$((failed_count + 1))
+      continue
+    fi
     fresh_comments=$(printf '%s' "$fresh_json" | jq -c \
       'if .data.node.isResolved == false and .data.node.comments.pageInfo.hasNextPage == false
        then .data.node.comments.nodes else "changed" end' 2>/dev/null || echo '"changed"')
@@ -3112,10 +3130,12 @@ case "$INTENT_TYPE" in
           post_no_changes "fix-reviews"
         fi
       fi
+      # Deferred bot threads (#2045) are verified against their tracking issue, not
+      # the diff, so they resolve outside the head-advance gate below — and even on a
+      # guard abort (rc 3/4): those add needs-human-review, after which no later pass
+      # revisits the deferral and the thread would block merge forever.
+      resolve_deferred_bot_threads "fix-reviews" || rc=1
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
-        # Deferred bot threads (#2045) are verified against their tracking issue,
-        # not the diff, so they resolve outside the head-advance gate below.
-        resolve_deferred_bot_threads "fix-reviews" || rc=1
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
         if resolution_gate_open "$cp_rc"; then
@@ -3123,7 +3143,7 @@ case "$INTENT_TYPE" in
           resolve_actor_outdated_threads "fix-reviews"
           # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
           # these are not necessarily outdated, so the nets above miss them.
-          resolve_addressed_bot_threads "fix-reviews"
+          resolve_addressed_bot_threads "fix-reviews" || rc=1
         else
           echo "::notice::resolution gate closed (#1609): the fix-reviews pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
@@ -3223,10 +3243,10 @@ case "$INTENT_TYPE" in
         applied)    post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed." ;;
         no-changes) post_no_changes "fix-bot-comment" ;;
       esac
+      # Deferred bot threads (#2045): verified against the tracking issue, so outside
+      # the head-advance gate below and run on guard aborts (rc 3/4) too.
+      resolve_deferred_bot_threads "fix-bot-comment" || rc=1
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
-        # Deferred bot threads (#2045): verified against the tracking issue, so
-        # outside the head-advance gate below.
-        resolve_deferred_bot_threads "fix-bot-comment" || rc=1
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
         if resolution_gate_open "$cp_rc"; then
@@ -3234,7 +3254,7 @@ case "$INTENT_TYPE" in
           resolve_actor_outdated_threads "fix-bot-comment"
           # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
           # these are not necessarily outdated, so the nets above miss them.
-          resolve_addressed_bot_threads "fix-bot-comment"
+          resolve_addressed_bot_threads "fix-bot-comment" || rc=1
         else
           echo "::notice::resolution gate closed (#1609): the fix-bot-comment pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
@@ -3316,6 +3336,8 @@ case "$INTENT_TYPE" in
       # or re-enable auto-merge on a self-cancelling PR.
       if [ "$cp_rc" -eq 3 ]; then
         echo "::notice::review-changes: no-op guard aborted the push for PR #${PR_NUMBER} — flagged for human, not merged (#1786)"
+        # A deferral is verified against its tracking issue, not the diff (#2045).
+        resolve_deferred_bot_threads "review-changes" || rc=1
         exit "$rc"
       fi
       # Test guards (#2013): the push was refused and the PR flagged for a human.
@@ -3324,6 +3346,7 @@ case "$INTENT_TYPE" in
       if [ "$cp_rc" -eq 4 ]; then
         echo "::warning::review-changes was refused by a test guard (tamper/regression) — flagged for human, not pushed (#2013)"
         resolve_dispositioned_comments "review-changes" failed || _DISPOSITIONS_UNRESOLVED=1
+        resolve_deferred_bot_threads "review-changes" || rc=1
         [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
         exit "$rc"
       fi
@@ -3355,7 +3378,7 @@ case "$INTENT_TYPE" in
         resolve_actor_outdated_threads "review-changes"
         # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
         # these are not necessarily outdated, so the nets above miss them.
-        resolve_addressed_bot_threads "review-changes"
+        resolve_addressed_bot_threads "review-changes" || rc=1
       else
         echo "::notice::resolution gate closed (#1609): the review-changes pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
       fi
