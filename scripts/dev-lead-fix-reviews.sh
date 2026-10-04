@@ -1124,7 +1124,7 @@ resolve_deferred_bot_threads() {
     [ "$cur_resolved" = "false" ] || continue
     # Fail closed on a thread longer than one page: later replies could supersede
     # the deferral and we would not see them.
-    if [ "$(printf '%s' "$node_json" | jq -r '.data.node.comments.pageInfo.hasNextPage // true' 2>/dev/null || echo true)" != "false" ]; then
+    if [ "$(printf '%s' "$node_json" | jq -r 'if .data.node.comments.pageInfo.hasNextPage == false then "false" else "true" end' 2>/dev/null || echo true)" != "false" ]; then
       echo "::notice::skipping thread ${id} — more than 100 comments (or page info unreadable); leaving unresolved (#2045)"
       continue
     fi
