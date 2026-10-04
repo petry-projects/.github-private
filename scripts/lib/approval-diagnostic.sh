@@ -99,7 +99,7 @@ _approval_diag_default_advisory_json() {
     fi
   fi
   if [ -z "$json" ] || [ "$json" = "[]" ]; then
-    json='["copilot-pull-request-reviewer","gemini-code-assist","chatgpt-codex-connector","sonarqubecloud","qodo-code-review","codeant-ai","graphite-app"]'
+    json='["gemini-code-assist","sonarqubecloud","codeant-ai","graphite-app","cubic-dev-ai"]'
   fi
   printf '%s' "$json"
 }
