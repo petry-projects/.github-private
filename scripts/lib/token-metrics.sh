@@ -80,7 +80,8 @@ estimate_tokens_from_file() {
 # key_index (#2030) is optional: the Gemini API key INDEX (1 = primary slot,
 # N = GOOGLE_API_KEY_N — never the key) that served the call. When given, the record
 # gains a `key_index` field the Gemini quota gate meters per key (numeric, or a
-# string like "1b" for a second primary credential); when omitted the field is absent, so other records are byte-for-byte unchanged.
+# string like "1b" for a second primary credential); when omitted the field is
+# absent, so other records are byte-for-byte unchanged.
 emit_token_record() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
 
