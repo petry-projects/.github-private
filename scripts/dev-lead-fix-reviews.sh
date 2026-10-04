@@ -1327,6 +1327,12 @@ resolve_dispositioned_comments() {
           if [ "$corrected_rc" -eq 0 ] \
              && { ! live_body=$(rdc_live_comment_body "$cid") || [ "$live_body" != "$orig_body" ]; }; then
             echo "::warning::comment ${cid}: its body changed or could not be re-read since it was captured; no correction posted, it stays open for a disposition of the current body (#2004)"
+            if [ "$reverify" = "true" ]; then
+              # Already RESOLVED: a changed body must not stay minimized (#2008).
+              gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                -f id="$cid" >/dev/null 2>&1 \
+                || echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+            fi
             continue
           fi
           if [ "$corrected_rc" -eq 0 ]; then
@@ -1341,6 +1347,12 @@ resolve_dispositioned_comments() {
               # Re-read after posting: an edit that raced the post was never checked.
               if ! live_body=$(rdc_live_comment_body "$cid") || [ "$live_body" != "$orig_body" ]; then
                 echo "::warning::comment ${cid}: its body changed while the correction was posted; leaving it open for a disposition of the current body (#2004)"
+                if [ "$reverify" = "true" ]; then
+                  # Already RESOLVED: a changed body must not stay minimized (#2008).
+                  gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                    -f id="$cid" >/dev/null 2>&1 \
+                    || echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                fi
                 continue
               fi
               # The corrected reply is now the latest. The wrong one is superseded.
