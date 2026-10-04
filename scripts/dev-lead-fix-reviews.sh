@@ -968,6 +968,16 @@ rdc_fixed_verdict() {
   cdv_fixed_verdict "$on_head" "$in_base" "$own_files" "$commit_date" "$created" "$content"
 }
 
+# rdc_live_comment_body <comment_node_id>
+# Prints the comment's CURRENT body, fetched fresh. Returns 1 if it cannot be read.
+rdc_live_comment_body() {
+  local out
+  out=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{body}}}' \
+    -f id="$1" --jq '.data.node.body // empty' 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
 # rdc_find_fixing_commit <finding_body> <finding_created>
 #   Echo the newest PR-branch commit (base..head, merges excluded)
 #   whose own diff removes one of the finding's tokens and passes every other
@@ -1309,8 +1319,16 @@ resolve_dispositioned_comments() {
           echo "::warning::comment ${cid}: \`fixed\` disposition citing ${sha} did not verify (fixed-unverified:${fixed_reason}); the cited commit's diff must remove what the finding names (#2004)"
           # AC3: an unverified disposition is not settled. Re-answer it with the
           # PR-branch commit whose diff removes the finding's token, when one exists.
-          local corrected_rc=0
+          local corrected_rc=0 live_body
           corrected=$(rdc_find_fixing_commit "$orig_body" "$orig_created") || corrected_rc=$?
+          # The body can be edited after enumeration. The correction judges only the
+          # captured body, so re-read the live one first; a changed or unreadable
+          # body leaves the comment open for a disposition of the current body.
+          if [ "$corrected_rc" -eq 0 ] \
+             && { ! live_body=$(rdc_live_comment_body "$cid") || [ "$live_body" != "$orig_body" ]; }; then
+            echo "::warning::comment ${cid}: its body changed or could not be re-read since it was captured; no correction posted, it stays open for a disposition of the current body (#2004)"
+            continue
+          fi
           if [ "$corrected_rc" -eq 0 ]; then
             removed_tok=$(cdv_removed_token "$(rdc_commit_diff "$corrected")" "$(cdv_finding_tokens "$orig_body")" || true)
             # Quote the token only when it is plain, so it can never form a marker.
@@ -1320,6 +1338,11 @@ resolve_dispositioned_comments() {
 <!-- dev-lead:comment-disposition id=${cid} disposition=fixed sha=${corrected} -->"
             if gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$fix_body" >/dev/null 2>&1; then
               echo "::notice::re-answered comment ${cid}: the corrected \`fixed\` disposition cites ${corrected} in place of ${sha} (#2004)"
+              # Re-read after posting: an edit that raced the post was never checked.
+              if ! live_body=$(rdc_live_comment_body "$cid") || [ "$live_body" != "$orig_body" ]; then
+                echo "::warning::comment ${cid}: its body changed while the correction was posted; leaving it open for a disposition of the current body (#2004)"
+                continue
+              fi
               # The corrected reply is now the latest. The wrong one is superseded.
               superseded_ids+=("$chosen_reply_id")
               sha="$corrected"
