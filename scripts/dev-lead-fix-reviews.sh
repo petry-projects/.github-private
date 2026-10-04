@@ -168,6 +168,27 @@ build_and_run() {
 # never break out of the marker.
 post_reviews_terminal() {
   local intent="$1" status="${2:-applied}" summary="${3:-}"
+  # #2037: a comment the resolver failed to unminimize stays RESOLVED without a
+  # verified disposition. An applied/no-changes marker would record the pass as a
+  # success, and the retry cron and the #2008 stale-edit dedup would then skip it.
+  # Downgrade to partial, which neither counts as done. The cron does not
+  # re-dispatch a partial marker itself (that would loop on a persistent unminimize
+  # failure); the next pass for this PR re-attempts the comment.
+  if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+    case "$status" in
+      applied|no-changes)
+        status="partial"
+        local msg="**Not complete:** a dispositioned PR comment could not be re-opened (unminimize failed), so it stays resolved without a verified disposition. It needs another dev-lead pass."
+        if [ -n "$summary" ]; then
+          summary="${summary}
+
+${msg}"
+        else
+          summary="$msg"
+        fi
+        ;;
+    esac
+  fi
   local sha_part="" comment_part="" read_part=""
   [ -n "${HEAD_SHA:-}" ] && sha_part=" sha=${HEAD_SHA}"
   if [ "$intent" = "fix-bot-comment" ] && [[ "${COMMENT_NODE_ID:-}" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
@@ -1028,6 +1049,10 @@ resolve_dispositioned_comments() {
   #       like any other: on success the stale reply goes OUTDATED, on failure the
   #       comment is unminimized (fail closed).
   local reopen_ids reverify_ids rid
+  # #2037: set on any unminimize failure. Such a comment stays RESOLVED and the
+  # gate clears it, so the pass must not end as a success. Every candidate is
+  # still processed, then the function returns non-zero.
+  local unminimize_failed=0
   reopen_ids=$(maintainer_gate_reopen_candidates "$all_comments" "$bot_user" 2>/dev/null \
     | jq -r '.[]?' 2>/dev/null || true)
   while IFS= read -r rid; do
@@ -1036,7 +1061,8 @@ resolve_dispositioned_comments() {
         -f id="$rid" >/dev/null 2>&1; then
       echo "::notice::unminimized comment ${rid} — edited after its latest disposition (or its disposition cannot cover a finding-bearing body); it needs a fresh disposition (#2008)"
     else
-      echo "::warning::failed to unminimize comment ${rid} (edited after its latest disposition); the maintainer-comment gate still blocks on it (#2008)"
+      echo "::warning::failed to unminimize comment ${rid} (edited after its latest disposition); it stays RESOLVED (#2008, #2037)"
+      unminimize_failed=1
     fi
   done <<< "$reopen_ids"
   reverify_ids=$(printf '%s' "$all_comments" | jq -r --arg reopen "$reopen_ids" '
@@ -1055,6 +1081,7 @@ resolve_dispositioned_comments() {
 
   if [ -z "$(printf '%s' "$candidate_ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no undispositioned PR issue comments on PR #${PR_NUMBER}"
+    _rdc_unminimize_status "$unminimize_failed" || return 1
     return 0
   fi
 
@@ -1142,6 +1169,7 @@ resolve_dispositioned_comments() {
           echo "::notice::unminimized comment ${cid} — unreadable edit/disposition timestamp (#2008)"
         else
           echo "::warning::failed to unminimize comment ${cid} with an unreadable edit/disposition timestamp (#2008)"
+          unminimize_failed=1
         fi
         continue
       fi
@@ -1182,9 +1210,11 @@ resolve_dispositioned_comments() {
           echo "::notice::skipping comment ${cid} — a \`fixed\` disposition is not certified on a failed pass (its commit may not have been pushed); leaving open (#1992)"
           if [ "$reverify" = "true" ]; then
             # Already RESOLVED with a stale body: fail closed by re-opening it.
-            gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
-              -f id="$cid" >/dev/null 2>&1 \
-              || echo "::error::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)" >&2
+            if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                -f id="$cid" >/dev/null 2>&1; then
+              echo "::error::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)" >&2
+              unminimize_failed=1
+            fi
           fi
           continue
         fi
@@ -1254,6 +1284,7 @@ resolve_dispositioned_comments() {
           echo "::notice::unminimized comment ${cid} — its post-edit disposition did not verify (#2008)"
         else
           echo "::warning::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)"
+          unminimize_failed=1
         fi
       fi
       continue
@@ -1324,6 +1355,18 @@ resolve_dispositioned_comments() {
     fi
   done <<< "$candidate_ids"
   echo "::notice::resolve_dispositioned_comments: minimized ${resolved_count} dispositioned comment(s) on PR #${PR_NUMBER}"
+  _rdc_unminimize_status "$unminimize_failed" || return 1
+}
+
+# _rdc_unminimize_status <unminimize_failed> — resolve_dispositioned_comments'
+# return status (#2037): non-zero when any comment that needed re-opening could
+# not be unminimized, so the caller ends the pass partial instead of applied.
+_rdc_unminimize_status() {
+  if [ "${1:-0}" -ne 0 ]; then
+    echo "::error::resolve_dispositioned_comments: failed to unminimize at least one comment on PR #${PR_NUMBER} — it stays RESOLVED without a verified disposition, so this pass must not end as a success (#2037)" >&2
+    return 1
+  fi
+  return 0
 }
 
 # ── CI blocking gate (#1859, completes #1795) ─────────────────────────────────
@@ -2678,6 +2721,19 @@ case "$INTENT_TYPE" in
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
       retract_unlanded_claims "fix-reviews" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
+      # Deliberately OUTSIDE the review-thread resolution gate: each disposition is
+      # verified on its own terms (a `fixed` sha must be on head; out-of-scope needs
+      # a tracking issue; invalid/answered/informational need a non-empty evidence
+      # reply), so an answered/invalid disposition requires no head advance. Runs on
+      # every successful pass, including a net-zero one where the model only replied.
+      # Runs BEFORE the terminal marker (#2037): if a comment could not be
+      # unminimized, post_reviews_terminal downgrades applied/no-changes to partial.
+      if [ "$cp_rc" -eq 4 ]; then
+        resolve_dispositioned_comments "fix-reviews" failed || _DISPOSITIONS_UNRESOLVED=1
+      else
+        resolve_dispositioned_comments "fix-reviews" || _DISPOSITIONS_UNRESOLVED=1
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         finalize_review_application "fix-reviews"
@@ -2699,19 +2755,6 @@ case "$INTENT_TYPE" in
           post_no_changes "fix-reviews"
         fi
       fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
-      # Deliberately OUTSIDE the review-thread resolution gate: each disposition is
-      # verified on its own terms (a `fixed` sha must be on head; out-of-scope needs
-      # a tracking issue; invalid/answered/informational need a non-empty evidence
-      # reply), so an answered/invalid disposition requires no head advance. Runs on
-      # every successful pass, including a net-zero one where the model only replied.
-      # A tamper-guard abort (rc 4) pushed nothing: a `fixed` disposition would cite a
-      # local commit that never landed, so treat it like a failed pass (#2013).
-      if [ "$cp_rc" -eq 4 ]; then
-        resolve_dispositioned_comments "fix-reviews" failed
-      else
-        resolve_dispositioned_comments "fix-reviews"
-      fi
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
@@ -2724,11 +2767,15 @@ case "$INTENT_TYPE" in
         else
           echo "::notice::resolution gate closed (#1609): the fix-reviews pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
-        # Never auto-merge an escalated or not-fully-applied review pass (#1567).
-        if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
+        # Never auto-merge an escalated or not-fully-applied review pass (#1567),
+        # nor one that left a comment RESOLVED it failed to re-open (#2037).
+        if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ] \
+           && [ "${_DISPOSITIONS_UNRESOLVED:-0}" -ne 1 ]; then
           try_enable_auto_merge
         fi
       fi
+      # #2037: the pass ends failed so it is visibly not done.
+      [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992). The engine
       # may have posted disposition replies and then errored or hit the writer-tier
@@ -2740,7 +2787,8 @@ case "$INTENT_TYPE" in
       # (A hard action-budget SIGKILL that kills the process mid-step can't be
       # recovered in-process — but the next pass self-heals via the idempotent
       # posting + duplicate recovery above.)
-      resolve_dispositioned_comments "fix-reviews" failed
+      resolve_dispositioned_comments "fix-reviews" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed fix-reviews pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-reviews" failed || true
     fi
@@ -2765,6 +2813,16 @@ case "$INTENT_TYPE" in
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
       retract_unlanded_claims "fix-bot-comment" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
+      # Outside the review-thread resolution gate for the same reason as fix-reviews:
+      # each disposition is independently verified, so a non-`fixed` disposition
+      # needs no head advance. Runs on every successful pass, net-zero included.
+      # Runs BEFORE the terminal marker (#2037) — see fix-reviews above.
+      if [ "$cp_rc" -eq 4 ]; then
+        resolve_dispositioned_comments "fix-bot-comment" failed || _DISPOSITIONS_UNRESOLVED=1
+      else
+        resolve_dispositioned_comments "fix-bot-comment" || _DISPOSITIONS_UNRESOLVED=1
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         _fbc_terminal="applied"
@@ -2783,17 +2841,6 @@ case "$INTENT_TYPE" in
           echo "::warning::Unresolved bot review threads remain — recording no-changes; the terminal marker posts only if the comment ends RESOLVED, otherwise the #2017 scan retries it"
         fi
         _fbc_terminal="no-changes"
-      fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
-      # Outside the review-thread resolution gate for the same reason as fix-reviews:
-      # each disposition is independently verified, so a non-`fixed` disposition
-      # needs no head advance. Runs on every successful pass, net-zero included.
-      # A tamper-guard abort (rc 4) pushed nothing: a `fixed` disposition would cite a
-      # local commit that never landed, so treat it like a failed pass (#2013).
-      if [ "$cp_rc" -eq 4 ]; then
-        resolve_dispositioned_comments "fix-bot-comment" failed
-      else
-        resolve_dispositioned_comments "fix-bot-comment"
       fi
       if [ "${RDC_STATE_UNKNOWN:-0}" = "1" ]; then
         echo "::warning::fix-bot-comment: a comment's current state could not be confirmed — withholding the terminal marker so the bot-comment retry can re-dispatch (#2017)"
@@ -2821,12 +2868,15 @@ case "$INTENT_TYPE" in
         else
           echo "::notice::resolution gate closed (#1609): the fix-bot-comment pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
-        try_enable_auto_merge
+        [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] || try_enable_auto_merge
       fi
+      # #2037: the pass ends failed so it is visibly not done.
+      [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
-      resolve_dispositioned_comments "fix-bot-comment" failed
+      resolve_dispositioned_comments "fix-bot-comment" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed fix-bot-comment pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-bot-comment" failed || true
     fi
@@ -2903,9 +2953,13 @@ case "$INTENT_TYPE" in
       # thread resolves and auto-merge stays off.
       if [ "$cp_rc" -eq 4 ]; then
         echo "::warning::review-changes was refused by a test guard (tamper/regression) — flagged for human, not pushed (#2013)"
-        resolve_dispositioned_comments "review-changes" failed
+        resolve_dispositioned_comments "review-changes" failed || _DISPOSITIONS_UNRESOLVED=1
         exit "$rc"
       fi
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813) —
+      # independently verified, so outside the head-movement resolution gate.
+      # Runs BEFORE the terminal marker (#2037) — see fix-reviews above.
+      resolve_dispositioned_comments "review-changes" || _DISPOSITIONS_UNRESOLVED=1
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         finalize_review_application "review-changes"
@@ -2920,9 +2974,6 @@ case "$INTENT_TYPE" in
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813) —
-      # independently verified, so outside the head-movement resolution gate.
-      resolve_dispositioned_comments "review-changes"
       # Resolution gate (#1617): auto-resolve threads only when this pass advanced
       # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
       if resolution_gate_open "$cp_rc"; then
@@ -2934,14 +2985,19 @@ case "$INTENT_TYPE" in
       else
         echo "::notice::resolution gate closed (#1609): the review-changes pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
       fi
-      # Never auto-merge an escalated or not-fully-applied review pass (#1567).
-      if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
+      # Never auto-merge an escalated or not-fully-applied review pass (#1567),
+      # nor one that left a comment RESOLVED it failed to re-open (#2037).
+      if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ] \
+         && [ "${_DISPOSITIONS_UNRESOLVED:-0}" -ne 1 ]; then
         try_enable_auto_merge
       fi
+      # #2037: the pass ends failed so it is visibly not done.
+      [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
-      resolve_dispositioned_comments "review-changes" failed
+      resolve_dispositioned_comments "review-changes" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed review-changes pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "review-changes" failed || true
     fi
