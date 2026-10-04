@@ -179,7 +179,7 @@ cdv_authorize() {
 # resolve the comment. So the cited commit's own diff must REMOVE (a `-` line) a
 # distinctive token named by the finding and must not ADD it (a `+` line). Only a
 # finding with no extractable token falls back to the date rule, and the verdict
-# names that weaker basis (`date-only`).
+# fails closed unless the cited commit was produced by this pass (`tokenless-not-this-pass`).
 
 # The jq program behind cdv_finding_tokens. HTML comments and fenced code blocks
 # are dropped first: a fenced block is usually a suggested patch, whose text the
@@ -188,6 +188,12 @@ cdv_authorize() {
 # inside a word, so prose apostrophes ("it's") never open a span. The "p" flag
 # lets `.` cross newlines, so a multi-line comment or fence is removed whole.
 _CDV_TOKEN_JQ=$(cat <<'JQ'
+def generic:
+  (ascii_downcase) as $t
+  | ($t | test("^[0-9]+([.][0-9]+)?$"))
+    or ($t | test("^(local|true|false|if|then|else|elif|fi|return|echo|exit|set|unset|null|none|for|do|done|while|case|esac|in|function|export|readonly|declare|eval|test|and|or|not|the|and|git|jq|gh|bash|sh)$"))
+    or ($t | test("^[a-z0-9_.-]*/[a-z0-9_./-]*$"))
+    or ($t | test("^[a-z0-9_.-]+[.](sh|md|yml|yaml|json|bats|py|js|ts|txt)$"));
 $b
 | gsub("<!--.*?-->"; ""; "p")
 | gsub("```.*?```"; ""; "p")
@@ -197,6 +203,7 @@ $b
     (scan("(?:^|[^A-Za-z0-9])'([A-Za-z_][A-Za-z0-9_.:/-]*)'(?![A-Za-z0-9])") | .[0]) ]
 | map(gsub("^\\s+|\\s+$"; ""))
 | map(select(length >= 3 and length <= 200))
+| map(select(generic | not))
 | unique
 | .[]
 JQ
@@ -205,7 +212,8 @@ readonly _CDV_TOKEN_JQ
 
 # cdv_finding_tokens <comment_body>
 #   Echo the finding's distinctive tokens, one per line (sorted, unique). Spans
-#   shorter than 3 characters are dropped as too generic to identify a fix. Echoes
+#   shorter than 3 characters, shell keywords, bare numbers and pure path-like spans
+#   are dropped as too generic to identify a fix. Echoes
 #   nothing (rc 0) when the body names no token. Pure.
 cdv_finding_tokens() {
   local body="${1:-}"
@@ -260,8 +268,8 @@ cdv_removed_token() {
 #                                introducing commit, the #1977 shape) (rc 1)
 #     content-no-token-removed — the diff does not touch any token (an unrelated
 #                                commit) (rc 1)
-#     no-tokens                — <tokens> is empty; the caller falls back to the
-#                                date rule (rc 1)
+#     no-tokens                — <tokens> is empty (rc 1); cdv_fixed_verdict then
+#                                requires the commit to be from this pass
 #   Pure.
 cdv_diff_token_verdict() {
   local diff="${1:-}" tokens="${2:-}" added tok
@@ -287,7 +295,7 @@ cdv_diff_token_verdict() {
   return 1
 }
 
-# cdv_fixed_verdict <on_head> <in_base> <own_files> <commit_date> <finding_created> <content_verdict>
+# cdv_fixed_verdict <on_head> <in_base> <own_files> <commit_date> <finding_created> <content_verdict> [this_pass]
 #   The full `fixed` verdict. Arguments are facts the caller gathered:
 #     <on_head>          "true" when the sha is reachable from the PR's pushed head
 #     <in_base>          "true" / "false" (the sha is / is not on the base branch),
@@ -296,14 +304,18 @@ cdv_diff_token_verdict() {
 #     <commit_date>      the sha's committer date (ISO-8601 Z), "" if unreadable
 #     <finding_created>  the original comment's createdAt (ISO-8601 Z)
 #     <content_verdict>  cdv_diff_token_verdict's token
+#     <this_pass>        "true" when the sha is a commit produced by THIS pass (not
+#                        reachable from RESOLUTION_BASE_SHA); only a tokenless
+#                        finding consults it
 #   Echoes the first failing reason, in this order: not-on-head | base-unknown |
 #   on-base-branch | empty-diff | content-adds-token | content-no-token-removed |
-#   content-unknown | undated | predates-finding (rc 1). On success echoes
-#   content-removes-token, or date-only when the finding had no token (rc 0).
+#   content-unknown | undated | predates-finding | tokenless-not-this-pass (rc 1).
+#   On success echoes content-removes-token, or tokenless-this-pass when the finding
+#   had no token and the commit was produced by this pass (rc 0).
 #   Fails closed on every unreadable input. Pure.
 cdv_fixed_verdict() {
   local on_head="${1:-}" in_base="${2:-}" own_files="${3:-0}" commit_date="${4:-}"
-  local finding_created="${5:-}" content="${6:-}"
+  local finding_created="${5:-}" content="${6:-}" this_pass="${7:-false}"
   local iso='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
   if [[ "$on_head" != "true" ]]; then
     echo "not-on-head"; return 1
@@ -332,7 +344,11 @@ cdv_fixed_verdict() {
     echo "predates-finding"; return 1
   fi
   if [[ "$content" == "no-tokens" ]]; then
-    echo "date-only"
+    # No token to match against a diff: only a commit this pass produced counts.
+    if [[ "$this_pass" != "true" ]]; then
+      echo "tokenless-not-this-pass"; return 1
+    fi
+    echo "tokenless-this-pass"
   else
     echo "content-removes-token"
   fi

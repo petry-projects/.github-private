@@ -368,13 +368,13 @@ _stale() {
 # On PR #1977 a `fixed` disposition cited 89f46597, the commit that INTRODUCED the
 # finding (it added `--emit-workflow-only`), not e7e7008b, the commit that removed
 # it. The cited diff must REMOVE a distinctive token from the finding and must not
-# ADD it. A date-only basis is used only when the finding carries no token.
+# ADD it. A tokenless finding fails closed unless the commit is from this pass.
 #   cdv_finding_tokens <body>                  → one token per line
 #   cdv_diff_token_verdict <diff> <tokens>     → content-removes-token (rc0) |
 #       content-adds-token | content-no-token-removed | no-tokens (rc1)
 #   cdv_removed_token <diff> <tokens>          → the token the diff removes (rc0)
 #   cdv_fixed_verdict <on_head> <in_base> <own_files> <commit_date> <finding_created> <content>
-#       → content-removes-token | date-only (rc0), else a reason token (rc1)
+#       → content-removes-token | tokenless-this-pass (rc0), else a reason token (rc1)
 
 _tokens() {
   run bash -c "source '$LIB'; cdv_finding_tokens \"\$1\"" _ "$1"
@@ -406,7 +406,7 @@ _1977_FIXING='diff --git a/scripts/template_stub_drift.sh b/scripts/template_stu
   _tokens "$_1977_FINDING"
   [ "$status" -eq 0 ]
   grep -qxF -- '--emit-workflow-only' <<< "$output"
-  grep -qxF -- 'scripts/template_stub_drift.sh' <<< "$output"
+  ! grep -qxF -- 'scripts/template_stub_drift.sh' <<< "$output"  # path-like spans are generic (#2004 rule 3a)
   grep -qxF -- '--emit-workflow' <<< "$output"
 }
 
@@ -489,10 +489,32 @@ Also `real_token`.'
   [ "$output" = "content-removes-token" ]
 }
 
-@test "fixed verdict(#2004): no token → date-only (the weaker basis is named)" {
+@test "fixed verdict(#2004): no token fails closed unless the commit is from this pass" {
   _fixed_verdict true false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" no-tokens
+  [ "$status" -eq 1 ]
+  [ "$output" = "tokenless-not-this-pass" ]
+  _fixed_verdict true false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" no-tokens false
+  [ "$status" -eq 1 ]
+  [ "$output" = "tokenless-not-this-pass" ]
+  _fixed_verdict true false 1 "2026-10-02T12:00:00Z" "2026-10-02T10:00:00Z" no-tokens true
   [ "$status" -eq 0 ]
-  [ "$output" = "date-only" ]
+  [ "$output" = "tokenless-this-pass" ]
+}
+
+@test "finding tokens(#2004): generic spans (local, true, numbers, paths) are not tokens" {
+  _tokens 'Drop `local` here, and `true`, `42`, `scripts/foo.sh`, `return`.'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  _tokens 'The `local` keyword and `my_helper` call.'
+  [ "$output" = "my_helper" ]
+}
+
+@test "diff verdict(#2004): a local-only finding is tokenless, so deleting a local line does not verify" {
+  tokens=$(bash -c "source '$LIB'; cdv_finding_tokens \"\$1\"" _ 'Remove `local` here.')
+  [ -z "$tokens" ]
+  run bash -c "source '$LIB'; cdv_diff_token_verdict \"\$1\" \"\$2\"" _ $'-  local x=1' "$tokens"
+  [ "$status" -eq 1 ]
+  [ "$output" = "no-tokens" ]
 }
 
 @test "fixed verdict(#2004): each failure has its own reason token" {
@@ -514,8 +536,8 @@ Also `real_token`.'
   [ "$status" -eq 1 ]; [ "$output" = "predates-finding" ]
 }
 
-@test "fixed verdict(#2004): date-only never verifies a commit that predates the finding" {
-  _fixed_verdict true false 1 "2026-10-02T09:00:00Z" "2026-10-02T10:00:00Z" no-tokens
+@test "fixed verdict(#2004): a tokenless this-pass commit that predates the finding fails" {
+  _fixed_verdict true false 1 "2026-10-02T09:00:00Z" "2026-10-02T10:00:00Z" no-tokens true
   [ "$status" -eq 1 ]
   [ "$output" = "predates-finding" ]
 }

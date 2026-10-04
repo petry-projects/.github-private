@@ -953,7 +953,7 @@ rdc_commit_diff() {
 #   Echo cdv_fixed_verdict's reason for <sha> against the finding; rc 0 = verified.
 rdc_fixed_verdict() {
   local sha="$1" body="$2" created="$3"
-  local facts on_head="false" in_base="unknown" own_files=0 commit_date="" content
+  local facts on_head="false" in_base="unknown" own_files=0 commit_date="" content this_pass="false"
   if [ -n "${RDC_FIXED_REF:-}" ]; then
     facts=$(acv_gather_commit_facts "$sha" "${RDC_FIXED_BASE:-}" "$RDC_FIXED_REF")
     on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
@@ -963,8 +963,15 @@ rdc_fixed_verdict() {
     own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
     commit_date=$(printf '%s' "$facts" | jq -r '.commit_date // ""' 2>/dev/null || echo "")
   fi
+  # A tokenless finding verifies only on a commit this pass produced: one not
+  # reachable from the pre-pass head. No snapshot or an unreadable sha is "no".
+  if [ -n "${RESOLUTION_BASE_SHA:-}" ] \
+     && git cat-file -e "${sha}^{commit}" 2>/dev/null \
+     && ! git merge-base --is-ancestor "$sha" "$RESOLUTION_BASE_SHA" 2>/dev/null; then
+    this_pass="true"
+  fi
   content=$(cdv_diff_token_verdict "$(rdc_commit_diff "$sha")" "$(cdv_finding_tokens "$body")") || true
-  cdv_fixed_verdict "$on_head" "$in_base" "$own_files" "$commit_date" "$created" "$content"
+  cdv_fixed_verdict "$on_head" "$in_base" "$own_files" "$commit_date" "$created" "$content" "$this_pass"
 }
 
 # rdc_live_comment_body <comment_node_id>
@@ -980,7 +987,7 @@ rdc_live_comment_body() {
 # rdc_find_fixing_commit <finding_body> <finding_created>
 #   Echo the newest PR-branch commit (base..head, merges excluded)
 #   whose own diff removes one of the finding's tokens and passes every other
-#   check; rc 1 when there is none. Never searches on the date-only basis: with no
+#   check; rc 1 when there is none. Never searches for a tokenless finding: with no
 #   token, any later commit would qualify, which fails open.
 rdc_find_fixing_commit() {
   local body="$1" created="$2" c reason tokens
@@ -989,7 +996,11 @@ rdc_find_fixing_commit() {
   [ -n "${RDC_FIXED_REF:-}" ] && [ -n "${RDC_FIXED_BASE:-}" ] || return 1
   while IFS= read -r c; do
     [ -z "$c" ] && continue
-    reason=$(rdc_fixed_verdict "$c" "$body" "$created") || continue
+    reason=$(rdc_fixed_verdict "$c" "$body" "$created") || {
+      # Newest-first: a newer commit that re-adds the token means it is still present.
+      [ "$reason" = "content-adds-token" ] && return 1
+      continue
+    }
     [ "$reason" = "content-removes-token" ] || continue
     echo "$c"
     return 0
@@ -1297,7 +1308,7 @@ resolve_dispositioned_comments() {
         # Verify the cited commit's DIFF CONTENT (#2004), not which pass produced
         # it: on the PR's pushed head, not on the base branch, a non-empty diff that
         # REMOVES a token the finding names and does not ADD it, dated after the
-        # finding. A finding with no token falls back to the date rule (date-only).
+        # finding. A finding with no token fails closed unless the cited sha was produced by this pass (tokenless-not-this-pass).
         # The old "produced by THIS pass" rule could never accept a fix that landed
         # in an earlier pass. Accepting any later commit would let an unrelated
         # commit resolve the comment.

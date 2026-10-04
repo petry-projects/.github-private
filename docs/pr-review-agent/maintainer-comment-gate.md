@@ -101,7 +101,7 @@ minimized with classifier `RESOLVED`. In practice:
   The commit must be on the PR's pushed head and not on the base branch, and not
   dated before the finding. Its diff must remove at least one token the finding names (a
   backticked span, quoted identifier or `--flag`) and must not re-add it. A finding
-  with no token falls back to the date check (`date-only`). A failure logs
+  with no distinctive token (generic spans like `local` or `true` do not count) fails closed unless the cited commit was produced by this pass (`tokenless-not-this-pass`). A failure logs
   `::warning::… fixed-unverified:<reason>`. The harness then re-answers with the
   branch commit whose diff removes the token, when one exists. Otherwise the next
   pass re-answers the disposition, which is not settled.

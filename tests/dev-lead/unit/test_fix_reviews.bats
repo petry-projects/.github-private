@@ -5952,14 +5952,14 @@ _run_2004() {
   grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
 }
 
-@test "#2004: a finding with no distinctive token resolves only on the named date-only basis" {
+@test "#2004: a finding with no distinctive token fails closed for a commit not from this pass" {
   _setup_2004
   _2004_nodes "Please double-check the null path." <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_B")
   _run_2004
 
   [ "$status" -eq 0 ]
-  grep -Eq 'classifier:RESOLVED.*id=IC_FIND' "$MINLOG"
-  [[ "$output" == *"date-only"* ]]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  [[ "$output" == *"tokenless-not-this-pass"* ]]
 }
 
 @test "#2004: unverified \`fixed\` replies never stack — superseded ones go OUTDATED, nothing resolves" {
