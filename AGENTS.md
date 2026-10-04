@@ -737,9 +737,9 @@ is to keep degrading from moving the outage onto an unmetered provider.
   (`GEMINI_API_KEY` / `GOOGLE_API_KEY`; a `GOOGLE_API_KEY` holding a different
   credential is `1b`) and `N` is `GOOGLE_API_KEY_N`. A key value
   never appears in a log, a ledger record, or cooldown state.
-- **Metering.** Each Gemini token record produced through configured API-key rotation (`emit_token_record`) carries the
-  `key_index` that served it. `check_provider_headroom gemini`
-  (`scripts/lib/gemini-quota.sh`) sums the ledger (`GEMINI_LEDGER_FILE`, default
+- **Metering.** Gemini token records from calls that go through configured API-key rotation carry the
+  `key_index` that served them; calls with no configured API key bypass rotation and do not record `key_index`.
+  `check_provider_headroom gemini` (`scripts/lib/gemini-quota.sh`) sums the ledger (`GEMINI_LEDGER_FILE`, default
   `TOKEN_LOG_FILE`) per key over three windows: the last minute (requests and
   tokens) and the current day (requests, counted since the configured reset, or a
   rolling 24h while the reset is unknown). Each sum is compared with its cap. The
