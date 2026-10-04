@@ -12,6 +12,9 @@ source "$(dirname "$0")/lib/pr-automation-budget.sh"
 source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
 source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
+# Paginated, fail-closed open-review-thread fetch shared by fix-reviews and
+# review-changes (#2056).
+source "$(dirname "$0")/lib/open-review-threads.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
 source "$(dirname "$0")/lib/addressed-claim-verify.sh"
 # Claim landing (#2013): "did the push land?" as a pure verdict, and retraction of
@@ -2655,18 +2658,12 @@ case "$INTENT_TYPE" in
     # comparison). The workflow passes the actor via TRIGGERING_REVIEWER, so
     # fall back to it when ACTOR is not set explicitly.
     export ACTOR="${ACTOR:-${TRIGGERING_REVIEWER:-}}"
-    OPEN_THREADS_JSON=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!) {
-        repository(owner:$owner, name:$repo) {
-          pullRequest(number:$pr) {
-            reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
-            }
-          }
-        }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
+    # Paginated + fail-closed (#2056): an unreadable thread list is an error, never
+    # an empty "nothing to address" list.
+    OPEN_THREADS_JSON=$(ort_fetch_open_threads "$REPO" "$PR_NUMBER") || {
+      echo "::error::fix-reviews: could not read open review threads for PR #${PR_NUMBER} — aborting rather than treating them as empty (#2056)"
+      exit 1
+    }
     export OPEN_THREADS_JSON
     fetch_pr_context
     rc=0
@@ -2867,18 +2864,12 @@ case "$INTENT_TYPE" in
     # threads from the triggering reviewer in the no-changes branch. The
     # workflow's review-changes step passes ACTOR via env.INTENT_ACTOR.
     export REPO ACTOR="${ACTOR:-}" PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
-    OPEN_THREADS_JSON=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!) {
-        repository(owner:$owner, name:$repo) {
-          pullRequest(number:$pr) {
-            reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
-            }
-          }
-        }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
+    # Paginated + fail-closed (#2056): an unreadable thread list is an error, never
+    # an empty "nothing to address" list.
+    OPEN_THREADS_JSON=$(ort_fetch_open_threads "$REPO" "$PR_NUMBER") || {
+      echo "::error::review-changes: could not read open review threads for PR #${PR_NUMBER} — aborting rather than treating them as empty (#2056)"
+      exit 1
+    }
     export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
     fetch_pr_context
     rc=0
