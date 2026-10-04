@@ -757,8 +757,11 @@ is to keep degrading from moving the outage onto an unmetered provider.
   rotation appends a `kind:"gemini_key_cooldown"` record (`key_index`, `model`,
   `until`) to the same ledger. The deadline comes from the error's retry hint
   (`retryDelay` / "retry in Ns"), or from `default_cooldown_sec` if the error gives
-  none. Later calls and jobs that read that ledger skip the key on that model until
-  the deadline. If every key on a model is cooling down, no call is made, and the
+  none. Later calls in the same job, which read that ledger, skip the key on that model
+  until the deadline. **Scope:** the ledger defaults to the per-job `TOKEN_LOG_FILE`
+  (`/tmp/token-usage-${run_id}.jsonl`), so cooldown and metering state does **not**
+  yet persist across jobs; a new job starts metering from zero. Cross-job persistence
+  (#2030 scope item 3) needs the fleet-state mechanism and is a follow-up. If every key on a model is cooling down, no call is made, and the
   chain moves to the next model and then to the cross-provider fallback. These
   records share the Token Observatory channel, and cost reports count only
   `token_usage` records.
