@@ -211,11 +211,16 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            # Policy skips stay green; an unreadable signal / malformed dispatch
-            # must be a retryable failure, not a silently lost advisory.
+            # Fail closed on unknown decisions: only known policy skips stay green.
+            # An unreadable signal / malformed dispatch must be a retryable failure,
+            # not a silently lost advisory.
             case "$decision" in
               skip:signal-unavailable | skip:unknown-surface | "")
-                echo "::error::persona pre-gate could not decide (${decision:-no decision})"
+                # Known policy skips — stay green
+                ;;
+              *)
+                # Unknown decision — fail closed
+                echo "::error::persona pre-gate made an unknown decision (${decision})"
                 exit 1
                 ;;
             esac
