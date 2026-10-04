@@ -8,7 +8,7 @@
 #     reusable workflow above.
 #   • You MAY change: the workflow name(s) in `workflow_run.workflows` to match
 #     your repository's CI workflow name(s).
-#   • You MUST NOT change: the `@pr-auto-review/v1-stable` channel in the `uses:`
+#   • You MUST NOT change: the `@pr-auto-review/v1-next` channel in the `uses:`
 #     line — this reusable is on the org-wide moving-channel model (rollout and
 #     rollback are a single central tag move; a frozen `@vN`/`@<sha>` pin is
 #     rejected by the compliance audit). Nor the trigger event types or the
@@ -69,6 +69,10 @@ concurrency:
 
 jobs:
   pr-auto-review:
+    # Skip Dependabot-authored events (#1390): Dependabot-triggered events have
+    # no access to GH_PAT_WORKFLOWS, so the reusable's checkout fails. Dependabot
+    # PRs are handled by dependabot-automerge.yml and never need review dispatch.
+    if: github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]'
     permissions:
       pull-requests: read
       checks: read
