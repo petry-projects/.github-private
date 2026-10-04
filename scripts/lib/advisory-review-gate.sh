@@ -165,14 +165,20 @@ readonly YELLOW='\033[1;33m'
 readonly GREEN='\033[0;32m'
 readonly NC='\033[0m' # No Color
 
+# log_info <message...>
+#   Log informational message to stderr with advisory-gate prefix.
 log_info() {
   echo "[advisory-gate] $*" >&2
 }
 
+# log_warn <message...>
+#   Log warning message to stderr with yellow color and WARNING label.
 log_warn() {
   echo -e "${YELLOW}[advisory-gate] WARNING: $*${NC}" >&2
 }
 
+# log_success <message...>
+#   Log success message to stderr with green color.
 log_success() {
   echo -e "${GREEN}[advisory-gate] $*${NC}" >&2
 }
@@ -452,23 +458,11 @@ Advisory bots were rate-limited; auto-approval is withheld until they recover. p
   fi
 }
 
-# Instant (non-blocking) check of advisory bot status
-#
-# DESIGN: This uses a re-trigger pattern instead of blocking waits:
-# 1. On first pr-review trigger (check_suite completion): instant check
-# 2. If return 0: bots ready → approve immediately
-# 3. If return 1: bots not ready → skip (exit 100)
-# 4. When bots submit: pull_request_review event fires
-# 5. pr-review re-triggered → this check returns 0 → approve
-#
-# Returns:
-#   0 = All detected participating bots have submitted (ready to approve)
-#   1 = Waiting for bots (skip, will re-check on next review event)
-#
-# _record_partial_evidence <submitted> <required> <reason> — record approval on
-# PARTIAL advisory evidence so the miss-rate metric counts it (#1596). Gate runs
-# BEFORE the write, so with PARTIAL_EVIDENCE_STATE_FILE set we DEFER (record facts,
-# post NOTHING); post-pr-review.sh announces only after verifying the review (#1874).
+# _record_partial_evidence <submitted> <required> <reason>
+#   Record approval on PARTIAL advisory evidence so the miss-rate metric counts it
+#   (#1596). Gate runs BEFORE the write, so with PARTIAL_EVIDENCE_STATE_FILE set we
+#   DEFER (record facts, post NOTHING); post-pr-review.sh announces only after
+#   verifying the review (#1874).
 _record_partial_evidence() {
   if [ -n "${PARTIAL_EVIDENCE_STATE_FILE:-}" ]; then
     printf '%s %s %s\n' "$1" "$2" "$3" > "$PARTIAL_EVIDENCE_STATE_FILE" 2>/dev/null \
@@ -481,6 +475,10 @@ _record_partial_evidence() {
     || echo "::warning::partial-evidence marker post failed on ${PR_URL} — approval may be uncounted by the miss-rate metric (#1596)"
 }
 
+# check_advisory_reviews <pr_url>
+#   Instant (non-blocking) check of advisory bot review status. Returns 0 when all
+#   detected advisory bots have submitted their reviews; returns 1 when still waiting,
+#   applying head-age and quiescence timeouts (#1193) for absent bots.
 check_advisory_reviews() {
   local pr_url="${1:-}"
   if [[ -z "$pr_url" ]]; then
