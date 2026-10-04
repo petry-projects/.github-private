@@ -263,3 +263,8 @@ setup() {
   [ "$status" -eq 1 ]
   [ "$output" = "wrong-title" ]
 }
+
+@test "dtv_text_mentions_thread: a host merely ending in github.com is not a link" {
+  run dtv_text_mentions_thread "https://evilgithub.com/o/r/pull/54#discussion_r${DB_ID}" "$THREAD_ID" "$DB_ID" "o/r" "54"
+  [ "$status" -eq 1 ]
+}
