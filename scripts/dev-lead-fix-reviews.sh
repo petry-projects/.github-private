@@ -973,7 +973,7 @@ rdc_fixed_verdict() {
 rdc_live_comment_body() {
   local out
   out=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{body}}}' \
-    -f id="$1" --jq '.data.node.body // empty' 2>/dev/null) || return 1
+    -f id="$1" 2>/dev/null | jq -r '.data.node.body // empty' 2>/dev/null) || return 1
   [ -n "$out" ] || return 1
   printf '%s' "$out"
 }

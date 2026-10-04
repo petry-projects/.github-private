@@ -5805,6 +5805,8 @@ case "$ARGS" in
   *"minimizeComment"*)
     echo "$ARGS" >> "$MINLOG"
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
+  *"IssueComment{body}"*)
+    jq -c --arg id "${ARGS##*id=}" '{data:{node:{body:(first(.[] | select(.id == $id)) | .body)}}}' "$NODES_FILE"; exit 0 ;;
   *"on IssueComment"*)
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
   *"pageInfo"*"comments"*|*"comments"*"pageInfo"*)
