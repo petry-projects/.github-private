@@ -1,5 +1,7 @@
 # .github-private
 
+[![Contributing](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](https://github.com/petry-projects/.github/blob/main/CONTRIBUTING.md)
+
 Org-wide Copilot custom agents, automated workflows, prompts, scripts, and frameworks for `petry-projects`.
 
 ## What This Repo Does
@@ -110,3 +112,22 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 - [Architecture & Capabilities](docs/pr-review-agent/pr-review-agent.md)
 - [Setup Guide](docs/pr-review-agent/setup.md)
 - [Machine User Setup](docs/pr-review-agent/machine-user-setup.md)
+
+---
+
+## 💼 Commercial Support & Agent Architecture Advisory
+
+Building agentic workflows, autonomous CI/CD pipelines, or enterprise AI coding agent infrastructure?
+
+Commercial support and enterprise services are offered through **[CombSmith LLC](https://combsmith.com)**:
+- **Standard SLA & Priority Support:** $199/month per organization for managed workflow maintenance, issue triage, and security updates.
+- **Custom Agent Engineering & Architecture Advisory:** $250/hour for bespoke Copilot agents, autonomous GitHub Actions workflows, multi-agent frameworks (BMAD), and automated PR review pipelines.
+- **Consulting & Implementation:** Architectural guidance, token-budget governance, and enterprise CI/CD integration.
+
+For commercial inquiries, email [support@combsmith.com](mailto:support@combsmith.com) or visit [combsmith.com](https://combsmith.com).
+
+---
+
+## Contributing
+
+See the org-wide [Contributing Guide](https://github.com/petry-projects/.github/blob/main/CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
