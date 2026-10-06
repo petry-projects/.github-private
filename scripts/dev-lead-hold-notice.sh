@@ -43,6 +43,11 @@ MODE="${MODE:-notice}"
 NOTICE_AUTHOR="${NOTICE_AUTHOR:-${BOT_USER:-}}"
 DRY_RUN="${DEV_LEAD_DRY_RUN:-${DRY_RUN:-false}}"
 
+# Suppress writes when shadow mode is active (treat as dry-run)
+if [ "${DEV_LEAD_SHADOW_MODE:-false}" != "false" ] && [ "${DEV_LEAD_SHADOW_MODE:-false}" != "" ]; then
+  DRY_RUN="true"
+fi
+
 if [ -z "$REPO" ]; then
   echo "::warning::dev-lead-hold-notice: REPO/GITHUB_REPOSITORY not set — skipping"
   exit 0

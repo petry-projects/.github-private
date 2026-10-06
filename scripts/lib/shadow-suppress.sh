@@ -57,7 +57,6 @@ shadow_apply_suppression() {
   shadow_mode_active || return 0
 
   export DEV_LEAD_SHADOW_MODE="true"
-  export DEV_LEAD_DRY_RUN="true"
 
   local out="${SHADOW_OUTPUT_FILE:-/tmp/dev-lead-shadow-output.txt}"
   printf '[shadow] PR-output suppression active for this run (%s)\n' \

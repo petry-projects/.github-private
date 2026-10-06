@@ -1470,6 +1470,8 @@ GHEOF
   [ "$status" -eq 0 ]
   [ ! -f "$STUB_BIN_DIR/pr_created" ]
   [ ! -f "$STUB_BIN_DIR/any_comment" ]
+  # Verify dry-run path was executed by shadow suppression
+  [[ "$output" == *"[dry-run]"* ]]
 }
 
 @test "fix-issue: shadow undetermined (garbage value) → suppresses (fail-closed AC#4)" {

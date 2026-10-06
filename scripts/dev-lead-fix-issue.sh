@@ -124,12 +124,16 @@ escalate_needs_human() {
   local reason="$1" attempt="$2" snippet="$3" error_line="$4" cause_markdown="$5" exit_code="${6:-1}"
   echo "::error::${error_line}"
   ensure_needs_human_label
-  gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
+  if shadow_mode_active; then
+    echo "[shadow] would post needs-human comment for issue #${ISSUE_NUMBER} (suppressed)"
+  else
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
 ## Dev-Lead: cannot implement issue #${ISSUE_NUMBER} — needs human attention
 
 ${cause_markdown}
 
 ${snippet}" 2>/dev/null || true
+  fi
   # Terminal failure (#1445, AC #3): any completion claim posted before the work
   # was durable is now false — supersede it in place so the issue never reads as
   # delivered while nothing landed. Runs on every needs-human branch (missing-
@@ -379,7 +383,10 @@ Please review the failures above. To retry anyway, remove the \`${NEEDS_HUMAN_LA
     cause_line="The engine failed (\`${reason}\` — e.g. a timeout or transient engine error)."
   fi
 
-  gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "${marker}
+  if shadow_mode_active; then
+    echo "[shadow] would post retry comment for issue #${ISSUE_NUMBER} (suppressed)"
+  else
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "${marker}
 ## Dev-Lead: issue #${ISSUE_NUMBER} implementation failed — will retry
 
 ${cause_line} This was **attempt ${attempt} of ${MAX_ATTEMPTS}**; dev-lead will retry automatically. You can also re-apply the \`dev-lead\` label to retry now.
@@ -388,6 +395,7 @@ ${cause_line} This was **attempt ${attempt} of ${MAX_ATTEMPTS}**; dev-lead will 
 - **Run:** ${run_url}${reset_line}
 
 ${snippet}" 2>/dev/null || true
+  fi
 
   [ "$engine_rc" -eq 2 ] && exit 2
   exit 1
@@ -480,6 +488,10 @@ post_deferral_comment() {
   if deferral_comment_exists; then
     return 0
   fi
+  if shadow_mode_active; then
+    echo "[shadow] would post deferral comment for issue #${ISSUE_NUMBER} (suppressed)"
+    return 0
+  fi
   gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "${PLG_DEFER_MARKER}
 ## Dev-Lead: implementation deferred — automation PR queue is full
 
@@ -503,7 +515,8 @@ abort_empty_net_diff() {
   echo "::error::Empty net diff: issue #${ISSUE_NUMBER}'s branch has no net change against origin/${base_ref} — refusing to open an empty/self-cancelling PR (#1786)"
   ensure_needs_human_label
   local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPO}/actions/runs/${GITHUB_RUN_ID:-}"
-  gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human reason=empty-net-diff run=${GITHUB_RUN_ID:-} -->
+  if ! shadow_mode_active; then
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human reason=empty-net-diff run=${GITHUB_RUN_ID:-} -->
 ## Dev-Lead: no net change — not opening a PR for issue #${ISSUE_NUMBER}
 
 The implementation pass produced **no net difference** against \`${base_ref}\`: the three-dot \`origin/${base_ref}...HEAD\` diff is empty (zero changed files). This happens when a change is made and then reverted in the same branch. Opening a PR now would either be empty or, if it carried self-cancelling commits, auto-close this issue via \`Closes #${ISSUE_NUMBER}\` while the work remains undone (#1786).
@@ -511,6 +524,7 @@ The implementation pass produced **no net difference** against \`${base_ref}\`: 
 **No branch was pushed, no pull request was opened, and no completion claim was posted.** This issue is labeled \`${NEEDS_HUMAN_LABEL}\` for human attention.
 
 - **Run:** ${run_url}" 2>/dev/null || true
+  fi
   rm -f "${prompt_file:-}"
   exit 1
 }
@@ -562,7 +576,7 @@ main() {
     echo "::notice::Existing open PR found for issue #${ISSUE_NUMBER} — skipping (dedup)"
     # Dedup comment fires before the dry-run early-exit below, so it is the one
     # posting site not covered by forced dry-run — gate it on shadow explicitly.
-    if shadow_mode_active; then
+    if shadow_mode_active || [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
       echo "[shadow] would post dedup comment for issue #${ISSUE_NUMBER} (suppressed)"
     else
       gh issue comment "$ISSUE_NUMBER" --repo "$REPO" \
@@ -712,13 +726,18 @@ ${lint_output}
   printf '%s\n' "$pr_body" > "$pr_body_file"
 
   local pr_url
-  pr_url=$(gh pr create \
-    --repo "$REPO" \
-    --title "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}" \
-    --body-file "$pr_body_file" \
-    --head "$branch")
+  if shadow_mode_active; then
+    echo "[shadow] would create PR for issue #${ISSUE_NUMBER} (suppressed)"
+    pr_url=""
+  else
+    pr_url=$(gh pr create \
+      --repo "$REPO" \
+      --title "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}" \
+      --body-file "$pr_body_file" \
+      --head "$branch")
+    echo "$pr_url"
+  fi
   rm -f "$pr_body_file"
-  echo "$pr_url"
 
   # Mark the PR auto-rebase-eligible from creation (petry-projects/.github#711).
   # The auto-rebase 'review-ready' gate (#465) only rebases PRs that are approved
@@ -739,7 +758,9 @@ ${lint_output}
   # and the PR is open — and referencing the PR number + head SHA. Ordering this
   # after the push/PR is the fix for the #1407 defect where a detailed "Completed"
   # claim was published before the work was durable and then lost to a timeout.
-  post_completion_claim "$pr_url" "$head_sha" "$base_ref"
+  if ! shadow_mode_active; then
+    post_completion_claim "$pr_url" "$head_sha" "$base_ref"
+  fi
 
   rm -f "${prompt_file:-}"
 }

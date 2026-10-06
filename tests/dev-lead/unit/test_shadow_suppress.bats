@@ -114,10 +114,16 @@ setup() {
   [[ "$output" == *"shadow"* ]]
 }
 
-@test "shadow: apply is idempotent (second call keeps dry-run true, no error)" {
+@test "shadow: apply repeated calls preserve flags and append records" {
   export DEV_LEAD_SHADOW_MODE="true"
   shadow_apply_suppression
   shadow_apply_suppression
+  # Flags remain true after repeated calls
   [ "$DEV_LEAD_DRY_RUN" = "true" ]
   [ "$DEV_LEAD_SHADOW_MODE" = "true" ]
+  # Output file has multiple records (one per call)
+  [ -f "$SHADOW_OUTPUT_FILE" ]
+  local record_count
+  record_count=$(grep -c '\[shadow\]' "$SHADOW_OUTPUT_FILE" || true)
+  [ "$record_count" -ge 2 ]
 }
