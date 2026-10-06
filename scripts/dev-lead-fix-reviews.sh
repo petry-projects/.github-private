@@ -45,6 +45,10 @@ source "$(dirname "$0")/lib/redact.sh"
 # Rebase exhaustion handling (#865): abort cleanly on hard conflicts instead of
 # timing out (exit 124), and dampen sentinel bursts.
 source "$(dirname "$0")/lib/rebase-exhaustion.sh"
+# Shallow-checkout history deepening (#2053): git_history_deepen /
+# git_ensure_merge_base — the one copy of the un-shallow logic, used by the
+# rebase arm before conflict detection and by pr_nets_to_zero.
+source "$(dirname "$0")/lib/git-history.sh"
 # CI gate status (#1859, completes #1795): the blocker check delegates to
 # compute_ci_status so a failing NON-required check never stops the
 # fix/disposition pass — the same library review-one-pr.sh and the sweeps use.
@@ -1907,7 +1911,7 @@ expire_stale_rate_limited_marker() {
     echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${sha}"
     return 0
   fi
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked)"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked|history-unavailable)"
   local stale_ids
   stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
@@ -1993,7 +1997,7 @@ post_reviews_rate_limited() {
     if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
       echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${HEAD_SHA}"
     else
-      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=(rate-limited|blocked)"
+      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=(rate-limited|blocked|history-unavailable)"
       stale_rl_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
         | jq -r --arg pat "$rl_pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
     fi
@@ -2143,13 +2147,8 @@ pr_nets_to_zero() {
   # ancestor "${baseref}...HEAD" needs. A plain `git fetch origin "$base"` does NOT
   # deepen a shallow checkout, so the merge-base stays absent, the diff below errors,
   # and the guard silently fails OPEN (returns 1 → "not net-zero" → push proceeds).
-  # Deepen to full history first so the merge-base resolves; fall back to a bounded
-  # fetch if --unshallow is unavailable.
-  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
-    git fetch --quiet --unshallow origin 2>/dev/null \
-      || git fetch --quiet --depth=2147483647 origin "$base" 2>/dev/null \
-      || true
-  fi
+  # Deepen to full history first so the merge-base resolves (lib/git-history.sh).
+  git_history_deepen "$base"
   if ! git rev-parse --verify --quiet "${baseref}^{commit}" >/dev/null 2>&1; then
     git fetch --quiet origin "$base" 2>/dev/null || {
       echo "::warning::no-op guard: could not resolve ${baseref} — skipping net-zero check" >&2
@@ -3040,7 +3039,30 @@ case "$INTENT_TYPE" in
       echo "::error::could not retrieve PR #${PR_NUMBER} comments to check rebase exhaustion — failing closed, not invoking engine (#865)"
       exit 1
     fi
-    git fetch origin "$BASE_REF"
+    # Full history before anything reads it (#2053). The checkout is depth-1, so
+    # the branch and base look unrelated until history is deepened; doing it here
+    # makes the conflict list and the engine's rebase see the real merge base,
+    # instead of depending on the model to un-shallow. If history cannot be
+    # deepened, that is an infrastructure failure: say so, and record it with a
+    # status that is NOT `failed`, so it never counts toward the #865 limit.
+    history_rc=0
+    history_msg=$(git_ensure_merge_base "$BASE_REF" "$HEAD_REF") || history_rc=$?
+    if [ "$history_rc" -eq 2 ]; then
+      echo "::error::rebase: ${history_msg} — infrastructure failure, not a conflict; not counted toward the rebase exhaustion limit (#2053)"
+      git merge --abort >/dev/null 2>&1 || true
+      git rebase --abort >/dev/null 2>&1 || true
+      post_reviews_terminal "rebase" "history-unavailable" "Automated rebase did not run: ${history_msg}. This is an infrastructure failure, not a merge conflict, and it does not count toward the rebase exhaustion limit. The next rebase trigger will retry."
+      exit 1
+    elif [ "$history_rc" -eq 1 ]; then
+      # Genuinely unrelated histories are not a resolvable conflict: abort before
+      # conflict detection or the engine, with a terminal marker that is not
+      # `failed` so it does not count toward the #865 exhaustion limit.
+      echo "::error::rebase: history is complete but HEAD shares no merge base with origin/${BASE_REF} — the histories are genuinely unrelated; aborting (#2053)"
+      git merge --abort >/dev/null 2>&1 || true
+      git rebase --abort >/dev/null 2>&1 || true
+      post_reviews_terminal "rebase" "unrelated-histories" "Automated rebase did not run: this branch shares no common ancestor with \`${BASE_REF}\` (unrelated histories), so there is nothing to rebase or resolve. Please recreate the branch from \`${BASE_REF}\` or rebase it manually. This does not count toward the rebase exhaustion limit."
+      exit 1
+    fi
     CONFLICTING_FILES=$(detect_conflicting_paths "$BASE_REF")
     export CONFLICTING_FILES
     # Up-front large-conflict guard (#865): a conflict spanning more files than
