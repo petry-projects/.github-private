@@ -332,7 +332,7 @@ diagnose_approval() {
     gate="none"
     condition="the PR has an approving review at head ${head_sha:0:8}"
     satisfied_by=""
-  elif [ "$decision" = "CHANGES_REQUESTED" ] && [ "$cr_at_head" -gt 0 ]; then
+  elif [ "$decision" = "CHANGES_REQUESTED" ] && [ "$cr_at_head" -gt 0 ] && [ "$force_bypass" != "true" ]; then
     gate="changes-requested"
     condition="a CHANGES_REQUESTED review targets the current head commit ${head_sha:0:8}"
     satisfied_by="the reviewer approves, the author pushes a new commit making the review stale, or @mentions the bot for a re-review"
@@ -343,7 +343,7 @@ diagnose_approval() {
     gate="none"
     condition="an approving review from ${approver} exists at head ${head_sha:0:8}"
     satisfied_by=""
-  elif [ "$submitted" -lt "$effective" ]; then
+  elif [ "$submitted" -lt "$effective" ] && [ "$force_bypass" != "true" ]; then
     # Advisory evidence is incomplete — classified against the EFFECTIVE denominator
     # (effective = required − unavailable), IDENTICAL to advisory-review-gate.sh, so a
     # PR where every AVAILABLE bot submitted (rate-limited/unsupported bots dropped)

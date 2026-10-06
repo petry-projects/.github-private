@@ -510,3 +510,51 @@ _registry_advisory_count() {
   [ "$(jq -r '.approved' <<<"$output")" = "false" ]
   [ "$(jq -r '.blocking_gate' <<<"$output")" = "maintainer-comment-gate" ]
 }
+
+@test "diagnostic: FORCE_REVIEW bypass suppresses changes-requested block" {
+  # A CHANGES_REQUESTED review at head would normally block approval, but
+  # FORCE_REVIEW=true bypasses all gates. With force_bypass="true", the
+  # changes-requested gate is not reported as blocking.
+  local snap='{
+    "reviewDecision": "CHANGES_REQUESTED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "some-reviewer"}, "state": "CHANGES_REQUESTED", "commit": {"oid": "abc123"}, "body": "needs work", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  # Without bypass flag, changes-requested blocks.
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "changes-requested" ]
+  # With force_bypass="true", it does not block.
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot "" "" "true"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" != "changes-requested" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "approval-not-yet-issued" ]
+}
+
+@test "diagnostic: FORCE_REVIEW bypass suppresses incomplete advisory evidence block" {
+  # Incomplete advisory evidence would normally block approval with a waiting gate,
+  # but FORCE_REVIEW=true bypasses all gates. With force_bypass="true", the
+  # advisory waiting gate is not reported as blocking.
+  local snap='{
+    "reviewDecision": "REVIEW_REQUIRED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "copilot-pull-request-reviewer"}, "state": "COMMENTED", "commit": {"oid": "abc123"}, "body": "ok", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  # Without bypass flag, incomplete advisory blocks (only 1 of 2 submitted).
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "waiting-for-advisory-bots" ]
+  # With force_bypass="true", it does not block.
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot "" "" "true"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" != "waiting-for-advisory-bots" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "approval-not-yet-issued" ]
+}
