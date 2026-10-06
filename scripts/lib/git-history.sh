@@ -54,6 +54,11 @@ git_ensure_merge_base() {
   local fetched=1
   git fetch --quiet origin "+refs/heads/${base}:refs/remotes/origin/${base}" 2>/dev/null || fetched=0
   git_history_deepen "$base" "$head_ref"
+  # The first fetch may have hit a transient failure; retry once after the
+  # deepen so a recovered connection counts as a successful refresh.
+  if [ "$fetched" -eq 0 ]; then
+    git fetch --quiet origin "+refs/heads/${base}:refs/remotes/origin/${base}" 2>/dev/null && fetched=1
+  fi
 
   if ! git rev-parse --verify --quiet "${baseref}^{commit}" >/dev/null 2>&1; then
     echo "git history could not be deepened: ${baseref} is not available in this checkout (fetch from origin failed)"
