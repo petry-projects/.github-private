@@ -1868,7 +1868,7 @@ expire_stale_rate_limited_marker() {
     echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${sha}"
     return 0
   fi
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked)"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked|history-unavailable)"
   local stale_ids
   stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
@@ -1954,7 +1954,7 @@ post_reviews_rate_limited() {
     if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
       echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${HEAD_SHA}"
     else
-      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=(rate-limited|blocked)"
+      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=(rate-limited|blocked|history-unavailable)"
       stale_rl_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
         | jq -r --arg pat "$rl_pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
     fi
@@ -2997,7 +2997,14 @@ case "$INTENT_TYPE" in
       post_reviews_terminal "rebase" "history-unavailable" "Automated rebase did not run: ${history_msg}. This is an infrastructure failure, not a merge conflict, and it does not count toward the rebase exhaustion limit. The next rebase trigger will retry."
       exit 1
     elif [ "$history_rc" -eq 1 ]; then
-      echo "::warning::rebase: history is complete but HEAD shares no merge base with origin/${BASE_REF} — the histories are genuinely unrelated (#2053)"
+      # Genuinely unrelated histories are not a resolvable conflict: abort before
+      # conflict detection or the engine, with a terminal marker that is not
+      # `failed` so it does not count toward the #865 exhaustion limit.
+      echo "::error::rebase: history is complete but HEAD shares no merge base with origin/${BASE_REF} — the histories are genuinely unrelated; aborting (#2053)"
+      git merge --abort >/dev/null 2>&1 || true
+      git rebase --abort >/dev/null 2>&1 || true
+      post_reviews_terminal "rebase" "unrelated-histories" "Automated rebase did not run: this branch shares no common ancestor with \`${BASE_REF}\` (unrelated histories), so there is nothing to rebase or resolve. Please recreate the branch from \`${BASE_REF}\` or rebase it manually. This does not count toward the rebase exhaustion limit."
+      exit 1
     fi
     CONFLICTING_FILES=$(detect_conflicting_paths "$BASE_REF")
     export CONFLICTING_FILES

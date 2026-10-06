@@ -60,7 +60,7 @@ _shallow_clone() {
   cd "$CLONE"
   [ "$(git rev-parse --is-shallow-repository)" = "true" ]
   run git merge-base HEAD origin/main
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "git_ensure_merge_base: depth-1 clone → merge base resolves, conflict list is exactly the one file (AC6a)" {
@@ -120,6 +120,41 @@ EOF
   [ "$(git rev-parse --is-shallow-repository)" = "false" ]
   run git_ensure_merge_base main seed
   [ "$status" -eq 1 ]
+}
+
+@test "git_ensure_merge_base: merge-base fatal error (not rc 1) → rc 2, not unrelated histories" {
+  _shallow_clone
+  cd "$CLONE"
+  local bin="$BATS_TEST_TMPDIR/bin" real
+  real="$(command -v git)"
+  mkdir -p "$bin"
+  cat > "$bin/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" merge-base "*) exit 128 ;; esac
+exec "$real" "\$@"
+EOF
+  chmod +x "$bin/git"
+  PATH="$bin:$PATH" run git_ensure_merge_base main feat
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"unrelated"* ]]
+}
+
+@test "git_history_deepen: empty head_ref still deepens the checked-out HEAD" {
+  _shallow_clone
+  cd "$CLONE"
+  local bin="$BATS_TEST_TMPDIR/bin" real
+  real="$(command -v git)"
+  mkdir -p "$bin"
+  cat > "$bin/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" --unshallow "*) exit 128 ;; esac
+exec "$real" "\$@"
+EOF
+  chmod +x "$bin/git"
+  PATH="$bin:$PATH" run git_ensure_merge_base main
+  [ "$status" -eq 0 ]
+  run git merge-base HEAD origin/main
+  [ "$status" -eq 0 ]
 }
 
 @test "git_ensure_merge_base: already-complete history → rc 0 without fetching deeper" {

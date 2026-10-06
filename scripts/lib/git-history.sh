@@ -23,13 +23,20 @@
 # means for it.
 git_history_deepen() {
   local base="$1" head_ref="${2:-}"
-  [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] || return 0
+  local is_shallow
+  is_shallow=$(git rev-parse --is-shallow-repository 2>/dev/null) || is_shallow="false"
+  [ "$is_shallow" = "true" ] || return 0
   git fetch --quiet --unshallow origin 2>/dev/null && return 0
   # Plain ref names (no forced destination), as the pre-#2053 copies did: this
   # deepens both histories without force-moving origin/<head_ref>, which the
   # push lease (--force-with-lease, #1607) is measured against.
   local refs=()
   [ -n "$base" ] && refs+=("$base")
+  if [ -z "$head_ref" ]; then
+    # Callers may omit head_ref: deepen the checked-out branch, or the detached
+    # HEAD commit, so HEAD's own ancestry is fetched too.
+    head_ref=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null || true)
+  fi
   [ -n "$head_ref" ] && refs+=("$head_ref")
   [ "${#refs[@]}" -gt 0 ] || return 0
   git fetch --quiet --depth=2147483647 origin "${refs[@]}" 2>/dev/null || true
@@ -52,7 +59,9 @@ git_ensure_merge_base() {
     echo "git history could not be deepened: ${baseref} is not available in this checkout (fetch from origin failed)"
     return 2
   fi
-  if git merge-base HEAD "$baseref" >/dev/null 2>&1; then
+  local mb_rc=0
+  git merge-base HEAD "$baseref" >/dev/null 2>&1 || mb_rc=$?
+  if [ "$mb_rc" -eq 0 ]; then
     # A merge base against a stale local copy of the base is not good enough:
     # rebasing onto it would leave the PR conflicting with the real base.
     if [ "$fetched" -eq 0 ]; then
@@ -61,7 +70,13 @@ git_ensure_merge_base() {
     fi
     return 0
   fi
-  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+  if [ "$mb_rc" -ne 1 ]; then
+    echo "git history could not be checked: git merge-base failed with status ${mb_rc}"
+    return 2
+  fi
+  local still_shallow
+  still_shallow=$(git rev-parse --is-shallow-repository 2>/dev/null) || still_shallow="true"
+  if [ "$still_shallow" = "true" ]; then
     echo "git history could not be deepened: the checkout is still shallow after un-shallowing and a deep fetch of ${baseref}${head_ref:+ and origin/${head_ref}}, so the merge base with HEAD cannot be computed"
     return 2
   fi
