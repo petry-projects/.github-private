@@ -17,6 +17,9 @@
 #      router so it reaches beyond this repo (#1869). The local workflow is
 #      retired only after that router change lands on persona-mention/v1-next and
 #      the #1745 stop markers are verified on a pull_request-sourced dispatch.
+#      NOTE: Private source repositories are out of scope — the pull_request
+#      pre-gate runs with github.token (scoped to .github-private) which cannot
+#      access private repos, causing the gate to fail closed (skip the advisory).
 # Both paths post a single advisory comment as the persona's runtime.identity and
 # write nothing else. The workflow's read/write split mechanically stamps the
 # <!-- persona:qa-lead --> recursion marker; the prompt is not trusted to.

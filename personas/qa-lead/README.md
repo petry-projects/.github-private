@@ -123,9 +123,12 @@ set lives in [`persona.yml`](./persona.yml). This README does not restate either
 
 The whole framework is safe because **the agent cannot post**:
 
-- The **agent** runs with `github.token`. That token reads the (public) source
-  repo but is scoped to *this* repo, so it **cannot comment on the target**. The
-  agent only *prints* its advisory between sentinels.
+- The **agent** runs with `github.token`. That token reads **public** source
+  repos only (scoped to *this* repo, it cannot access private repos). For
+  private source repos, the token has no read access, so the pull_request
+  pre-gate skips the advisory (fail-closed). **Private source repositories are
+  out of scope** for the pull_request event surface today. The agent only *prints*
+  its advisory between sentinels; it never posts.
 - The **workflow** is the only writer. It extracts the advisory, mechanically
   guarantees the `<!-- persona:qa-lead -->` recursion marker, and posts with the
   persona's PAT (declared as `runtime.identity` in the manifest).
