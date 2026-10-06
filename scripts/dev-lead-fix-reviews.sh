@@ -12,6 +12,9 @@ source "$(dirname "$0")/lib/pr-automation-budget.sh"
 source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
 source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
+# Paginated, fail-closed open-review-thread fetch shared by fix-reviews and
+# review-changes (#2056).
+source "$(dirname "$0")/lib/open-review-threads.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
 source "$(dirname "$0")/lib/addressed-claim-verify.sh"
 # Claim landing (#2013): "did the push land?" as a pure verdict, and retraction of
@@ -142,10 +145,25 @@ build_and_run() {
     | sed 's/<!-- VARIABLES: //; s/ -->//' \
     | tr ',' '\n' \
     | awk '{gsub(/^ +| +$/, ""); if (length) printf "${%s}", $0}' || true)
+  # OPEN_THREADS_JSON is unbounded (paginated, #2056) and must never ride in the
+  # environment: a single env string over ~128 KiB makes every exec fail with
+  # "Argument list too long". envsubst sees a placeholder; the real payload is
+  # spliced in with shell builtins afterwards.
+  local ph="@@OPEN_THREADS_JSON_PLACEHOLDER@@"
   if [ -n "$vars_spec" ]; then
-    envsubst "$vars_spec" < "$template_path" > "$prompt_file"
+    OPEN_THREADS_JSON="$ph" envsubst "$vars_spec" < "$template_path" > "$prompt_file"
   else
-    envsubst < "$template_path" > "$prompt_file"
+    OPEN_THREADS_JSON="$ph" envsubst < "$template_path" > "$prompt_file"
+  fi
+  if [ -n "${OPEN_THREADS_JSON:-}" ] && grep -qF -- "$ph" "$prompt_file"; then
+    local content out="" rest
+    content=$(<"$prompt_file")
+    rest="$content"
+    while [[ "$rest" == *"$ph"* ]]; do
+      out+="${rest%%"$ph"*}${OPEN_THREADS_JSON}"
+      rest="${rest#*"$ph"}"
+    done
+    printf '%s\n' "${out}${rest}" > "$prompt_file"
   fi
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
@@ -2661,19 +2679,14 @@ case "$INTENT_TYPE" in
     # comparison). The workflow passes the actor via TRIGGERING_REVIEWER, so
     # fall back to it when ACTOR is not set explicitly.
     export ACTOR="${ACTOR:-${TRIGGERING_REVIEWER:-}}"
-    OPEN_THREADS_JSON=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!) {
-        repository(owner:$owner, name:$repo) {
-          pullRequest(number:$pr) {
-            reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
-            }
-          }
-        }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
-    export OPEN_THREADS_JSON
+    # Paginated + fail-closed (#2056): an unreadable thread list is an error, never
+    # an empty "nothing to address" list.
+    OPEN_THREADS_JSON=$(ort_fetch_open_threads "$REPO" "$PR_NUMBER") || {
+      echo "::error::fix-reviews: could not read open review threads for PR #${PR_NUMBER} — aborting rather than treating them as empty (#2056)"
+      exit 1
+    }
+    # Deliberately NOT exported (see build_and_run): unbounded payload.
+    export -n OPEN_THREADS_JSON  # an inherited export would carry the payload into every exec
     fetch_pr_context
     rc=0
     build_and_run "fix-reviews" || rc=$?
@@ -2873,19 +2886,15 @@ case "$INTENT_TYPE" in
     # threads from the triggering reviewer in the no-changes branch. The
     # workflow's review-changes step passes ACTOR via env.INTENT_ACTOR.
     export REPO ACTOR="${ACTOR:-}" PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
-    OPEN_THREADS_JSON=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!) {
-        repository(owner:$owner, name:$repo) {
-          pullRequest(number:$pr) {
-            reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
-            }
-          }
-        }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
-    export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
+    # Paginated + fail-closed (#2056): an unreadable thread list is an error, never
+    # an empty "nothing to address" list.
+    OPEN_THREADS_JSON=$(ort_fetch_open_threads "$REPO" "$PR_NUMBER") || {
+      echo "::error::review-changes: could not read open review threads for PR #${PR_NUMBER} — aborting rather than treating them as empty (#2056)"
+      exit 1
+    }
+    # OPEN_THREADS_JSON deliberately NOT exported (see build_and_run): unbounded payload.
+    export -n OPEN_THREADS_JSON  # an inherited export would carry the payload into every exec
+    export BASE_REF="${BASE_REF:-main}"
     fetch_pr_context
     rc=0
     build_and_run "review-changes" || rc=$?
