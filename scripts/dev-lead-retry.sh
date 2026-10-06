@@ -108,6 +108,8 @@ DISPATCH_GUARD_WINDOW_SEC="${DISPATCH_GUARD_WINDOW_SEC:-600}"
 # auto-rebase-retry.sh convention: total attempts (initial + retries) before the
 # issue is escalated to a human and skipped here.
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
+HISTORY_UNAVAILABLE_MAX_RETRIES="${HISTORY_UNAVAILABLE_MAX_RETRIES:-3}"
+[[ "$HISTORY_UNAVAILABLE_MAX_RETRIES" =~ ^[0-9]+$ ]] || HISTORY_UNAVAILABLE_MAX_RETRIES=3
 DEV_LEAD_LABEL="${DEV_LEAD_LABEL:-dev-lead}"
 NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
 
@@ -450,7 +452,7 @@ scan_pr_for_rate_limits() {
   # status=blocked (non-quota PR blockers). Matching both keeps re-dispatch behaviour
   # unchanged and leaves pre-#1568 status=rate-limited blocked markers parseable.
   for intent_type in $RETRYABLE_REVIEW_INTENTS; do
-    local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(rate-limited|blocked)"
+    local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(rate-limited|blocked|history-unavailable)"
     if echo "$comments_json" | jq -e --arg pat "$reviews_pattern" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
       local reset_time
       reset_time=$(echo "$comments_json" | jq -r \
@@ -464,6 +466,19 @@ scan_pr_for_rate_limits() {
         continue
       fi
 
+      # Bound infrastructure-failure retries: a remote that cannot be deepened
+      # posts a history-unavailable marker per run, with no reset time. After
+      # HISTORY_UNAVAILABLE_MAX_RETRIES markers on this SHA, hold instead of
+      # dispatching again. These runs are separate from rebase-conflict
+      # exhaustion; a new head SHA starts a fresh count.
+      local history_count
+      history_count=$(echo "$comments_json" | jq -r --arg hpat "${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=history-unavailable" \
+        '[.[] | select(test($hpat))] | length' 2>/dev/null || echo 0)
+      if [[ "$history_count" =~ ^[0-9]+$ ]] && [ "$history_count" -ge "$HISTORY_UNAVAILABLE_MAX_RETRIES" ]; then
+        echo "  [skip] ${intent_type} history-unavailable ${history_count}x for PR ${pr_number} SHA ${head_sha:0:8} — holding (infrastructure failure, retry limit ${HISTORY_UNAVAILABLE_MAX_RETRIES})" >&2
+        continue
+      fi
+
       # Normalize legacy intent aliases to their canonical names before checking
       # terminal markers and dispatching. "human-pr" was renamed to "review-changes";
       # dev-lead-intent.sh rewrites human-pr → review-changes, so the retried run
@@ -474,8 +489,16 @@ scan_pr_for_rate_limits() {
       [ "$dispatch_intent" = "human-pr" ] && dispatch_intent="review-changes"
 
       # Skip if a terminal marker was already posted (prior retry ran to completion)
-      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed)"
-      if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
+      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed|unrelated-histories)"
+      # A terminal marker older than a later status=history-unavailable marker is
+      # stale (the pass failed, then hit a history infra error on a re-run), so it
+      # must not mask the retry. Comments are chronological; compare positions.
+      local history_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=history-unavailable"
+      if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" --arg hpat "$history_pattern" '
+          to_entries as $e
+          | ([$e[] | select(.value | test($pat)) | .key] | max) as $t
+          | ([$e[] | select(.value | test($hpat)) | .key] | max) as $h
+          | $t != null and ($h == null or $h < $t)' >/dev/null 2>&1; then
         echo "  [skip] ${intent_type} already has terminal result for PR ${pr_number} SHA ${head_sha:0:8}" >&2
         continue
       fi
