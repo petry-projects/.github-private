@@ -1449,8 +1449,8 @@ GHEOF
 }
 
 @test "fix-issue: shadow on (normal run) → no PR create, no comment, exits 0" {
-  # No existing PR → normal path. Shadow forces suppression so the run stops at
-  # the dry-run boundary before the engine/PR-create/comment sites.
+  # No existing PR → normal path. Shadow suppresses posting at each site
+  # instead of forcing dry-run, so the agent runs but output is suppressed (#1713 P1).
   cat > "$STUB_BIN_DIR/gh" <<GHEOF
 #!/usr/bin/env bash
 case "\$*" in
@@ -1470,8 +1470,8 @@ GHEOF
   [ "$status" -eq 0 ]
   [ ! -f "$STUB_BIN_DIR/pr_created" ]
   [ ! -f "$STUB_BIN_DIR/any_comment" ]
-  # Verify dry-run path was executed by shadow suppression
-  [[ "$output" == *"[dry-run]"* ]]
+  # Verify shadow suppression was active (would create PR message present)
+  [[ "$output" == *"[shadow]"* ]]
 }
 
 @test "fix-issue: shadow undetermined (garbage value) → suppresses (fail-closed AC#4)" {
