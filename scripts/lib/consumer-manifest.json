@@ -153,6 +153,7 @@
       "scripts/lib/git-identity.sh",
       "scripts/lib/maintainer-comment-gate.sh",
       "scripts/lib/maintainer-review-thread-gate.sh",
+      "scripts/lib/open-review-threads.sh",
       "scripts/lib/pr-worktree.sh",
       "scripts/lib/reviewer-sources.sh",
       "scripts/lib/reviewer-sources.tsv"
