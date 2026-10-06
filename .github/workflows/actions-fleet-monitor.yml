@@ -152,7 +152,10 @@ jobs:
           fi
 
           aggregate="$workdir/token-usage-summary.json"
+          # Only priced calls: audit records on the same channel (finding_verification,
+          # lsp_cold_start, gemini_key_cooldown #2030) are not LLM calls.
           jq -s '
+            map(select((.kind // "token_usage") == "token_usage")) |
             sort_by(.workflow) |
             group_by(.workflow) |
             map({
