@@ -116,11 +116,14 @@ done
 
 echo ""
 echo "Checking OPEN_THREADS_JSON queries expose author.__typename..."
+# The reviewThreads query lives in the shared paginated fetch lib (#2056); the
+# driver sources it. Count author selections across both files.
 DRIVER="$(dirname "$0")/../../../scripts/dev-lead-fix-reviews.sh"
-author_sel_total=$(grep -c 'comments(first:5) { nodes { body author {' "$DRIVER" 2>/dev/null || echo 0)
-author_sel_typename=$(grep -c 'comments(first:5) { nodes { body author { login __typename } }' "$DRIVER" 2>/dev/null || echo 0)
+THREADS_LIB="$(dirname "$0")/../../../scripts/lib/open-review-threads.sh"
+author_sel_total=$(cat "$DRIVER" "$THREADS_LIB" 2>/dev/null | grep -c 'comments(first:5) { nodes { body author {' || true)
+author_sel_typename=$(cat "$DRIVER" "$THREADS_LIB" 2>/dev/null | grep -c 'comments(first:5) { nodes { body author { login __typename } }' || true)
 if [ "$author_sel_total" -eq 0 ]; then
-  echo "  FAIL: no OPEN_THREADS_JSON author selection found in $(basename "$DRIVER")"
+  echo "  FAIL: no OPEN_THREADS_JSON author selection found in $(basename "$DRIVER") or $(basename "$THREADS_LIB")"
   FAILED=1
 elif [ "$author_sel_total" -ne "$author_sel_typename" ]; then
   echo "  FAIL: $((author_sel_total - author_sel_typename)) of $author_sel_total OPEN_THREADS_JSON build(s) omit author.__typename"
