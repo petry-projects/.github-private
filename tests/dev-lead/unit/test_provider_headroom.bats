@@ -62,19 +62,28 @@ STUB
   [ "$status" -eq 0 ]
 }
 
-# ── gemini always proceeds ────────────────────────────────────────────────────
+# ── gemini is self-metered, never unconditionally ok (#2030) ─────────────────
+# Gemini used to return 0 unconditionally ("no headroom API") — the unmetered-
+# fallback bug #2030 fixes. It is now metered from the token ledger against
+# scripts/lib/gemini-quota-caps.tsv (full coverage: test_gemini_quota.bats); with
+# no key or ledger to meter, the result is the conservative 2, never the ok line.
 
-@test "headroom: gemini returns 0 unconditionally (no headroom API)" {
+@test "headroom: gemini without a key or ledger is constrained (2), not ok, and never probes" {
   _source_engine "gemini"
-  # Even if curl would fail, gemini should short-circuit and return 0
-  cat > "$STUB_BIN_DIR/curl" <<'STUB'
+  unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4 TOKEN_LOG_FILE
+  # A curl call would be recorded here: the gemini branch must make none.
+  cat > "$STUB_BIN_DIR/curl" <<STUB
 #!/usr/bin/env bash
+touch "$STUB_BIN_DIR/curl-called"
 exit 1
 STUB
   chmod +x "$STUB_BIN_DIR/curl"
 
   run check_provider_headroom "gemini"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"limits unknown"* ]]
+  [[ "$output" != *"— ok"* ]]
+  [ ! -e "$STUB_BIN_DIR/curl-called" ]
 }
 
 # ── claude headroom threshold ─────────────────────────────────────────────────

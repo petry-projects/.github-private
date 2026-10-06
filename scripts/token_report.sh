@@ -45,6 +45,11 @@ if [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/model-pricing.sh" ]; 
   # shellcheck source=scripts/lib/model-pricing.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/model-pricing.sh"
 fi
+# Gemini per-key caps (gemini-quota-caps.tsv) for the "Gemini quota" section (#2030).
+if [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/gemini-quota.sh" ]; then
+  # shellcheck source=scripts/lib/gemini-quota.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/gemini-quota.sh"
+fi
 
 # ---------------------------------------------------------------------------
 # Pure rendering helpers (unit-tested)
@@ -216,6 +221,100 @@ render_cost_per_day() {
   ' "$enriched"
 }
 
+# _gq_cell <used> <cap> — "used / cap (pct%)" for one quota window; the cap may be
+# `none` (no cap on the window) or `unknown` (not filled yet — shown, never hidden).
+_gq_cell() {
+  local used="$1" cap="${2:-unknown}"
+  case "$cap" in
+    none) printf '%s (no cap)' "$(_fmt_int "$used")" ;;
+    0)    printf '%s / 0' "$(_fmt_int "$used")" ;;
+    *[!0-9]*|'') printf '%s / unknown' "$(_fmt_int "$used")" ;;
+    *)    printf '%s / %s (%d%%)' "$(_fmt_int "$used")" "$(_fmt_int "$cap")" $(( used * 100 / cap )) ;;
+  esac
+}
+
+# render_gemini_quota <jsonl_dir>
+# Emits the "Gemini quota (per key index)" section: for every key index × model seen
+# in the ledgers, the PEAK requests per minute, tokens per minute and requests per day
+# over the lookback against gemini-quota-caps.tsv, plus the cooldowns recorded. Peaks
+# are org-wide (every repo's ledger), which is how the shared keys are actually
+# consumed. Pure: no network. No-op when no record carries a Gemini key index.
+render_gemini_quota() {
+  local dir="$1"
+  local files=("$dir"/*.jsonl)
+  [ -e "${files[0]}" ] || return 0
+  # Day buckets follow the configured daily reset (settings rows daily_reset_time /
+  # daily_reset_tz in the caps file), not UTC calendar days: bucket = local date of
+  # (ts − reset time), so a call just before/after local reset lands in different
+  # days. The UTC offset is resolved per distinct UTC hour (handles DST changes).
+  local rtime="" rtz="" daylabel="UTC calendar days (daily reset not configured)"
+  if declare -F gq_setting >/dev/null 2>&1; then
+    rtime="$(gq_setting daily_reset_time)"; rtz="$(gq_setting daily_reset_tz)"
+  fi
+  local reset_sec=0 offsets='{}' hr off
+  if [[ "$rtime" =~ ^([01][0-9]|2[0-3]):([0-5][0-9])$ ]] && [ -n "$rtz" ] && [ "$rtz" != "unknown" ] \
+     && TZ="$rtz" date +%z >/dev/null 2>&1 && [ "$(TZ="$rtz" date -d '2026-01-01T00:00:00Z' +%Y 2>/dev/null)" != "" ]; then
+    reset_sec=$(( 10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 ))
+    offsets="$(
+      jq -r 'select(type == "object" and .engine == "gemini" and .key_index != null and .ts != null)
+          | .ts[0:13]' "${files[@]}" 2>/dev/null | sort -u \
+      | while IFS= read -r hr; do
+          off="$(TZ="$rtz" date -d "${hr}:00:00Z" +%z 2>/dev/null)" || continue
+          [[ "$off" =~ ^([+-])([0-9]{2})([0-9]{2})$ ]] || continue
+          printf '%s\t%s\n' "$hr" "$(( ${BASH_REMATCH[1]}1 * (10#${BASH_REMATCH[2]} * 3600 + 10#${BASH_REMATCH[3]} * 60) ))"
+        done | jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): (.[1] | tonumber)}) | add // {}'
+    )"
+    [ -n "$offsets" ] || offsets='{}'
+    daylabel="${rtime} ${rtz} reset"
+  fi
+
+  local rows
+  rows="$(jq -r --argjson off "$offsets" --argjson rs "$reset_sec" '
+      select(type == "object" and .engine == "gemini" and .key_index != null)
+      | (.ts // "") as $ts
+      | (if $ts != "" and ($off[$ts[0:13]] != null)
+           then ((try ($ts | fromdateiso8601) catch null) as $e
+                 | if $e == null then $ts[0:10]
+                   else ($e + $off[$ts[0:13]] - $rs | strftime("%Y-%m-%d")) end)
+           else $ts[0:10] end) as $day
+      | [ (.kind // "token_usage"), (.key_index | tostring), (.model // "-"), $ts,
+          ((.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0)), $day ]
+      | @tsv' "${files[@]}" 2>/dev/null \
+    | awk -F'\t' '
+        $1 == "token_usage" && $4 != "" {
+          k = $2 "\t" $3; seen[k] = 1; calls[k]++
+          m = k SUBSEP substr($4, 1, 16); d = k SUBSEP $6
+          rm[m]++; tm[m] += $5; rd[d]++
+          if (rm[m] > prm[k]) prm[k] = rm[m]
+          if (tm[m] > ptm[k]) ptm[k] = tm[m]
+          if (rd[d] > prd[k]) prd[k] = rd[d]
+        }
+        $1 == "gemini_key_cooldown" { k = $2 "\t" $3; seen[k] = 1; cd[k]++ }
+        END { for (k in seen)
+          printf "%s\t%d\t%d\t%d\t%d\t%d\n", k, calls[k], prm[k], ptm[k], prd[k], cd[k] }' \
+    | sort -t$'\t' -k1,1n -k2,2)"
+  [ -n "$rows" ] || return 0
+
+  printf '## Gemini quota (per key index)\n\n'
+  printf 'Peak usage per window over the lookback, metered from the ledger against '
+  printf '`scripts/lib/gemini-quota-caps.tsv` (#2030). Minutes are UTC buckets; days use: %s. ' "$daylabel"
+  printf '`unknown` = cap not filled yet — the headroom gate treats that key as constrained.\n\n'
+  printf '| Key | Model | Tier | Calls | Peak req/min | Peak tok/min | Peak req/day | Cooldowns |\n'
+  printf '|---:|---|---|---:|---:|---:|---:|---:|\n'
+  local idx model calls prm ptm prd cds caps tier rpm tpm rpd
+  while IFS=$'\t' read -r idx model calls prm ptm prd cds; do
+    caps=""
+    declare -F gq_caps_for >/dev/null 2>&1 && caps="$(gq_caps_for "$idx" "$model")"
+    tier="unknown"; rpm="unknown"; tpm="unknown"; rpd="unknown"
+    [ -n "$caps" ] && IFS=$'\t' read -r tier rpm tpm rpd <<< "$caps"
+    printf '| %s | `%s` | %s | %s | %s | %s | %s | %s |\n' \
+      "$idx" "$model" "$tier" "$(_fmt_int "$calls")" \
+      "$(_gq_cell "$prm" "$rpm")" "$(_gq_cell "$ptm" "$tpm")" "$(_gq_cell "$prd" "$rpd")" \
+      "$(_fmt_int "$cds")"
+  done <<< "$rows"
+  printf '\n'
+}
+
 # render_token_report <jsonl_dir> <lookback_days> <repo_count> <artifact_count> [generated_at]
 # Writes the full Markdown report (with USD cost) to stdout. Pure: no network.
 # Optional: PR_TITLE_FILE (TSV "url<TAB>title") adds PR titles to the cost-per-PR table.
@@ -239,7 +338,8 @@ render_token_report() {
 
   if [ "$total_calls" -eq 0 ]; then
     rm -f "$enriched"
-    printf 'No token-usage records found in the last %s days.\n' "$lookback"
+    printf 'No token-usage records found in the last %s days.\n\n' "$lookback"
+    render_gemini_quota "$dir"
     return 0
   fi
 
@@ -304,6 +404,9 @@ render_token_report() {
         "$mean_disp" "$p50_disp"
     done
   printf '\n'
+
+  # Gemini per-key quota next to the per-model usage above (#2030).
+  render_gemini_quota "$dir"
 
   printf '## By repository\n\n'
   printf '| Repository | Calls | Cost | %% of $ | ET |\n'
