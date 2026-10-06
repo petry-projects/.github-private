@@ -80,5 +80,11 @@ git_ensure_merge_base() {
     echo "git history could not be deepened: the checkout is still shallow after un-shallowing and a deep fetch of ${baseref}${head_ref:+ and origin/${head_ref}}, so the merge base with HEAD cannot be computed"
     return 2
   fi
+  # Complete history, but the base refresh failed: the merge base was computed
+  # against a possibly stale local origin/<base>, so "unrelated" is not proven.
+  if [ "$fetched" -eq 0 ]; then
+    echo "git history could not be refreshed: fetching ${baseref} from origin failed, so the absence of a merge base with the local copy does not prove the histories are unrelated"
+    return 2
+  fi
   return 1
 }

@@ -298,3 +298,20 @@ _scan_with_markers() {
   _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=applied -->"]'
   [[ "$output" != *"DISPATCH"* ]]
 }
+
+@test "retry: repeated history-unavailable markers hit the retry limit and stop dispatching" {
+  local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->'
+  _scan_with_markers "[\"$m\",\"$m\",\"$m\"]"
+  [[ "$output" != *"DISPATCH"* ]]
+}
+
+@test "retry: history-unavailable below the retry limit still dispatches" {
+  local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->'
+  _scan_with_markers "[\"$m\",\"$m\"]"
+  [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
+}
+
+@test "retry: unrelated-histories after history-unavailable is terminal" {
+  _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=unrelated-histories -->"]'
+  [[ "$output" != *"DISPATCH"* ]]
+}

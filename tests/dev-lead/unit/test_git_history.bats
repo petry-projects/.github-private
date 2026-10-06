@@ -122,6 +122,25 @@ EOF
   [ "$status" -eq 1 ]
 }
 
+@test "git_ensure_merge_base: base refresh fails with no merge base on complete history → rc 2, not unrelated" {
+  _git clone -q --no-single-branch "file://$REMOTE" "$CLONE"
+  cd "$CLONE"
+  _git checkout -q --orphan seed
+  _git commit -qm "Initial commit"
+  local bin="$BATS_TEST_TMPDIR/bin" real
+  real="$(command -v git)"
+  mkdir -p "$bin"
+  cat > "$bin/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" refs/heads/main:refs/remotes/origin/main "*) exit 128 ;; esac
+exec "$real" "\$@"
+EOF
+  chmod +x "$bin/git"
+  PATH="$bin:$PATH" run git_ensure_merge_base main seed
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"unrelated histories"* ]]
+}
+
 @test "git_ensure_merge_base: merge-base fatal error (not rc 1) → rc 2, not unrelated histories" {
   _shallow_clone
   cd "$CLONE"
