@@ -440,3 +440,73 @@ _registry_advisory_count() {
   [[ "$output" == *"4/7"* ]]
   [[ "$output" == *"copilot-pull-request-reviewer"* ]]
 }
+
+# ── FORCE_REVIEW bypass for maintainer gates ──────────────────────────────────
+
+@test "diagnostic: FORCE_REVIEW bypass suppresses maintainer-comment-gate block" {
+  # An undispositioned maintainer comment would normally block, but FORCE_REVIEW=true
+  # bypasses the gate, so approval_decision skips that gate and proceeds to check
+  # standing approval. With force_bypass="true" passed to diagnose_approval, the
+  # undispositioned comment is not reported as the blocking gate.
+  local snap='{
+    "reviewDecision": "APPROVED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "donpetry-bot"}, "state": "APPROVED", "commit": {"oid": "abc123"}, "body": "ok", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": [
+      {"author": {"login": "some-maintainer"}, "body": "This is broken.", "isMinimized": false, "minimizedReason": "", "createdAt": "2026-09-20T10:00:00Z"}
+    ]
+  }'
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot "" "" "true"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "true" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "none" ]
+}
+
+@test "diagnostic: FORCE_REVIEW bypass suppresses maintainer-review-thread-gate block" {
+  # An unresolved maintainer review thread would normally block approval, but
+  # FORCE_REVIEW=true bypasses the gate. With force_bypass="true", the thread
+  # gate is not reported as blocking.
+  local snap='{
+    "reviewDecision": "APPROVED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "donpetry-bot"}, "state": "APPROVED", "commit": {"oid": "abc123"}, "body": "ok", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  local threads='{"reviewThreads":[
+    {"isResolved": false, "comments": {"nodes": [
+      {"author": {"login": "some-maintainer"}, "body": "This needs a rethink.", "createdAt": "2026-09-22T10:00:00Z"}
+    ]}}
+  ]}'
+  # Head pushed BEFORE the thread was created → thread postdates the push → would normally block.
+  # But with force_bypass="true", it does not.
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot "$threads" "2026-09-21T09:00:00Z" "true"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "true" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "none" ]
+}
+
+@test "diagnostic: without bypass flag, maintainer-comment-gate still blocks" {
+  # Verify the baseline: without the bypass flag, an undispositioned comment blocks
+  # approval. This is the normal case (force_bypass unset or "false").
+  local snap='{
+    "reviewDecision": "APPROVED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "donpetry-bot"}, "state": "APPROVED", "commit": {"oid": "abc123"}, "body": "ok", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": [
+      {"author": {"login": "some-maintainer"}, "body": "This is broken.", "isMinimized": false, "minimizedReason": "", "createdAt": "2026-09-20T10:00:00Z"}
+    ]
+  }'
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "false" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "maintainer-comment-gate" ]
+}

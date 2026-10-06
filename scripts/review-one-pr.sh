@@ -174,7 +174,7 @@ emit_approval_diagnostic() {
     fi
     local verdict diag_rc
     set +e
-    verdict=$(diagnose_approval "$snap" "" "${BOT_USER:-donpetry-bot}" "$_threads" "$_head_date")
+    verdict=$(diagnose_approval "$snap" "" "${BOT_USER:-donpetry-bot}" "$_threads" "$_head_date" "${FORCE_REVIEW:-false}")
     diag_rc=$?
     set -e
     if [ "$diag_rc" -ne 0 ] || [ -z "$verdict" ]; then

@@ -104,7 +104,7 @@ _approval_diag_default_advisory_json() {
   printf '%s' "$json"
 }
 
-# diagnose_approval <pr_snapshot_json> [advisory_json] [approver] [review_threads_json] [head_committer_date_iso]
+# diagnose_approval <pr_snapshot_json> [advisory_json] [approver] [review_threads_json] [head_committer_date_iso] [force_bypass]
 #   <pr_snapshot_json>      — output of `gh pr view --json reviewDecision,headRefOid,reviews,comments,labels`.
 #   [advisory_json]         — JSON array of advisory-gate logins (default: registry projection).
 #   [approver]              — the login pr-review approves as (default: donpetry-bot).
@@ -118,6 +118,9 @@ _approval_diag_default_advisory_json() {
 #                             review/comment surface it can see).
 #   [head_committer_date_iso] — head commit committer date, passed straight to the review-thread
 #                             gate for its postdates-push comparison.
+#   [force_bypass]          — "true" to model the FORCE_REVIEW break-glass that bypasses
+#                             the maintainer-comment and maintainer-review-thread gates
+#                             (default: "false" or unset).
 #
 #   Prints ONE verdict JSON object to stdout:
 #     { pr, approved, head_sha, blocking_gate, condition, satisfied_by,
@@ -131,6 +134,7 @@ diagnose_approval() {
   local approver="${3:-donpetry-bot}"
   local review_threads="${4:-}"
   local head_date="${5:-}"
+  local force_bypass="${6:-}"
   [ -n "$advisory" ] || advisory="$(_approval_diag_default_advisory_json)"
 
   # Classifier pieces shared with advisory-review-gate.sh so the two paths cannot
@@ -307,11 +311,14 @@ diagnose_approval() {
   # fallback, because both DISMISS a standing approval (the #1813/#1415 revocations) —
   # so an undispositioned comment or an unresolved maintainer thread must win over an
   # approval that is about to be revoked.
-  if [ "$undispositioned" -gt 0 ]; then
+  #
+  # However, the FORCE_REVIEW break-glass bypasses both maintainer gates, so when
+  # force_bypass=true, skip reporting them as blocking (#1902 bot comment).
+  if [ "$undispositioned" -gt 0 ] && [ "$force_bypass" != "true" ]; then
     gate="maintainer-comment-gate"
     condition="${undispositioned} PR issue comment(s) lack a verified disposition (not minimized RESOLVED) — #1290/#1813"
     satisfied_by="each non-agent comment is minimized with classifier RESOLVED after a verified disposition, or an @mention (FORCE_REVIEW) bypasses the gate"
-  elif [ "$mrt_block" = "yes" ]; then
+  elif [ "$mrt_block" = "yes" ] && [ "$force_bypass" != "true" ]; then
     gate="maintainer-review-thread-gate"
     if [ "$mrt_undeterminable" = "yes" ]; then
       condition="the review-thread surface could not be fetched, so an unresolved maintainer thread cannot be ruled out — failing closed (#1415/#1902)"
@@ -480,7 +487,7 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     fi
   fi
   set +e
-  _verdict=$(diagnose_approval "$_snap" "" "${BOT_USER:-donpetry-bot}" "$_threads" "$_head_date")
+  _verdict=$(diagnose_approval "$_snap" "" "${BOT_USER:-donpetry-bot}" "$_threads" "$_head_date" "${FORCE_REVIEW:-false}")
   _diag_rc=$?
   set -e
   if [ "$_diag_rc" -ne 0 ]; then
