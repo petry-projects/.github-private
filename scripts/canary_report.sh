@@ -458,10 +458,12 @@ render_canary_report() {
     # and the awk filter would match nothing — mv'ing that empty file over
     # cand_file would silently drop all candidate data (→ a bogus INSUFFICIENT).
     # Leaving cand_file untouched lets the distinct-PR guard report the real state.
+    # Once a cap applies, records with no context are dropped too: they are not PR
+    # observations and would otherwise bypass the cap and skew cost/latency verdicts.
     if [ -n "$allowed" ]; then
       capped="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 3; }
       awk -F'\t' -v allow="$allowed" 'BEGIN { n = split(allow, a, "\n"); for (k = 1; k <= n; k++) keep[a[k]] = 1 }
-        $9 == "" || $9 in keep { print }' "$cand_file" > "$capped"
+        $9 in keep { print }' "$cand_file" > "$capped"
       mv "$capped" "$cand_file"
     fi
   fi

@@ -427,3 +427,11 @@ seed_pass() {
   [ "$status" -eq 2 ]
   [[ "$output" == *"- latency: INSUFFICIENT"* ]]
 }
+
+@test "render_canary_report: candidate records with no context are dropped once the cap applies" {
+  seed_pass
+  mkrec "$FILE" "2026-09-26T12:00:00Z" pr-review deep claude-opus-5-5 1000 1000 0 100 "" 700
+  run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- candidate invocations: 5"* ]]
+}
