@@ -270,6 +270,10 @@ cdv_removed_token() {
 #                                commit) (rc 1)
 #     no-tokens                — <tokens> is empty (rc 1); cdv_fixed_verdict then
 #                                requires the commit to be from this pass
+#   Note: #2051 — when a finding has multiple distinct issues (multiple tokens),
+#   this function accepts a commit that removes only one, even if others remain.
+#   The verification could be strengthened by requiring all tokens to be removed
+#   or by checking that no unrelated changes accompany the token removal.
 #   Pure.
 cdv_diff_token_verdict() {
   local diff="${1:-}" tokens="${2:-}" added tok

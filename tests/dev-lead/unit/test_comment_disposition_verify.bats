@@ -555,3 +555,16 @@ Also `real_token`.'
   run bash -c "source '$LIB'; cdv_removed_token \"\$1\" \"\$2\"" _ "$d" "--emit-workflow-only"
   [ "$status" -eq 0 ]
 }
+
+@test "diff verdict(#2051): incidental token removal in unrelated change" {
+  # Finding with multiple distinct tokens extracted from different issues
+  # An unrelated change that incidentally removes one token but leaves the core issue
+  local tokens=$'emit_only\nmanifest_ref'
+  # Example: diff changes a comment that mentions both tokens, but the change is unrelated
+  local d=$'--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n- # Use emit_only and manifest_ref carefully\n+ # Fixed for manifest_ref only\n  other code'
+  _diff_verdict "$d" "$tokens"
+  # Current implementation accepts if any token appears on a removed line
+  # (emit_only is removed, even though the change is not a real fix)
+  [ "$status" -eq 0 ]
+  [ "$output" = "content-removes-token" ]
+}
