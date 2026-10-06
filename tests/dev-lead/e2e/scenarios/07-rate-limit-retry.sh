@@ -54,7 +54,7 @@ make_empty_gh_comments() {
 #!/usr/bin/env bash
 case "$*" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"issues/"*"/comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
