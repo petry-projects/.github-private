@@ -25,8 +25,10 @@ source "$(dirname "$0")/lib/shadow-suppress.sh"
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
-# In shadow mode, force the already-tested dry-run "post nothing" path so no
-# PR/issue output escapes. Must run before any posting site.
+# In shadow mode, suppress all PR/issue output (no review, comment, thread reply,
+# label, or auto-merge enable) while still running the agent to generate output.
+# The output is routed to the run log + a file instead. Must run before any
+# posting site.
 shadow_apply_suppression
 export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
@@ -601,7 +603,7 @@ main() {
     envsubst < "$template_path" > "$prompt_file"
   fi
 
-  if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
+  if [ "$DEV_LEAD_DRY_RUN" = "true" ] && ! shadow_mode_active; then
     echo "[dry-run] fix-issue: would implement issue #${ISSUE_NUMBER} using prompt: $prompt_file"
     rm -f "${prompt_file:-}"
     exit 0
@@ -711,35 +713,40 @@ ${lint_output}
   pr_body_file=$(mktemp "/tmp/dev-lead-pr-body-XXXXXX.md") || { echo "Failed to create temp file" >&2; exit 1; }
   printf '%s\n' "$pr_body" > "$pr_body_file"
 
-  local pr_url
-  pr_url=$(gh pr create \
-    --repo "$REPO" \
-    --title "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}" \
-    --body-file "$pr_body_file" \
-    --head "$branch")
-  rm -f "$pr_body_file"
-  echo "$pr_url"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[shadow/dry-run] would create PR for issue #${ISSUE_NUMBER} (suppressed)"
+    rm -f "$pr_body_file"
+  else
+    local pr_url
+    pr_url=$(gh pr create \
+      --repo "$REPO" \
+      --title "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}" \
+      --body-file "$pr_body_file" \
+      --head "$branch")
+    rm -f "$pr_body_file"
+    echo "$pr_url"
 
-  # Mark the PR auto-rebase-eligible from creation (petry-projects/.github#711).
-  # The auto-rebase 'review-ready' gate (#465) only rebases PRs that are approved
-  # OR carry the ready label; without this, a dev-lead PR that falls behind before
-  # it is approved is skipped, drifts into a merge conflict, and cannot be approved
-  # (pr-review skips red/conflicting PRs) — a deadlock that rots the PR for weeks.
-  # Ensure the label exists first (idempotent; || true absorbs the "already exists"
-  # error) so a repo missing it does not break; guard everything so PR creation
-  # never fails on a labeling hiccup.
-  if [ -n "$pr_url" ]; then
-    gh label create "auto-rebase:ready" --repo "$REPO" \
-      --description "Opts a non-draft PR into auto-rebase without an approval (auto-rebase ready_label)" \
-      --color "0e8a16" >/dev/null 2>&1 || true
-    gh pr edit "$pr_url" --repo "$REPO" --add-label "auto-rebase:ready" >/dev/null 2>&1 || true
+    # Mark the PR auto-rebase-eligible from creation (petry-projects/.github#711).
+    # The auto-rebase 'review-ready' gate (#465) only rebases PRs that are approved
+    # OR carry the ready label; without this, a dev-lead PR that falls behind before
+    # it is approved is skipped, drifts into a merge conflict, and cannot be approved
+    # (pr-review skips red/conflicting PRs) — a deadlock that rots the PR for weeks.
+    # Ensure the label exists first (idempotent; || true absorbs the "already exists"
+    # error) so a repo missing it does not break; guard everything so PR creation
+    # never fails on a labeling hiccup.
+    if [ -n "$pr_url" ]; then
+      gh label create "auto-rebase:ready" --repo "$REPO" \
+        --description "Opts a non-draft PR into auto-rebase without an approval (auto-rebase ready_label)" \
+        --color "0e8a16" >/dev/null 2>&1 || true
+      gh pr edit "$pr_url" --repo "$REPO" --add-label "auto-rebase:ready" >/dev/null 2>&1 || true
+    fi
+
+    # Durable completion claim (#1445): posted ONLY here — after commits are pushed
+    # and the PR is open — and referencing the PR number + head SHA. Ordering this
+    # after the push/PR is the fix for the #1407 defect where a detailed "Completed"
+    # claim was published before the work was durable and then lost to a timeout.
+    post_completion_claim "$pr_url" "$head_sha" "$base_ref"
   fi
-
-  # Durable completion claim (#1445): posted ONLY here — after commits are pushed
-  # and the PR is open — and referencing the PR number + head SHA. Ordering this
-  # after the push/PR is the fix for the #1407 defect where a detailed "Completed"
-  # claim was published before the work was durable and then lost to a timeout.
-  post_completion_claim "$pr_url" "$head_sha" "$base_ref"
 
   rm -f "${prompt_file:-}"
 }
