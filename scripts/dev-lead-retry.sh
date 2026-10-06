@@ -475,7 +475,15 @@ scan_pr_for_rate_limits() {
 
       # Skip if a terminal marker was already posted (prior retry ran to completion)
       local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed)"
-      if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
+      # A terminal marker older than a later status=history-unavailable marker is
+      # stale (the pass failed, then hit a history infra error on a re-run), so it
+      # must not mask the retry. Comments are chronological; compare positions.
+      local history_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=history-unavailable"
+      if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" --arg hpat "$history_pattern" '
+          to_entries as $e
+          | ([$e[] | select(.value | test($pat)) | .key] | max) as $t
+          | ([$e[] | select(.value | test($hpat)) | .key] | max) as $h
+          | $t != null and ($h == null or $h < $t)' >/dev/null 2>&1; then
         echo "  [skip] ${intent_type} already has terminal result for PR ${pr_number} SHA ${head_sha:0:8}" >&2
         continue
       fi
