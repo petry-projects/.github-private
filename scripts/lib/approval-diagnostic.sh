@@ -161,13 +161,14 @@ diagnose_approval() {
     --arg cubic "$_cubic_login" --arg cubicre "$_cubic_re" "$_rl_scope_jq"'
       def approver_logins: [$approver, ($approver | if endswith("[bot]") then .[0:-5] else . end)];
       # Validate the snapshot BEFORE deriving a verdict (#1902). An incomplete
-      # snapshot (not an object, or missing the head SHA / reviews array) must NOT
+      # snapshot (not an object, or missing the head SHA / reviews array / comments array) must NOT
       # be read as "approved with no findings" — it is undeterminable, so error out
       # and let the caller fail closed (return 2), mirroring the gates this
       # diagnostic summarizes ("cannot check ≠ nothing to check").
       ( if (type != "object") then error("snapshot is not a JSON object")
         elif (has("headRefOid") | not) or ((.headRefOid // "") == "") then error("snapshot missing headRefOid (head data)")
         elif (has("reviews") | not) or ((.reviews | type) != "array") then error("snapshot missing reviews array (review data)")
+        elif (has("comments") | not) or ((.comments | type) != "array") then error("snapshot missing comments array (comment data)")
         else . end )
       | ($advisory | map(ascii_downcase)) as $adv
       | (.headRefOid // "") as $sha
