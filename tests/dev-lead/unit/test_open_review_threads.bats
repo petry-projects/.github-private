@@ -160,7 +160,37 @@ make_fixture() {
   run ort_fetch_open_threads "petry-projects/.github-private" 7
   [ "$status" -eq 0 ]
   printf '%s' "$output" | jq -e '.[0] | has("id") and has("isResolved") and has("isOutdated") and has("line") and has("path") and (.comments.nodes[0].author.__typename == "Bot")'
-  grep -q 'comments(first:5)' "$GH_CALLS_FILE"
+  # The fixture is returned verbatim by the stub, so assert the query itself
+  # selects every field the prompts consume.
+  local sel
+  for sel in 'id isResolved isOutdated line path' 'comments(first:5)' 'body author { login __typename }'; do
+    grep -qF -- "$sel" "$GH_CALLS_FILE"
+  done
+}
+
+@test "ort_fetch_open_threads: missing/null/non-boolean hasNextPage → non-zero (never a silent truncation)" {
+  make_fixture 10 5
+  export GH_PAGE_OVERRIDE=1
+  local body
+  for body in \
+    '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"endCursor":"5"},"nodes":[]}}}}}' \
+    '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":null,"endCursor":"5"},"nodes":[]}}}}}' \
+    '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":"true","endCursor":"5"},"nodes":[]}}}}}'; do
+    : > "$GH_CALLS_FILE"  # the stub's page override keys off the call count
+    GH_PAGE_BODY="$body" run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" 7
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+  done
+}
+
+@test "ort_fetch_open_threads: endCursor that does not advance → non-zero (no infinite loop)" {
+  make_fixture 10 5
+  export GH_PAGE_OVERRIDE=2
+  export GH_PAGE_BODY='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"5"},"nodes":[]}}}}}'
+  export ORT_PAGE_SIZE=5
+  run --separate-stderr ort_fetch_open_threads "petry-projects/.github-private" 7
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
 }
 
 @test "ort_fetch_open_threads: no open threads → empty array, success" {

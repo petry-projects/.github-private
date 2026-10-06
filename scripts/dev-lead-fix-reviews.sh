@@ -139,10 +139,25 @@ build_and_run() {
     | sed 's/<!-- VARIABLES: //; s/ -->//' \
     | tr ',' '\n' \
     | awk '{gsub(/^ +| +$/, ""); if (length) printf "${%s}", $0}' || true)
+  # OPEN_THREADS_JSON is unbounded (paginated, #2056) and must never ride in the
+  # environment: a single env string over ~128 KiB makes every exec fail with
+  # "Argument list too long". envsubst sees a placeholder; the real payload is
+  # spliced in with shell builtins afterwards.
+  local ph="@@OPEN_THREADS_JSON_PLACEHOLDER@@"
   if [ -n "$vars_spec" ]; then
-    envsubst "$vars_spec" < "$template_path" > "$prompt_file"
+    OPEN_THREADS_JSON="$ph" envsubst "$vars_spec" < "$template_path" > "$prompt_file"
   else
-    envsubst < "$template_path" > "$prompt_file"
+    OPEN_THREADS_JSON="$ph" envsubst < "$template_path" > "$prompt_file"
+  fi
+  if [ -n "${OPEN_THREADS_JSON:-}" ] && grep -qF -- "$ph" "$prompt_file"; then
+    local content out="" rest
+    content=$(<"$prompt_file")
+    rest="$content"
+    while [[ "$rest" == *"$ph"* ]]; do
+      out+="${rest%%"$ph"*}${OPEN_THREADS_JSON}"
+      rest="${rest#*"$ph"}"
+    done
+    printf '%s\n' "${out}${rest}" > "$prompt_file"
   fi
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
@@ -2664,7 +2679,8 @@ case "$INTENT_TYPE" in
       echo "::error::fix-reviews: could not read open review threads for PR #${PR_NUMBER} — aborting rather than treating them as empty (#2056)"
       exit 1
     }
-    export OPEN_THREADS_JSON
+    # Deliberately NOT exported (see build_and_run): unbounded payload.
+    export -n OPEN_THREADS_JSON  # an inherited export would carry the payload into every exec
     fetch_pr_context
     rc=0
     build_and_run "fix-reviews" || rc=$?
@@ -2870,7 +2886,9 @@ case "$INTENT_TYPE" in
       echo "::error::review-changes: could not read open review threads for PR #${PR_NUMBER} — aborting rather than treating them as empty (#2056)"
       exit 1
     }
-    export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
+    # OPEN_THREADS_JSON deliberately NOT exported (see build_and_run): unbounded payload.
+    export -n OPEN_THREADS_JSON  # an inherited export would carry the payload into every exec
+    export BASE_REF="${BASE_REF:-main}"
     fetch_pr_context
     rc=0
     build_and_run "review-changes" || rc=$?

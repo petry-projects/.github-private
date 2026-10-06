@@ -34,7 +34,7 @@ setup() {
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -334,7 +334,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -432,7 +432,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -508,7 +508,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     exit 0 ;;
   *"api"*"repos/"*"issues/"*)
@@ -631,7 +631,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"api"*"repos/"*"pulls/"*)
@@ -1099,7 +1099,7 @@ case "\$ARGS" in
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"reviewThreads"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"PRRT_outdated_thread_id","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"}}]}}]}}}}}'
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRT_outdated_thread_id","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"}}]}}]}}}}}'
     ;;
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
@@ -2181,7 +2181,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     exit 0 ;;
   *"api"*"repos/"*"issues/"*)
@@ -2238,7 +2238,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     echo "DELETE" >> "${delete_log}"
     exit 0 ;;
@@ -2288,7 +2288,7 @@ case "\$ARGS" in
     # Return raw GitHub API format with user as object — script now uses --paginate piped to jq -s
     echo '[{"id":1,"user":{"login":"gemini-code-assist[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2550,7 +2550,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2605,7 +2605,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2654,7 +2654,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2707,7 +2707,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[{"id":7,"user":{"login":"a-human"},"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T00:00:00Z"}]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2756,7 +2756,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2809,7 +2809,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2886,7 +2886,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2930,7 +2930,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -2976,6 +2976,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3039,6 +3040,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3097,6 +3099,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3204,6 +3207,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3262,7 +3266,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3314,7 +3318,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3371,7 +3375,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3417,7 +3421,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3461,7 +3465,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3510,7 +3514,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3561,7 +3565,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3610,7 +3614,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3659,6 +3663,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3719,6 +3724,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3776,7 +3782,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -3838,7 +3844,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3882,7 +3888,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -3934,7 +3940,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     # Record DELETE calls (must come before the generic issues/comments match)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
@@ -3990,7 +3996,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -4042,7 +4048,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
   *"issues/"*"comments"*)
@@ -4096,7 +4102,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -4148,7 +4154,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
   *"issues/"*"comments"*)
@@ -4233,7 +4239,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"reviews"*) echo '[]' ;;
-  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"issues/"*"comments"*) echo '[]' ;;
   *"pulls/"*) echo '{"head":{"sha":"${head_sha}"},"auto_merge":null,"state":"open"}' ;;
   *) echo "{}" ;;
@@ -4761,7 +4767,7 @@ case "$ARGS" in
   *"on IssueComment"*)
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
   *"reviewThreads"*)
-    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'; exit 0 ;;
+    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; exit 0 ;;
   *"pageInfo"*)
     printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$COMMENTS_NODES"'}}}}}'; exit 0 ;;
   *"graphql"*)
@@ -5524,7 +5530,7 @@ case "\$ARGS" in
           pageInfo:{hasNextPage:(\$e < (\$all|length)), endCursor:(\$e|tostring)},
           nodes:\$p}}}}}' "$fixture"
     ;;
-  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"pulls/"*"reviews"*) echo '[]' ;;
@@ -5602,7 +5608,7 @@ _assert_thread_fetch_failure_fails_closed() {
 ARGS="$*"
 case "$ARGS" in
   *"reviewThreads(first:"*"after:"*) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;;
-  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*) echo "[]" ;;
   *) echo "{}" ;;
 esac
