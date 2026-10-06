@@ -1,0 +1,44 @@
+# gemini-quota-caps.tsv — per-key, per-model Gemini quota caps (#2030).
+#
+# Consumed by scripts/lib/gemini-quota.sh (gq_* helpers), which engine.sh uses for the
+# `gemini` branch of check_provider_headroom and for cooldown-aware key rotation, and by
+# scripts/token_report.sh for the per-key "Gemini quota" section. Limits are DATA, not
+# code: every change is a reviewed PR, and no script hard-codes a Gemini limit.
+#
+# SHIPPED UNFILLED. Every limit is `unknown`, and a key whose limits are unknown is
+# treated as CONSTRAINED (headroom result 2, rotated after keys with measured headroom),
+# so nothing is trusted until a maintainer fills the real numbers. The values are a
+# maintainer-supplied input (tier, rpm, tpm, rpd, daily reset) — never measured by
+# calling the Gemini API, never guessed.
+#
+# Columns (TAB-separated):
+#   1 key_index   1 = primary slot (GEMINI_API_KEY / GOOGLE_API_KEY), N = GOOGLE_API_KEY_N.
+#                 Keys are identified by index only — never put a key value here.
+#   2 model_glob  shell glob matched against the ledger record's model ('*' wildcard).
+#   3 tier        free | paid | unknown (informational; shown in the report).
+#   4 rpm         requests per minute
+#   5 tpm         tokens per minute (metered as input + cache-read + output — over-counts,
+#                 which is the conservative direction)
+#   6 rpd         requests per day (window: since the last daily reset below)
+# Each limit is a non-negative integer, `none` (no cap on that window), or `unknown`.
+# A row with ANY `unknown` limit is unknown as a whole.
+#
+# Settings rows (`setting<TAB>name<TAB>value`):
+#   daily_reset_time      HH:MM the requests/day quota resets; `unknown` → rolling 24h
+#                         (counts at least as many calls as any real reset window).
+#   daily_reset_tz        IANA timezone of daily_reset_time (e.g. America/Los_Angeles).
+#   default_cooldown_sec  how long a key rests after a rate-limit/RESOURCE_EXHAUSTED when
+#                         the error carries no retry hint. 60 = one requests/minute window.
+#
+# key_index	model_glob	tier	rpm	tpm	rpd
+1	gemini-3.8-flash	unknown	unknown	unknown	unknown
+1	gemini-3.1-pro-preview	unknown	unknown	unknown	unknown
+2	gemini-3.8-flash	unknown	unknown	unknown	unknown
+2	gemini-3.1-pro-preview	unknown	unknown	unknown	unknown
+3	gemini-3.8-flash	unknown	unknown	unknown	unknown
+3	gemini-3.1-pro-preview	unknown	unknown	unknown	unknown
+4	gemini-3.8-flash	unknown	unknown	unknown	unknown
+4	gemini-3.1-pro-preview	unknown	unknown	unknown	unknown
+setting	daily_reset_time	00:00
+setting	daily_reset_tz	America/Los_Angeles
+setting	default_cooldown_sec	60
