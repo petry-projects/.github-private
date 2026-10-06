@@ -204,6 +204,7 @@ canary_annotate() {
               # ts must be a canonical, valid UTC instant (a "2026-09-26garbage" string
               # would sort in-window lexically); token counts must be non-negative
               # integers (a negative count would subtract from the call cost).
+              # duration_ms, when present, must be a non-negative number (not null or string).
               (def cnt: type == "number" and . >= 0 and . == floor;
                if ((.ts | type) == "string"
                    and (.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
@@ -211,7 +212,8 @@ canary_annotate() {
                    and (.workflow | type) == "string"
                    and (.tier | type) == "string" and (.model | type) == "string"
                    and (.input_tokens | cnt) and (.cache_read_tokens | cnt)
-                   and (.cache_creation_tokens | cnt) and (.output_tokens | cnt))
+                   and (.cache_creation_tokens | cnt) and (.output_tokens | cnt)
+                   and ((.duration_ms == null) or ((.duration_ms | type) == "number" and .duration_ms >= 0)))
                then empty else "invalid" end)
             else "invalid" end
         end' "${files[@]}" 2>/dev/null)"; then
