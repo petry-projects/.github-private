@@ -270,3 +270,48 @@ _scan_with_hold() {
   [ "${lines[-1]}" = "1" ]
   [ "$(grep -c 'DISPATCH' <<< "$output")" -eq 1 ]
 }
+
+# _scan_with_markers <json-array-of-bodies>: scan a PR whose comments are exactly those.
+_scan_with_markers() {
+  export MARKERS_JSON="$1"
+  gh() {
+    case "$*" in
+      *"/pulls/2000"*) echo '{"state":"open","head":{"sha":"abc"},"labels":[]}' ;;
+      *"/comments"*) echo "$MARKERS_JSON" ;;
+      *) echo '[]' ;;
+    esac
+  }
+  pr_resume_suppressed() { return 1; }
+  post_dispatch_guard() { :; }
+  fetch_pr_comment_nodes() { echo '[]'; }
+  stale_disposition_needs_dispatch() { return 1; }
+  dispatch_reviews_retry() { echo "DISPATCH intent=$4" >&2; }
+  run scan_pr_for_rate_limits "petry-projects/.github-private" 2000
+}
+
+@test "retry: history-unavailable marker AFTER an older terminal failed marker still dispatches" {
+  _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=failed -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->"]'
+  [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
+}
+
+@test "retry: history-unavailable marker BEFORE a later terminal marker does not dispatch" {
+  _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=applied -->"]'
+  [[ "$output" != *"DISPATCH"* ]]
+}
+
+@test "retry: repeated history-unavailable markers hit the retry limit and stop dispatching" {
+  local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->'
+  _scan_with_markers "[\"$m\",\"$m\",\"$m\"]"
+  [[ "$output" != *"DISPATCH"* ]]
+}
+
+@test "retry: history-unavailable below the retry limit still dispatches" {
+  local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->'
+  _scan_with_markers "[\"$m\",\"$m\"]"
+  [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
+}
+
+@test "retry: unrelated-histories after history-unavailable is terminal" {
+  _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=unrelated-histories -->"]'
+  [[ "$output" != *"DISPATCH"* ]]
+}
