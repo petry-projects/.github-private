@@ -86,11 +86,14 @@ setup() {
   [ ! -f "$SHADOW_OUTPUT_FILE" ]
 }
 
-@test "shadow: apply when active → forces DEV_LEAD_DRY_RUN=true" {
+@test "shadow: apply when active → does NOT force DEV_LEAD_DRY_RUN (allows agent execution)" {
   export DEV_LEAD_SHADOW_MODE="true"
   export DEV_LEAD_DRY_RUN="false"
   shadow_apply_suppression
-  [ "$DEV_LEAD_DRY_RUN" = "true" ]
+  # shadow mode should not force dry-run so the agent can execute (#1713 P1)
+  [ "$DEV_LEAD_DRY_RUN" != "true" ]
+  # but shadow mode flag itself should be set
+  [ "$DEV_LEAD_SHADOW_MODE" = "true" ]
 }
 
 @test "shadow: apply when active → normalizes DEV_LEAD_SHADOW_MODE to canonical true" {
@@ -118,10 +121,9 @@ setup() {
   export DEV_LEAD_SHADOW_MODE="true"
   shadow_apply_suppression
   shadow_apply_suppression
-  # Flags remain true after repeated calls
-  [ "$DEV_LEAD_DRY_RUN" = "true" ]
+  # Shadow mode flag remains true after repeated calls
   [ "$DEV_LEAD_SHADOW_MODE" = "true" ]
-  # Output file has multiple records (one per call)
+  # Output file has multiple records (one per call) proving append behavior
   [ -f "$SHADOW_OUTPUT_FILE" ]
   local record_count
   record_count=$(grep -c '\[shadow\]' "$SHADOW_OUTPUT_FILE" || true)
