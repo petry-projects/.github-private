@@ -467,16 +467,25 @@ tier_for_intent() {
   esac
 }
 
+# _usage_threshold — DEV_LEAD_USAGE_THRESHOLD (default: 75%), the usage percent at
+# or above which an engine (or a Gemini key) counts as out of headroom.
+_usage_threshold() {
+  local t="${DEV_LEAD_USAGE_THRESHOLD:-75}"
+  [[ "$t" =~ ^[0-9]+$ ]] || t=75
+  printf '%s' "$t"
+}
+
 # check_provider_headroom <engine>
-# Returns 0 (ok to proceed) or 1 (at/above threshold — skip to next engine).
-# Falls back to 0 (proceed) on any query failure so a missing API or network
-# error never blocks work (fail-open by design).
+# Returns 0 (ok to proceed), 1 (at/above threshold — skip to next engine), or —
+# gemini only — 2 (constrained: limits unknown or ledger unreadable, see below).
+# claude/copilot fall back to 0 (proceed) on any query failure so a missing API or
+# network error never blocks work (fail-open by design).
 # Threshold is DEV_LEAD_USAGE_THRESHOLD (default: 75%).
 # Logs a one-line headroom status to stderr for the step summary.
 check_provider_headroom() {
   local engine="$1"
   local used_pct=0
-  local threshold="${DEV_LEAD_USAGE_THRESHOLD:-75}"
+  local threshold; threshold="$(_usage_threshold)"
 
   case "$engine" in
     claude)
@@ -508,9 +517,40 @@ check_provider_headroom() {
       fi
       ;;
     gemini)
-      # Gemini does not expose a usage header on free-tier probe endpoints.
-      echo "  [headroom] gemini — no usage API, proceeding" >&2
-      return 0
+      # Self-metered from the token ledger against scripts/lib/gemini-quota-caps.tsv
+      # (#2030) — no probe, no network call, no key value. Unknown limits or an
+      # unreadable ledger are CONSTRAINED (2), deliberately not fail-open: Gemini is
+      # the fallback of last resort. 2 is not a skip — refusing to degrade onto a
+      # constrained Gemini is the actuation follow-up (#2029); the caller proceeds
+      # and rotation tries those keys last.
+      if ! declare -F gq_engine_headroom >/dev/null 2>&1; then
+        echo "::warning::[headroom] gemini — quota library not loaded; limits unknown, treating as constrained" >&2
+        return 2
+      fi
+      local _gname _gidx _gstate _gpct _gwhy
+      local -a _gidxs=()
+      while IFS= read -r _gname; do
+        _gidx="$(gq_key_index "$_gname")" || continue
+        case " ${_gidxs[*]} " in *" $_gidx "*) continue ;; esac
+        _gidxs+=("$_gidx")
+      done < <(_gemini_api_key_names)
+      if [ "${#_gidxs[@]}" -eq 0 ]; then
+        echo "::warning::[headroom] gemini — no API key configured, nothing to meter; limits unknown — treating as constrained" >&2
+        return 2
+      fi
+      IFS='|' read -r _gstate _gpct _gwhy <<< "$(gq_engine_headroom "$threshold" "${_gidxs[@]}")"
+      case "$_gstate" in
+        ok|over)
+          used_pct="$_gpct" ;;   # the shared threshold check below logs ok / skipping
+        *)
+          if [ -n "$_gwhy" ]; then
+            echo "::warning::[headroom] gemini — ledger unreadable ($_gwhy); usage unknown — treating every key as constrained" >&2
+          fi
+          if [ -n "$_gpct" ] || [ -z "$_gwhy" ]; then
+            echo "::warning::[headroom] gemini — limits unknown for key index ${_gpct:-?} in $(basename "$GEMINI_QUOTA_CAPS"); treating as constrained until the caps are filled" >&2
+          fi
+          return 2 ;;
+      esac
       ;;
     copilot)
       # Skip probe when no real GitHub token is present — avoids unnecessary
@@ -558,6 +598,14 @@ _TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh"
 # shellcheck source=lib/token-metrics.sh
 [ -f "$_TOKEN_LIB" ] && source "$_TOKEN_LIB" 2>/dev/null || true
 unset _TOKEN_LIB
+
+# Gemini quota self-metering + per-key cooldown memory (#2030). Non-fatal: when
+# missing, the gemini headroom branch reports "limits unknown" (constrained) and
+# rotation falls back to the plain configured key order.
+_GQ_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/gemini-quota.sh"
+# shellcheck source=lib/gemini-quota.sh
+[ -f "$_GQ_LIB" ] && source "$_GQ_LIB" 2>/dev/null || true
+unset _GQ_LIB
 
 # Credential redaction (redact_secrets) for the Claude chain hop log. Non-fatal:
 # when the helper is missing, _claude_log_hop records only its header line.
@@ -802,6 +850,17 @@ copilot_chat() {
 # first key no longer costs a full billing-retry cycle on every call, and the
 # depleted ones stay as a last resort in case credits were topped up mid-run.
 _gemini_api_keys() {
+  local _name
+  while IFS= read -r _name; do
+    printf '%s\n' "${!_name}"
+  done < <(_gemini_api_key_names)
+}
+
+# _gemini_api_key_names
+# Same order and de-duplication as _gemini_api_keys, but prints the variable NAMES
+# (never values). Rotation works from names so a key is only ever identified by its
+# index (gq_key_index, #2030) in logs, ledger records, and cooldown state.
+_gemini_api_key_names() {
   local _name k seen="" _depleted="" _skip=", ${GEMINI_DEPLETED_KEYS:-}, "
   for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4; do
     k="${!_name:-}"
@@ -811,11 +870,30 @@ _gemini_api_keys() {
     esac
     seen="${seen}|${k}|"
     case "$_skip" in
-      *", ${_name}, "*) _depleted="${_depleted}${k}"$'\n'; continue ;;
+      *", ${_name}, "*) _depleted="${_depleted}${_name}"$'\n'; continue ;;
     esac
-    printf '%s\n' "$k"
+    printf '%s\n' "$_name"
   done
   [ -z "$_depleted" ] || printf '%s' "$_depleted"
+}
+
+# _gemini_note_key_index <index>
+# Records which key index served the successful Gemini call next to the per-call
+# usage sidecar, so _record_engine_tokens can attribute the token record to the key
+# (the call may run in a `| tee` subshell, hence a file). No-op without a ledger.
+_gemini_note_key_index() {
+  [ -n "${1:-}" ] || return 0
+  declare -F _engine_usage_sidecar >/dev/null 2>&1 || return 0
+  # Strictly call-unique: only the per-call _ENGINE_USAGE_OUT path qualifies. The
+  # shared $$ fallback could be overwritten by a concurrent call and charge usage
+  # to the wrong key, so without a unique path the record is left UNATTRIBUTED
+  # (no key_index) — the metering never charges an unattributed record to any key.
+  [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
+  if [ -z "${_ENGINE_USAGE_OUT:-}" ]; then
+    echo "[gemini] no call-unique usage sidecar — token record carries no key_index (unattributed)" >&2
+    return 0
+  fi
+  printf '%s\n' "$1" > "${_ENGINE_USAGE_OUT}.key" 2>/dev/null || true
 }
 
 # _gemini_invoke <prompt_file> <timeout_sec> <model> [extra_args...]
@@ -913,29 +991,75 @@ _gemini_chain_invoke() {
       # model/provider hop while another key still has headroom. A non-rate-limit
       # failure stops rotation and propagates (a bad prompt fails on every key).
       # stderr intentionally passed through from _gemini_invoke (rate-limit msgs live there).
-      local -a _api_keys=()
-      local _ak
-      while IFS= read -r _ak; do _api_keys+=("$_ak"); done < <(_gemini_api_keys)
-      if [ "${#_api_keys[@]}" -eq 0 ]; then
+      #
+      # Cooldown memory (#2030): a key that rate-limited on this model within its
+      # cooldown (ledger record, gq_rotation_plan) is skipped, not re-hit; keys with
+      # measured headroom go first and constrained ones (limits unknown / at the
+      # threshold) last. Keys are named by index only.
+      local -a _key_names=() _key_idxs=() _all_names=()
+      local _pk _pn _pi _pu
+      while IFS= read -r _pn; do _all_names+=("$_pn"); done < <(_gemini_api_key_names)
+      if [ "${#_all_names[@]}" -gt 0 ] && declare -F gq_rotation_plan >/dev/null 2>&1; then
+        while IFS=$'\t' read -r _pk _pn _pi _pu; do
+          case "$_pk" in
+            cool)
+              echo "::notice::[gemini] model $model: key index $_pi cooling down until $(date -u -d "@$_pu" +%H:%M:%SZ 2>/dev/null || echo "$_pu") — skipped" >&2 ;;
+            use)
+              _key_names+=("$_pn"); _key_idxs+=("$_pi") ;;
+          esac
+        done < <(gq_rotation_plan "$model" "$(_usage_threshold)" "${_all_names[@]}")
+      else
+        for _pn in "${_all_names[@]}"; do
+          _key_names+=("$_pn"); _key_idxs+=("")
+        done
+      fi
+      if [ "${#_all_names[@]}" -eq 0 ]; then
         # No key configured (e.g. env-inherited auth in tests) — single call.
         _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \
           > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
+      elif [ "${#_key_names[@]}" -eq 0 ]; then
+        # Every key is cooling down on this model: no call. Classified as a rate
+        # limit (captured stderr only) so the chain moves to the next model and,
+        # past the last one, signals the cross-provider fallback (exit 2).
+        printf '[gemini] every API key is cooling down after a rate limit on model %s — not called\n' \
+          "$model" > "$stderr_tmp"
+        rc=2
       else
         local _had_gk="${GOOGLE_API_KEY+x}" _had_gmk="${GEMINI_API_KEY+x}"
         local _saved_gk="${GOOGLE_API_KEY:-}" _saved_gmk="${GEMINI_API_KEY:-}"
-        local _key _key_n=0
-        for _key in "${_api_keys[@]}"; do
+        local _key _key_name _key_i _key_n=0 _cd _cd_src
+        for _key_i in "${!_key_names[@]}"; do
           _key_n=$((_key_n + 1))
+          _key_name="${_key_names[$_key_i]}"
+          # Resolve the two primary names from the saved originals: the exports below
+          # overwrite both, so a distinct GOOGLE_API_KEY would otherwise read the
+          # first attempt's value and never rotate.
+          case "$_key_name" in
+            GEMINI_API_KEY) _key="$_saved_gmk" ;;
+            GOOGLE_API_KEY) _key="$_saved_gk" ;;
+            *)              _key="${!_key_name}" ;;
+          esac
           export GOOGLE_API_KEY="$_key" GEMINI_API_KEY="$_key"
           rc=0
           _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \
             > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
-          [ "$rc" -eq 0 ] && break
+          if [ "$rc" -eq 0 ]; then
+            _gemini_note_key_index "${_key_idxs[$_key_i]}"
+            break
+          fi
           # Only a rate-limit rotates to the next key; a hard failure stops here.
           is_rate_limited_files "$stdout_tmp" "$stderr_tmp" || break
+          # Remember the throttle so later calls/jobs skip this key on this model
+          # until the provider's retry hint (else the configured default) elapses.
+          if [ -n "${_key_idxs[$_key_i]}" ] && [ -n "$(gq_ledger_file)" ]; then
+            _cd="$(gq_retry_hint_sec "$stdout_tmp" "$stderr_tmp")"; _cd_src="retry hint"
+            [ -n "$_cd" ] || { _cd="$(gq_default_cooldown_sec)"; _cd_src="default"; }
+            gq_record_cooldown "${_key_idxs[$_key_i]}" "$model" "$_cd" "$_cd_src"
+            echo "::notice::[gemini] model $model: key index ${_key_idxs[$_key_i]} cooling down for ${_cd}s ($_cd_src)" >&2
+          fi
           # By position, never the key: the log shows how far rotation got.
-          if [ "$_key_n" -lt "${#_api_keys[@]}" ]; then
-            echo "::notice::[gemini] model $model: API key $_key_n of ${#_api_keys[@]} throttled — trying the next key" >&2
+          if [ "$_key_n" -lt "${#_key_names[@]}" ]; then
+            echo "::notice::[gemini] model $model: API key $_key_n of ${#_key_names[@]} throttled — trying the next key" >&2
           fi
         done
         # Restore the caller's original key env for subsequent models/engines.
@@ -1333,8 +1457,17 @@ _record_engine_tokens() {
     cache_write_tokens=0
   fi
 
+  # Gemini key attribution (#2030): the key INDEX that served the call, noted by
+  # _gemini_note_key_index, so the quota gate can meter each key from the ledger.
+  local key_index=""
+  if [ -n "$_uf" ] && [ -f "${_uf}.key" ]; then
+    [ "$engine" = "gemini" ] && IFS= read -r key_index < "${_uf}.key"
+    rm -f "${_uf}.key" 2>/dev/null || true
+  fi
+
   emit_token_record "$workflow" "$tier" "$engine" "$model" \
-    "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" "$duration_ms" || true
+    "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" "$duration_ms" \
+    "$key_index" || true
 }
 
 # _record_model_used <model>
@@ -2041,7 +2174,12 @@ run_writer_with_fallback() {
       continue
     fi
 
-    if ! check_provider_headroom "$engine"; then
+    # Headroom 2 = constrained (Gemini limits unknown / ledger unreadable, #2030): it
+    # is already logged as a warning and the engine still runs — refusing to degrade
+    # onto a constrained Gemini is the actuation follow-up (#2029), not this gate.
+    local _headroom_rc=0
+    check_provider_headroom "$engine" || _headroom_rc=$?
+    if [ "$_headroom_rc" -ne 0 ] && [ "$_headroom_rc" -ne 2 ]; then
       echo "::warning::$engine at/above usage threshold — trying next engine" >&2
       any_rate_limited=1
       _mark_engine_exhausted "$engine" "rate-limited"

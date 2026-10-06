@@ -491,3 +491,72 @@ PY
   elapsed="$(printf '%s\n' "$output" | sed -n 's/.*elapsed=\([0-9]*\).*/\1/p')"
   [ "$elapsed" -lt 15 ]
 }
+
+# ---------------------------------------------------------------------------
+# render_gemini_quota — per-key Gemini usage against the caps file (#2030)
+# ---------------------------------------------------------------------------
+
+_gq_dir() {
+  local d; d="$(mktemp -d)"
+  cat > "$d/run.jsonl" <<'JSONL'
+{"ts":"2026-06-01T10:00:05Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":100,"cache_read_tokens":0,"output_tokens":20,"key_index":1,"repo":"r"}
+{"ts":"2026-06-01T10:00:40Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":300,"cache_read_tokens":0,"output_tokens":30,"key_index":1,"repo":"r"}
+{"ts":"2026-06-01T10:05:00Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":50,"cache_read_tokens":0,"output_tokens":5,"key_index":1,"repo":"r"}
+{"ts":"2026-06-01T11:00:00Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":10,"cache_read_tokens":0,"output_tokens":1,"key_index":2,"repo":"r"}
+{"kind":"gemini_key_cooldown","ts":"2026-06-01T10:01:00Z","engine":"gemini","model":"gemini-3.8-flash","key_index":1,"until":1,"repo":"r"}
+{"ts":"2026-06-01T12:00:00Z","engine":"claude","model":"claude-opus-4-7","input_tokens":10,"output_tokens":1,"repo":"r"}
+JSONL
+  printf '%s' "$d"
+}
+
+@test "render_gemini_quota: per key index, peak per window against the caps file" {
+  local d caps; d="$(_gq_dir)"; caps="$(mktemp)"
+  printf '1\tgemini-3.8-flash\tfree\t10\t1000\tnone\n' > "$caps"
+  GEMINI_QUOTA_CAPS="$caps" run render_gemini_quota "$d"
+  rm -rf "$d" "$caps"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## Gemini quota (per key index)"* ]]
+  # key 1: 3 calls; peak minute = 2 req / 450 tok; peak day = 3 req (no cap); 1 cooldown
+  [[ "$output" == *'| 1 | `gemini-3.8-flash` | free | 3 | 2 / 10 (20%) | 450 / 1,000 (45%) | 3 (no cap) | 1 |'* ]]
+  # key 2 has no caps row → every window shows the cap as unknown, never hidden.
+  [[ "$output" == *'| 2 | `gemini-3.8-flash` | unknown | 1 | 1 / unknown | 11 / unknown | 1 / unknown | 0 |'* ]]
+}
+
+@test "render_gemini_quota: no-op when no record carries a gemini key index" {
+  local d; d="$(mktemp -d)"
+  printf '%s\n' '{"ts":"2026-06-01T10:00:00Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":1,"output_tokens":1,"repo":"r"}' > "$d/run.jsonl"
+  run render_gemini_quota "$d"
+  rm -rf "$d"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "render_token_report: Gemini quota section sits beside the per-model usage" {
+  local d; d="$(_gq_dir)"
+  run render_token_report "$d" 7 1 1
+  rm -rf "$d"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## Top cost drivers"*"## Gemini quota (per key index)"*"## By repository"* ]]
+  # The cooldown record is not a priced call.
+  [[ "$output" == *"5 LLM calls"* ]]
+}
+
+@test "render_gemini_quota: daily window buckets by configured reset tz (Pacific midnight, not UTC)" {
+  local d caps; d="$(mktemp -d)"; caps="$(mktemp)"
+  # 2026-06-01T06:59:00Z = 23:59 PDT May 31; 07:01Z = 00:01 PDT Jun 1 (same UTC date, different Pacific days).
+  # 2026-01-15T07:30Z = 23:30 PST Jan 14; 08:30Z = 00:30 PST Jan 15 (DST offset differs).
+  cat > "$d/run.jsonl" <<'JSONL'
+{"ts":"2026-06-01T06:59:00Z","engine":"gemini","model":"m","input_tokens":1,"output_tokens":1,"key_index":1,"repo":"r"}
+{"ts":"2026-06-01T07:01:00Z","engine":"gemini","model":"m","input_tokens":1,"output_tokens":1,"key_index":1,"repo":"r"}
+{"ts":"2026-01-15T07:30:00Z","engine":"gemini","model":"m","input_tokens":1,"output_tokens":1,"key_index":2,"repo":"r"}
+{"ts":"2026-01-15T08:30:00Z","engine":"gemini","model":"m","input_tokens":1,"output_tokens":1,"key_index":2,"repo":"r"}
+JSONL
+  printf 'setting\tdaily_reset_time\t00:00\nsetting\tdaily_reset_tz\tAmerica/Los_Angeles\n' > "$caps"
+  GEMINI_QUOTA_CAPS="$caps" run render_gemini_quota "$d"
+  rm -rf "$d" "$caps"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"00:00 America/Los_Angeles reset"* ]]
+  # Each call is the only one in its Pacific day → peak req/day 1 (UTC day buckets would give 2 for key 1).
+  [[ "$output" == *'| 1 | `m` | unknown | 2 | 1 / unknown | 2 / unknown | 1 / unknown | 0 |'* ]]
+  [[ "$output" == *'| 2 | `m` | unknown | 2 | 1 / unknown | 2 / unknown | 1 / unknown | 0 |'* ]]
+}
