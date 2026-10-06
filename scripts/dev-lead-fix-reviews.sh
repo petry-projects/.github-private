@@ -2963,6 +2963,7 @@ case "$INTENT_TYPE" in
       if [ "$cp_rc" -eq 4 ]; then
         echo "::warning::review-changes was refused by a test guard (tamper/regression) — flagged for human, not pushed (#2013)"
         resolve_dispositioned_comments "review-changes" failed || _DISPOSITIONS_UNRESOLVED=1
+        [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
         exit "$rc"
       fi
       # Minimize PR issue comments dev-lead has dispositioned + verified (#1813) —
