@@ -138,7 +138,7 @@ dtv_text_mentions_thread() {
     if [[ -n "$repo" || -n "$pr" ]]; then
       # Scoped: unusable repo/PR identifiers never fall back to the loose match.
       [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$pr" =~ ^[1-9][0-9]*$ ]] || return 1
-      url_re="(^|[^A-Za-z0-9_.-])https?://(www\\.)?github\\.com/${repo//./\\.}/pull/${pr}#discussion_r"
+      url_re="(^|[^A-Za-z0-9_.-])https?://(www[.])?github[.]com/${repo//./[.]}/pull/${pr}#discussion_r"
     fi
     if [[ "$text" =~ ${url_re}${db_id}([^0-9A-Za-z_]|$) ]]; then
       return 0
