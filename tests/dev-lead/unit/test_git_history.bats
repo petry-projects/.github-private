@@ -132,7 +132,7 @@ EOF
   mkdir -p "$bin"
   cat > "$bin/git" <<EOF
 #!/usr/bin/env bash
-case " \$* " in *" refs/heads/main:refs/remotes/origin/main "*) exit 128 ;; esac
+case " \$* " in *"refs/heads/main:refs/remotes/origin/main "*) exit 128 ;; esac
 exec "$real" "\$@"
 EOF
   chmod +x "$bin/git"
