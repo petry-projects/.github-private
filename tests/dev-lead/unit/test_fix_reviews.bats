@@ -34,7 +34,7 @@ setup() {
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -334,7 +334,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -432,7 +432,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -508,7 +508,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     exit 0 ;;
   *"api"*"repos/"*"issues/"*)
@@ -631,7 +631,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"api"*"repos/"*"pulls/"*)
@@ -1099,7 +1099,7 @@ case "\$ARGS" in
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"reviewThreads"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"PRRT_outdated_thread_id","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"}}]}}]}}}}}'
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRT_outdated_thread_id","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"}}]}}]}}}}}'
     ;;
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
@@ -2181,7 +2181,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     exit 0 ;;
   *"api"*"repos/"*"issues/"*)
@@ -2238,7 +2238,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     echo "DELETE" >> "${delete_log}"
     exit 0 ;;
@@ -2288,7 +2288,7 @@ case "\$ARGS" in
     # Return raw GitHub API format with user as object — script now uses --paginate piped to jq -s
     echo '[{"id":1,"user":{"login":"gemini-code-assist[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2550,7 +2550,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2605,7 +2605,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2654,7 +2654,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2707,7 +2707,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[{"id":7,"user":{"login":"a-human"},"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T00:00:00Z"}]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2756,7 +2756,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2809,7 +2809,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2886,7 +2886,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2930,7 +2930,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -2976,6 +2976,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3039,6 +3040,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3097,6 +3099,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3204,6 +3207,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3262,7 +3266,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3314,7 +3318,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3371,7 +3375,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3417,7 +3421,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3461,7 +3465,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3510,7 +3514,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3561,7 +3565,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3610,7 +3614,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3659,6 +3663,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3719,6 +3724,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3776,7 +3782,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -3838,7 +3844,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3882,7 +3888,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -3934,7 +3940,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     # Record DELETE calls (must come before the generic issues/comments match)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
@@ -3990,7 +3996,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -4042,7 +4048,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
   *"issues/"*"comments"*)
@@ -4096,7 +4102,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -4148,7 +4154,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
   *"issues/"*"comments"*)
@@ -4233,7 +4239,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"reviews"*) echo '[]' ;;
-  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"issues/"*"comments"*) echo '[]' ;;
   *"pulls/"*) echo '{"head":{"sha":"${head_sha}"},"auto_merge":null,"state":"open"}' ;;
   *) echo "{}" ;;
@@ -4470,6 +4476,8 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"reviews"*) echo '[]' ;;
+  *"reviewThreads(first:"*"after:"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":${threads_json}}}}}}' ;;
   *"graphql"*) echo '${threads_json}' ;;
   *"issues/"*"comments"*) echo '${comments_json}' ;;
   *"issues/comments/"*) exit 0 ;;
@@ -4758,10 +4766,10 @@ case "$ARGS" in
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
   *"on IssueComment"*)
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
+  *"reviewThreads"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; exit 0 ;;
   *"pageInfo"*)
     printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$COMMENTS_NODES"'}}}}}'; exit 0 ;;
-  *"reviewThreads"*)
-    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'; exit 0 ;;
   *"graphql"*)
     printf '%s' '{"data":{}}'; exit 0 ;;
   *"pr view"*)
@@ -5489,4 +5497,137 @@ SH
 
   [ -s "$T2013_PUSH" ]
   [[ "$output" == *"Test suite: NOT RUN"* ]]
+}
+
+# ── open review threads are paginated and fail closed (#2056) ─────────────────
+# PR #1953: 66 threads, the one open Codex P1 at position 66. The unpaginated
+# reviewThreads(first:50) read never saw it, so the pass "addressed 0 threads".
+
+@test "#2056: both OPEN_THREADS_JSON call sites use the shared paginated helper" {
+  ! grep -q 'reviewThreads(first:50)' "$FIX_REVIEWS_SCRIPT"
+  grep -q 'source "$(dirname "$0")/lib/open-review-threads.sh"' "$FIX_REVIEWS_SCRIPT"
+  [ "$(grep -c 'OPEN_THREADS_JSON=$(ort_fetch_open_threads' "$FIX_REVIEWS_SCRIPT")" -eq 2 ]
+}
+
+# _threads_fixture_gh <threads_json_file> — cursor-aware gh stub serving the
+# fixture's threads 100 per page (cursor = numeric offset); everything else is
+# the same benign surface the other harness tests use.
+_threads_fixture_gh() {
+  local fixture="$1"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"reviewThreads(first:"*"after:"*)
+    cursor=""
+    while [ \$# -gt 0 ]; do
+      case "\$2" in cursor=*) cursor="\${2#cursor=}" ;; esac
+      shift
+    done
+    jq -c --argjson off "\${cursor:-0}" '
+      . as \$all | (\$all[\$off:\$off+100]) as \$p | (\$off + (\$p|length)) as \$e
+      | {data:{repository:{pullRequest:{reviewThreads:{
+          pageInfo:{hasNextPage:(\$e < (\$all|length)), endCursor:(\$e|tostring)},
+          nodes:\$p}}}}}' "$fixture"
+    ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc"},"auto_merge":null}' ;;
+  *"issues/"*"comments"*) echo '[]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+_assert_open_thread_past_first_page_reaches_prompt() {
+  local intent="$1" tmpdir fixture capture
+  tmpdir="$(mktemp -d)"
+  fixture="$(mktemp)"
+  capture="$(mktemp)"
+  rm -f /tmp/dev-lead-session-output.txt
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+
+  # 166 threads, only #166 unresolved — past both the old 50-thread window and
+  # the first 100-thread page.
+  jq -n '[range(1; 167) as $i | {id: ("PRRT_" + ($i|tostring)), isResolved: ($i != 166),
+          isOutdated: false, line: $i, path: "scripts/canary_report.sh",
+          comments: {nodes: [{body: ("finding " + ($i|tostring)),
+                              author: {login: "chatgpt-codex-connector", __typename: "Bot"}}]}}]' > "$fixture"
+  _threads_fixture_gh "$fixture"
+  cat > "$STUB_BIN_DIR/claude" <<STUB
+#!/usr/bin/env bash
+cat > "$capture"
+echo "No changes needed."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=$intent DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=1953 HEAD_SHA=abc REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='chatgpt-codex-connector[bot]'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  local captured
+  captured="$(cat "$capture")"
+  rm -rf "$tmpdir"
+  rm -f "$fixture" "$capture"
+
+  [[ "$captured" == *'"PRRT_166"'* ]]
+  [[ "$captured" != *'"PRRT_165"'* ]]
+}
+
+@test "#2056: fix-reviews sees an open thread past the first page of review threads" {
+  _assert_open_thread_past_first_page_reaches_prompt fix-reviews
+}
+
+@test "#2056: review-changes sees an open thread past the first page of review threads" {
+  _assert_open_thread_past_first_page_reaches_prompt review-changes
+}
+
+_assert_thread_fetch_failure_fails_closed() {
+  local intent="$1"
+  # The open-thread query fails; every other call is benign.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"reviewThreads(first:"*"after:"*) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
+  *"api"*"repos/"*"issues/"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export INTENT_TYPE="$intent" DEV_LEAD_DRY_RUN="true"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not read open review threads"* ]]
+  # The engine never ran on a list it could not read.
+  [[ "$output" != *"would run engine"* ]]
+}
+
+@test "#2056: fix-reviews fails closed when the open-thread fetch fails (not an empty list)" {
+  _assert_thread_fetch_failure_fails_closed fix-reviews
+}
+
+@test "#2056: review-changes fails closed when the open-thread fetch fails (not an empty list)" {
+  _assert_thread_fetch_failure_fails_closed review-changes
 }
