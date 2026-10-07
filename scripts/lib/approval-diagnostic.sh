@@ -74,10 +74,17 @@ readonly _APPROVAL_DIAG_THREADS_FETCH_FAILED='__MRT_FETCH_FAILED__'
 # partial evidence. The diagnostic runs BEFORE the gate but holds the same head
 # committer date, so it predicts the same head-age timeout — an old PR reports
 # "approval issues via the head-age timeout" instead of "still waiting", matching
-# the run (#1902). The quiescence timeout stays gate-owned (it depends on live
-# submission timing) to avoid duplicating drift-prone logic here.
+# the run (#1902).
 # shellcheck disable=SC2034
 readonly _APPROVAL_DIAG_HEAD_AGE_TIMEOUT_SEC=1200
+
+# Kept in sync with advisory-review-gate.sh's ADVISORY_QUIESCENCE_TIMEOUT_SEC (#1193):
+# the time-since-last-submission threshold past which the advisory gate stops waiting
+# and proceeds on partial evidence. The diagnostic models quiescence alongside head-age
+# to avoid reporting "waiting" when the gate is actually ready to proceed via quiescence
+# timeout (thread E, #1902).
+# shellcheck disable=SC2034
+readonly _APPROVAL_DIAG_QUIESCENCE_TIMEOUT_SEC=600
 
 # _approval_diag_default_advisory_json
 #   The advisory-gate denominator as a JSON array of logins, derived from the
@@ -224,6 +231,7 @@ diagnose_approval() {
       | ([ (.reviews // [])[]
            | select((.author.login // "" | ascii_downcase) == ($approver | ascii_downcase))
            | select((.state // "") == "APPROVED" and (.commit.oid // "") == $sha) ] | length) as $appr_at_head
+      | ([ $latest[] | select(.time != "") | .time ] | sort | last) as $latest_sub_time
       | { head_sha: $sha,
           decision: $decision,
           required: ($adv | length),
@@ -233,7 +241,8 @@ diagnose_approval() {
           missing: $missing,
           undispositioned: $undispositioned,
           cr_at_head: $cr_at_head,
-          appr_at_head: $appr_at_head }
+          appr_at_head: $appr_at_head,
+          latest_sub_time: $latest_sub_time }
     ' 2>/dev/null) || {
     echo "[approval-diagnostic] ERROR: could not parse PR snapshot — failing closed" >&2
     return 2
@@ -248,10 +257,10 @@ diagnose_approval() {
   # unlike an IFS=$'\t' read, where tab is whitespace-class and adjacent empty
   # fields would collapse and shift every subsequent value.
   local _f=()
-  mapfile -t _f < <(jq -r '.head_sha, .decision, .required, .submitted, .cr_at_head, .appr_at_head, .undispositioned, .effective, .unavailable' <<<"$facts")
+  mapfile -t _f < <(jq -r '.head_sha, .decision, .required, .submitted, .cr_at_head, .appr_at_head, .undispositioned, .effective, .unavailable, .latest_sub_time' <<<"$facts")
   local head_sha="${_f[0]}" decision="${_f[1]}" required="${_f[2]}" submitted="${_f[3]}"
   local cr_at_head="${_f[4]}" appr_at_head="${_f[5]}" undispositioned="${_f[6]}"
-  local effective="${_f[7]}" unavailable="${_f[8]}"
+  local effective="${_f[7]}" unavailable="${_f[8]}" latest_sub_time="${_f[9]}"
 
   # Maintainer review-thread gate (#1415), modelled only when the caller supplies
   # review-thread data. REUSE check_maintainer_review_threads so the diagnostic and
@@ -296,6 +305,36 @@ diagnose_approval() {
     if [ -n "$_head_epoch" ]; then
       _now_epoch=$(date -u +%s)
       [ $((_now_epoch - _head_epoch)) -gt "$_APPROVAL_DIAG_HEAD_AGE_TIMEOUT_SEC" ] && head_age_timeout="yes"
+    fi
+  fi
+
+  # Quiescence timeout prediction (thread E, #1902). The advisory gate proceeds on
+  # partial evidence once no new bot submission has arrived for the quiescence timeout
+  # window. The diagnostic models quiescence to avoid falsely reporting "still waiting"
+  # when the gate is ready to proceed via quiescence timeout (the missing piece that
+  # the bot comment flags). Best-effort: an absent/unparseable latest_sub_time leaves
+  # this "no" and the waiting branch is used.
+  local quiescence_timeout="no"
+  if [ -n "$latest_sub_time" ] && [ -n "$head_date" ]; then
+    local _latest_epoch="" _head_epoch="" _now_epoch
+    # Parse latest submission time and head push time to determine the quiescence anchor.
+    # The quiescence timer resets on a new head push: use whichever is more recent
+    # (matching advisory-review-gate.sh's quiescence_anchor logic).
+    _latest_epoch=$(date -u -d "$latest_sub_time" +%s 2>/dev/null) \
+      || _latest_epoch=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$latest_sub_time" +%s 2>/dev/null) \
+      || _latest_epoch=""
+    _head_epoch=$(date -u -d "$head_date" +%s 2>/dev/null) \
+      || _head_epoch=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$head_date" +%s 2>/dev/null) \
+      || _head_epoch=""
+    if [ -n "$_latest_epoch" ] && [ -n "$_head_epoch" ]; then
+      _now_epoch=$(date -u +%s)
+      local quiescence_anchor
+      if [ "$_head_epoch" -gt "$_latest_epoch" ]; then
+        quiescence_anchor=$_head_epoch
+      else
+        quiescence_anchor=$_latest_epoch
+      fi
+      [ $((_now_epoch - quiescence_anchor)) -gt "$_APPROVAL_DIAG_QUIESCENCE_TIMEOUT_SEC" ] && quiescence_timeout="yes"
     fi
   fi
 
@@ -349,14 +388,14 @@ diagnose_approval() {
     # PR where every AVAILABLE bot submitted (rate-limited/unsupported bots dropped)
     # is never mislabelled "waiting" while the gate is ready to approve (#1902). The
     # full registry count stays in advisory.required for observability.
-    if [ "$head_age_timeout" = "yes" ]; then
-      # The head-age timeout has ALREADY elapsed (snapshot-provable from the head
-      # committer date): the advisory gate will proceed on partial evidence and
-      # pr-review issues its approving review on the next run. Report it as a proven
-      # timeout fallback, not "still waiting" — this is the case thread D describes.
+    if [ "$head_age_timeout" = "yes" ] || [ "$quiescence_timeout" = "yes" ]; then
+      # A timeout has ALREADY elapsed (snapshot-provable from timestamps): the advisory
+      # gate will proceed on partial evidence and pr-review issues its approving review
+      # on the next run. Report it as a proven timeout fallback, not "still waiting" —
+      # this covers both the head-age timeout (thread D) and quiescence timeout (thread E).
       gate="approval-not-yet-issued"
-      condition="advisory evidence is incomplete (${submitted}/${effective} effective advisory bots; ${required} registered, ${unavailable} unavailable) but the advisory head-age timeout has elapsed — approval issues on partial evidence on the next pr-review run"
-      satisfied_by="pr-review re-runs and issues its approving review on the elapsed head-age timeout (partial evidence)"
+      condition="advisory evidence is incomplete (${submitted}/${effective} effective advisory bots; ${required} registered, ${unavailable} unavailable) but the advisory timeout has elapsed — approval issues on partial evidence on the next pr-review run"
+      satisfied_by="pr-review re-runs and issues its approving review on the elapsed timeout (partial evidence)"
       via_timeout="true"
     else
       # No timeout has fired yet: the advisory gate is WAITING inside its windows.
