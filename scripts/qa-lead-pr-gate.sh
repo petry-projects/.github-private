@@ -126,6 +126,10 @@ qa_lead_pr_gather_and_decide() {
 
   decision="$(qa_lead_gate_decision \
     "$changed_paths" "$labels_json" "$existing_advisory" "$budget_exhausted" || true)"
+  if [ -z "$decision" ]; then
+    _qa_lead_pr_gate_fail_closed "$repo" "$pr" "gate decision empty"
+    return 1
+  fi
   printf '%s\n' "$decision"
   # Return the status explicitly rather than leaving a bare `[ ... ]` as the
   # function's last line: under `set -e`, a standalone conditional that evaluates

@@ -126,16 +126,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read        # checkout THIS repo's tooling + prompts. The agent
-                            # reads the public source repo with github.token; the
-                            # comment is posted with the persona's manifest PAT.
-      pull-requests: read   # the event pre-gate (#1905) reads the PR's changed
-                            # files, labels, and reviews via github.token — with
-                            # only contents:read those reads 403 on a private
-                            # source repo and every routed pull_request advisory
-                            # fails closed (skips).
-      issues: read          # …and the shared issue-comment stream the gate scans
-                            # for the already-advised marker / automation budget.
+      # checkout THIS repo's tooling + prompts. The agent reads the public source
+      # repo with github.token; the comment is posted with the persona's manifest
+      # PAT.
+      contents: read
+      # the event pre-gate (#1905) reads the PR's changed files, labels, and
+      # reviews via github.token — with only contents:read those reads 403 on a
+      # private source repo and every routed pull_request advisory fails closed
+      # (skips).
+      pull-requests: read
+      # …and the shared issue-comment stream the gate scans for the
+      # already-advised marker / automation budget.
+      issues: read
     steps:
       - name: Checkout persona tooling + prompts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
