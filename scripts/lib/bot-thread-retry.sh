@@ -122,13 +122,13 @@ btr_retry_decisions() {
                   | map((attr("reset") | vepoch) // ($t + $pending))),
            retry: (markers($retry_name) | map(ids)),
            sibling: (markers($sibling_name) | length),
-           notice: (markers($notice_name) | map(ids) | add // [])} ] as $notes
+           notice: (markers($notice_name) | map(ids))} ] as $notes
     | ([ $notes[] | select((.hold | length) > 0) | .t ] | max) as $last_hold
     | ([ $notes[] | .hold[] | select(. != null) ] | max) as $hold_until
     # A pending bot-comment retry holds the per-PR lane too: a second dispatch
     # would supersede it, so it counts as pending here.
     | ([ $notes[] | select((.retry | length) > 0 or .sibling > 0) | .t ] | max) as $last_retry
-    | ([ $notes[] | .notice[] ] | unique) as $noticed
+    | ([ $notes[] | .notice[][] ] | unique) as $noticed
     | [ $threads[] | objects
         | select((.isResolved | type) == "boolean" and (.isOutdated | type) == "boolean"
                  and .isResolved == false and .isOutdated == false)
