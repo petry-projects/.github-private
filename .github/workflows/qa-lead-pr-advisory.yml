@@ -58,7 +58,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read        # checkout the gate script + libs
-      pull-requests: read    # read changed files, labels, comments
+      pull-requests: read   # read changed files, labels, reviews
+      issues: read          # read issue comments (the shared PR comment stream)
     outputs:
       decision: ${{ steps.decide.outputs.decision }}
     steps:
