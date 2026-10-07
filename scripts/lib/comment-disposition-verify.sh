@@ -223,13 +223,14 @@ cdv_finding_tokens() {
 
 # _cdv_diff_side <diff> <-|+>
 #   The removed (`-`) or added (`+`) lines of a unified diff, without the
-#   `--- a/…` / `+++ b/…` file headers. Pure.
+#   `--- a/…` / `+++ b/…` file headers and without the one-character diff
+#   marker, so a token at column 0 is not flanked by `-`/`+`. Pure.
 _cdv_diff_side() {
   local diff="${1:-}" side="${2:-}"
   if [[ "$side" == "-" ]]; then
-    { grep -E '^-' <<< "$diff" || true; } | { grep -vE '^--- (a/|/dev/null)' || true; }
+    { grep -E '^-' <<< "$diff" || true; } | { grep -vE '^--- (a/|/dev/null)' || true; } | sed 's/^.//'
   else
-    { grep -E '^\+' <<< "$diff" || true; } | { grep -vE '^\+\+\+ (b/|/dev/null)' || true; }
+    { grep -E '^\+' <<< "$diff" || true; } | { grep -vE '^\+\+\+ (b/|/dev/null)' || true; } | sed 's/^.//'
   fi
 }
 

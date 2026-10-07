@@ -5809,10 +5809,10 @@ case "$ARGS" in
     jq -c --arg id "${ARGS##*id=}" '{data:{node:{body:(first(.[] | select(.id == $id)) | .body)}}}' "$NODES_FILE"; exit 0 ;;
   *"on IssueComment"*)
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
+  *"reviewThreads"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; exit 0 ;;
   *"pageInfo"*"comments"*|*"comments"*"pageInfo"*)
     printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$(cat "$NODES_FILE")"'}}}}}'; exit 0 ;;
-  *"reviewThreads"*)
-    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'; exit 0 ;;
   *"graphql"*)
     printf '%s' '{"data":{}}'; exit 0 ;;
   *"pr view"*)

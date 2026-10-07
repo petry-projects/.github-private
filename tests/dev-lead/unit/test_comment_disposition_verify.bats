@@ -568,3 +568,10 @@ Also `real_token`.'
   [ "$status" -eq 0 ]
   [ "$output" = "content-removes-token" ]
 }
+
+@test "#2051: a token at column 0 of a removed line is matched (diff marker stripped)" {
+  local d=$'--- a/x.md\n+++ b/x.md\n@@ -1,2 +1,1 @@\n---emit-gone usage\n keep'
+  run bash -c "source '$LIB'; cdv_removed_token \"\$1\" \"\$2\"" _ "$d" "--emit-gone"
+  [ "$status" -eq 0 ]
+  [ "$output" = "--emit-gone" ]
+}
