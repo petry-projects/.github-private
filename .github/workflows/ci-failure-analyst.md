@@ -11,9 +11,6 @@ permissions:
 
 engine: claude
 
-models:
-  claude: [sonnet]
-
 tools:
   github:
     toolsets: [context, pull_requests, actions]
