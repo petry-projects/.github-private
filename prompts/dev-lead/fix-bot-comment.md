@@ -103,6 +103,22 @@ The claim payload is schema `v1` — one comment per reply, with a full 40-char 
 
 **Do not resolve the thread yourself.** You must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance — resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate. The harness resolves every bot thread you addressed with an our-account addressed-marker reply, plus any thread from this bot marked `isOutdated: true`. Your reply and its marker are your only lever on resolution.
 
+## Deferring a valid finding that is out of scope (#2045)
+
+When a thread from this bot is a real finding that does not belong in this PR, do not leave a bare skip note: that thread can never be resolved and blocks merge. Defer it to the repo's **single** `dev-lead: deferred review findings` tracking issue (never one issue per finding):
+
+1. Find the open issue with that exact title (`gh issue list --repo ${REPO} --state open --search 'in:title "dev-lead: deferred review findings"' --json number,title`). If none exists, reuse the tracker this repo already cites (rename it to that title), and only otherwise create one. If more than one is open, use the lowest-numbered.
+2. Get the originating comment URL by querying the thread node: `gh api graphql -f query='query($id:ID!){node(id:$id){... on PullRequestReviewThread{comments(first:1){nodes{url}}}}}' -f id=<thread id>`. Append that URL plus a one-line summary to the issue: `gh issue comment <n> --repo ${REPO} --body "…"`.
+3. Reply to the thread with the reason and the tracker, ending with **exactly one** marker and **no** addressed-marker or claim:
+
+```
+Valid, but deferring — out of scope for this PR: <reason>. Tracked in #<n>.
+
+<!-- dev-lead:deferred ref=#<n> -->
+```
+
+The harness resolves the thread, on commit and no-commit passes alike, only when your latest reply carries exactly one such marker and `#<n>` is an **open** issue whose body or comments link the thread. Deferral is for **bot** threads only; never defer a marker-less maintainer thread, and if a maintainer marked the finding required, fix it instead.
+
 ## SonarQube / SonarCloud comments
 
 If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots or ratings **without referencing specific files or line numbers**, the SonarCloud dashboard link is not browsable — you must infer the hotspot from the PR's changed files:

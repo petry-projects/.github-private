@@ -1763,6 +1763,10 @@ case "\$ARGS" in
     ;;
   *"PullRequestReviewThread"*) cat "$fx/node.json" ;;
   *"reviewThreads"*) cat "$fx/threads.json" ;;
+  *"repos/petry-projects/.github-private/issues/2050/comments"*)
+    if [ -n "\${DEFER_ISSUE_COMMENTS_FAIL:-}" ]; then echo '{"message":"Server Error"}'; exit 1; fi
+    cat "$fx/issue-comments.json"
+    ;;
   *"repos/petry-projects/.github-private/issues/2050/comments"*) cat "$fx/issue-comments.json" ;;
   *"repos/petry-projects/.github-private/issues/2050"*)
     if [ -s "$fx/issue.json" ]; then cat "$fx/issue.json"; else echo '{"message":"Not Found"}'; exit 1; fi
@@ -1922,6 +1926,17 @@ _2045_open_issue() {
   [ "$status" -eq 1 ]
 }
 
+@test "resolve_deferred_bot_threads (#2045): tracking-issue comments page failure -> stays open and counts as failure" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings (none linked)"}'
+  export DEFER_ISSUE_COMMENTS_FAIL=1
+  _2045_run_case
+  [[ "$_HARNESS_OUTPUT" == *"(comments-unreadable)"* ]]
+  [[ "$_HARNESS_OUTPUT" != *"(no-mention)"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
 @test "resolve_deferred_bot_threads (#2045): more than one marker -> stays open" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->
 <!-- dev-lead:deferred ref=#2050 -->')"
@@ -1994,7 +2009,7 @@ _2045_open_issue() {
   cat > "$STUB_BIN_DIR/gh" << GHEOF
 #!/usr/bin/env bash
 echo "\$*" >> "$GH_CALLS"
-echo "{}"
+echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
   run bash "$FIX_REVIEWS_SCRIPT"
