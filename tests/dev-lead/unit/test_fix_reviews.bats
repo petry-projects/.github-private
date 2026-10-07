@@ -5869,3 +5869,286 @@ GHEOF
 @test "#2056: review-changes fails closed when the open-thread fetch fails (not an empty list)" {
   _assert_thread_fetch_failure_fails_closed review-changes
 }
+
+# ── #2004: a `fixed` disposition is verified by the cited commit's DIFF CONTENT ──
+# On PR #1977 a `fixed` disposition cited 89f46597, the commit that INTRODUCED the
+# finding (`--emit-workflow-only`), not e7e7008b, which removed it. The old rule
+# ("the sha was produced by THIS pass") rejected it with no signal, and dev-lead
+# never re-answered its own disposition, so the PR blocked forever. These drive
+# REAL successful fix-reviews passes (engine exits 0 with no changes) against a
+# real git repo:
+#   A  introduces the token (dated BEFORE the finding)
+#   B  an unrelated later commit with a non-empty diff
+#   C  removes the token (the real fix)
+# origin/main sits at the initial commit, so A/B/C are PR-branch commits.
+
+# _2004_commit <name> <iso-date> <shell> — commit in $T2004_REPO at a fixed date.
+_2004_commit() {
+  (cd "$T2004_REPO" && eval "$3" && git add -A \
+    && GIT_COMMITTER_DATE="$2" GIT_AUTHOR_DATE="$2" \
+       git -c user.email=t@test -c user.name=T commit -q -m "$1")
+  git -C "$T2004_REPO" rev-parse HEAD
+}
+
+# _setup_2004 — the repo (init + A + B; C is added by _2004_land_fix) and stubs.
+_setup_2004() {
+  T2004_REPO="$BATS_TEST_TMPDIR/repo2004"
+  export MINLOG="$BATS_TEST_TMPDIR/minimize.log" POSTLOG="$BATS_TEST_TMPDIR/posts.log"
+  : > "$MINLOG"; : > "$POSTLOG"
+  mkdir -p "$T2004_REPO/scripts"
+  git -C "$T2004_REPO" init -q
+  printf '#!/usr/bin/env bash\n# modes:\n' > "$T2004_REPO/scripts/template_stub_drift.sh"
+  echo "hello" > "$T2004_REPO/other.txt"
+  git -C "$T2004_REPO" add .
+  GIT_COMMITTER_DATE="2026-10-01T09:00:00Z" git -C "$T2004_REPO" -c user.email=t@test -c user.name=T commit -q -m init
+  git -C "$T2004_REPO" update-ref refs/remotes/origin/main "$(git -C "$T2004_REPO" rev-parse HEAD)"
+  SHA_A=$(_2004_commit "feat: drift modes" "2026-10-01T10:00:00Z" \
+    "printf '#  --emit-workflow-only REFERENCE_MANIFEST\n' >> scripts/template_stub_drift.sh")
+  SHA_B=$(_2004_commit "chore: unrelated" "2026-10-01T13:00:00Z" "echo world > other.txt")
+
+  # The engine succeeds and changes nothing: a no-changes pass.
+  printf '#!/usr/bin/env bash\necho "Nothing to change."\nexit 0\n' > "$STUB_BIN_DIR/claude"
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"minimizeComment"*)
+    echo "$ARGS" >> "$MINLOG"
+    printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
+  *"IssueComment{body}"*)
+    jq -c --arg id "${ARGS##*id=}" '{data:{node:{body:(first(.[] | select(.id == $id)) | .body)}}}' "$NODES_FILE"; exit 0 ;;
+  *"on IssueComment"*)
+    printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
+  *"reviewThreads"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; exit 0 ;;
+  *"pageInfo"*"comments"*|*"comments"*"pageInfo"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$(cat "$NODES_FILE")"'}}}}}'; exit 0 ;;
+  *"graphql"*)
+    printf '%s' '{"data":{}}'; exit 0 ;;
+  *"pr view"*)
+    printf '%s' '{"state":"OPEN","headRefName":"testbranch"}'; exit 0 ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "$ARGS" >> "$POSTLOG"; exit 0 ;;
+  *"issue comment"*) exit 0 ;;
+  *"check-runs"*) echo '{"check_runs":[]}'; exit 0 ;;
+  *"statuses"*) echo '[]'; exit 0 ;;
+  *"api"*"issues/"*) echo "[]"; exit 0 ;;
+  *"api"*) echo "{}"; exit 0 ;;
+  *) echo "{}"; exit 0 ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export NODES_FILE="$BATS_TEST_TMPDIR/nodes.json"
+}
+
+# _2004_land_fix — commit C, which removes the token (the e7e7008b shape).
+_2004_land_fix() {
+  SHA_C=$(_2004_commit "fix(reviews): address review comments" "2026-10-01T14:00:00Z" \
+    "sed -i 's/--emit-workflow-only/--emit-workflow/' scripts/template_stub_drift.sh")
+}
+
+# _2004_nodes <finding-body> <reply-json>... — the PR's issue comments.
+_2004_nodes() {
+  local body="$1"; shift
+  jq -sc '.' \
+    <(jq -nc --arg b "$body" '{id:"IC_FIND", author:{login:"codeant-ai", __typename:"Bot"},
+        body:$b, isMinimized:false, minimizedReason:null, createdAt:"2026-10-01T12:00:00Z", lastEditedAt:null}') \
+    "$@" > "$NODES_FILE"
+}
+
+# _2004_fixed_reply <reply-id> <createdAt> <sha>
+_2004_fixed_reply() {
+  jq -nc --arg id "$1" --arg c "$2" \
+    --arg body "Fixed the comment.
+<!-- dev-lead:comment-disposition id=IC_FIND disposition=fixed sha=$3 -->" \
+    '{id:$id, author:{login:"donpetry-bot", __typename:"User"}, body:$body, isMinimized:false, minimizedReason:null, createdAt:$c}'
+}
+
+_2004_FINDING='**Nitpick:** this comment names a nonexistent `--emit-workflow-only` mode.'
+
+_run_2004() {
+  run bash -c "
+    cd '$T2004_REPO'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=\$(git rev-parse HEAD) REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export BOT_USER=donpetry-bot MINLOG='$MINLOG' POSTLOG='$POSTLOG' NODES_FILE='$NODES_FILE'
+    unset COPILOT_GITHUB_TOKEN
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+}
+
+@test "#2004 AC4(a): a \`fixed\` disposition citing the INTRODUCING commit is rejected, loudly" {
+  _setup_2004
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_A")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  [[ "$output" == *"::warning::comment IC_FIND: \`fixed\` disposition citing ${SHA_A} did not verify (fixed-unverified:content-adds-token)"* ]]
+  # No commit on the branch removes the token yet, so nothing is re-answered.
+  ! grep -q 'comment-disposition' "$POSTLOG"
+}
+
+@test "#2004 AC4(b): an UNRELATED later commit with a non-empty diff is rejected" {
+  _setup_2004
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_B")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  [[ "$output" == *"fixed-unverified:content-no-token-removed"* ]]
+}
+
+@test "#2004 AC4(c): the correct ANCESTOR commit (removes the token) verifies and minimizes on the first pass" {
+  _setup_2004
+  _2004_land_fix
+  # One more commit on top, so the cited fix is an ancestor, not the head.
+  _2004_commit "chore: later" "2026-10-01T15:00:00Z" "echo again > other.txt" >/dev/null
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T14:30:00Z" "$SHA_C")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  grep -Eq 'classifier:RESOLVED.*id=IC_FIND' "$MINLOG"
+  [[ "$output" == *"content-removes-token"* ]]
+  [[ "$output" != *"fixed-unverified"* ]]
+  # Verified as cited: no corrected reply.
+  ! grep -q 'comment-disposition' "$POSTLOG"
+}
+
+@test "#2004 AC4(d): a REBASED sha (no longer on the head) yields not-on-head through the real resolver" {
+  _setup_2004
+  _2004_land_fix
+  local old_c="$SHA_C"
+  # Rewrite C (as a rebase would): the cited sha is no longer reachable from head.
+  (cd "$T2004_REPO" && GIT_COMMITTER_DATE="2026-10-01T14:10:00Z" \
+    git -c user.email=t@test -c user.name=T commit -q --amend -m "fix(reviews): rebased")
+  local new_c
+  new_c=$(git -C "$T2004_REPO" rev-parse HEAD)
+  [ "$old_c" != "$new_c" ]
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T14:30:00Z" "$old_c")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"citing ${old_c} did not verify (fixed-unverified:not-on-head)"* ]]
+  # The harness re-answers with the rebased commit, which carries the same fix.
+  grep -q "sha=${new_c}" "$POSTLOG"
+  ! grep -q "sha=${old_c}" "$POSTLOG"
+}
+
+@test "#2004 AC4(e): a real SECOND pass re-answers the unverified disposition with the correct sha and minimizes" {
+  _setup_2004
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_A")
+
+  # Pass 1: the cited sha is the introducing commit and no fix exists yet.
+  _run_2004
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"fixed-unverified:content-adds-token"* ]]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  ! grep -q 'comment-disposition' "$POSTLOG"
+
+  # The fix lands; the same unverified disposition is still the only reply.
+  _2004_land_fix
+  _run_2004
+  [ "$status" -eq 0 ]
+  # AC3: the prior disposition is NOT treated as settled — exactly one corrected
+  # reply is posted, citing the commit whose diff removes the token.
+  [ "$(grep -c 'comment-disposition id=IC_FIND disposition=fixed' "$POSTLOG")" -eq 1 ]
+  grep -q "sha=${SHA_C}" "$POSTLOG"
+  grep -q -- "--emit-workflow-only" "$POSTLOG"
+  # The original comment is minimized RESOLVED; the wrong reply goes OUTDATED.
+  grep -Eq 'classifier:RESOLVED.*id=IC_FIND' "$MINLOG"
+  grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
+}
+
+@test "#2004: a finding with no distinctive token fails closed for a commit not from this pass" {
+  _setup_2004
+  _2004_nodes "Please double-check the null path." <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_B")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  [[ "$output" == *"tokenless-not-this-pass"* ]]
+}
+
+@test "#2004: unverified \`fixed\` replies never stack — superseded ones go OUTDATED, nothing resolves" {
+  _setup_2004
+  _2004_nodes "$_2004_FINDING" \
+    <(_2004_fixed_reply R1 "2026-10-01T13:10:00Z" "$SHA_A") \
+    <(_2004_fixed_reply R2 "2026-10-01T13:20:00Z" "$SHA_B")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  ! grep -Eq 'classifier:RESOLVED' "$MINLOG"
+  grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
+  ! grep -Eq 'id=R2' "$MINLOG"
+  ! grep -q 'comment-disposition' "$POSTLOG"
+}
+
+# The fix-bot-comment idempotency snippet, executed (#2004 / #1992). A re-fire may
+# re-answer an UNVERIFIED `fixed` (its comment is still open) exactly where the
+# harness re-checks it. A RESOLVED comment's `fixed` and any non-`fixed`
+# disposition still suppress a second reply, so replies never stack.
+# _fbc_snippet <meta-node-json> <comment-nodes-json> — runs the prompt's bash block.
+_fbc_snippet() {
+  local snip="$BATS_TEST_TMPDIR/snippet.sh"
+  awk '/^   ```bash$/{f=1; next} f && /^   ```$/{exit} f' "$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md" \
+    | sed -e 's/^   //' -e "s/\${COMMENT_NODE_ID}/IC_NOTE/g" -e "s/\${ACTOR}/codeant-ai[bot]/g" > "$snip"
+  echo 'echo WOULD_POST' >> "$snip"
+  printf '%s' "$1" > "$BATS_TEST_TMPDIR/meta.json"
+  printf '%s' "$2" > "$BATS_TEST_TMPDIR/cnodes.json"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"node(id"*) printf '{"data":{"node":%s}}' "\$(cat '$BATS_TEST_TMPDIR/meta.json')" ;;
+  *"comments(last"*) printf '{"data":{"repository":{"pullRequest":{"comments":{"nodes":%s}}}}}' "\$(cat '$BATS_TEST_TMPDIR/cnodes.json')" ;;
+  *) echo '{}' ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  run env REPO=petry-projects/.github-private PR_NUMBER=54 BOT_USER=donpetry-bot PATH="$STUB_BIN_DIR:$PATH" bash "$snip"
+}
+
+_fbc_reply() {  # $1=disposition-tail $2=createdAt
+  jq -nc --arg b "Earlier answer.
+<!-- dev-lead:comment-disposition id=IC_NOTE disposition=$1 -->" --arg c "$2" \
+    '[{author:{login:"donpetry-bot"}, body:$b, isMinimized:false, createdAt:$c}]'
+}
+
+@test "#2004: fix-bot-comment re-answers an UNVERIFIED \`fixed\` (its comment is still open)" {
+  _fbc_snippet '{"author":{"login":"codeant-ai"},"isMinimized":false,"minimizedReason":null,"lastEditedAt":null}' \
+    "$(_fbc_reply "fixed sha=89f465979ae823b527a3f06b643c4679195dba4e" "2026-10-01T13:00:00Z")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WOULD_POST"* ]]
+}
+
+@test "#2004: fix-bot-comment never re-answers a VERIFIED \`fixed\` (its comment is RESOLVED)" {
+  _fbc_snippet '{"author":{"login":"codeant-ai"},"isMinimized":true,"minimizedReason":"RESOLVED","lastEditedAt":"2026-10-01T12:30:00Z"}' \
+    "$(_fbc_reply "fixed sha=e7e7008b00000000000000000000000000000000" "2026-10-01T13:00:00Z")"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"WOULD_POST"* ]]
+  [[ "$output" == *"already has your disposition reply"* ]]
+}
+
+@test "#2004: fix-bot-comment still never stacks a second non-\`fixed\` disposition (#1992)" {
+  _fbc_snippet '{"author":{"login":"codeant-ai"},"isMinimized":false,"minimizedReason":null,"lastEditedAt":null}' \
+    "$(_fbc_reply "informational" "2026-10-01T13:00:00Z")"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"WOULD_POST"* ]]
+}
+
+@test "#2004: the prompts require citing the commit whose diff removes the finding" {
+  local p
+  for p in fix-reviews fix-bot-comment; do
+    grep -q "fixed-unverified" "$SCRIPT_DIR/prompts/dev-lead/$p.md"
+    grep -q "git log -S" "$SCRIPT_DIR/prompts/dev-lead/$p.md"
+    grep -qi "never cite the commit that introduced" "$SCRIPT_DIR/prompts/dev-lead/$p.md" \
+      || grep -q "never the one that introduced it" "$SCRIPT_DIR/prompts/dev-lead/$p.md"
+  done
+  # The old "this pass produced the sha" rule for issue-comment `fixed` is gone.
+  ! grep -q "the harness rejects a \`fixed\` sha from an earlier pass" "$SCRIPT_DIR/prompts/dev-lead/fix-reviews.md"
+  ! grep -q "only verifies a \`fixed\` sha from the pass that cites it" "$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md"
+}
