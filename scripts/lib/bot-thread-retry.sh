@@ -186,7 +186,7 @@ btr_fetch_pr_threads() {
       }
     }
   }'
-  local all='[]' has_next="true" cursor page nodes
+  local all='[]' has_next="true" cursor prior_cursor page nodes
   local cursor_args=()
   while [ "$has_next" = "true" ]; do
     page=$(gh api graphql -f query="$query" -F owner="${repo%%/*}" -F repo="${repo##*/}" \
@@ -202,6 +202,10 @@ btr_fetch_pr_threads() {
     if [ "$has_next" = "true" ] && [ -z "$cursor" ]; then
       return 1
     fi
+    if [ "$has_next" = "true" ] && [ "$cursor" = "$prior_cursor" ]; then
+      return 1
+    fi
+    prior_cursor="$cursor"
     cursor_args=(-f "cursor=${cursor}")
   done
   printf '%s\n' "$all"
