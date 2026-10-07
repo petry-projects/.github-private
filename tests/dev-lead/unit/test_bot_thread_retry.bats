@@ -186,6 +186,14 @@ _retry_marker() { # <threads_csv> <attempt> <at>
   [ "$(jq -r '.exhausted_unnoticed | length' <<< "$out")" = "0" ]
 }
 
+@test "btr: an exhaustion notice naming a different thread does not hide a newly exhausted one" {
+  out="$(_decide "$(_threads "$(_thread PRRT_cubic cubic-dev-ai 2026-10-01T10:00:00Z)")" \
+    "$(_ours "$(_retry_marker PRRT_cubic 1 2026-10-01T12:00:00Z)" 2026-10-01T12:00:00Z)" \
+    "$(_ours "$(_retry_marker PRRT_cubic 2 2026-10-01T15:00:00Z)" 2026-10-01T15:00:00Z)" \
+    "$(_ours '<!-- dev-lead-bot-thread-retry-exhausted threads=PRRT_other -->' 2026-10-01T20:00:00Z)")"
+  [ "$(jq -r '.exhausted_unnoticed | join(",")' <<< "$out")" = "PRRT_cubic" ]
+}
+
 @test "btr: the exhaustion notice marker is not mistaken for a retry marker" {
   out="$(_decide "$(_threads "$(_thread PRRT_cubic cubic-dev-ai)")" \
     "$(_ours '<!-- dev-lead-bot-thread-retry-exhausted threads=PRRT_cubic -->' 2026-10-02T00:30:00Z)")"

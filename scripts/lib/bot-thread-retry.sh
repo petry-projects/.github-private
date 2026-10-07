@@ -164,7 +164,7 @@ btr_retry_decisions() {
         dispatch: [ .[] | select(.decision == "dispatch") | .id ],
         attempt: ([ .[] | select(.decision == "dispatch") | .attempt ] | max),
         exhausted: [ .[] | select(.reason == "retry-attempts-exhausted") | .id ] }
-    | .exhausted_unnoticed = [ .exhausted[] | select(($noticed | index(.)) == null) ]
+    | .exhausted_unnoticed = [ .exhausted[] | . as $e | select(($noticed | index($e)) == null) ]
   ' 2>/dev/null
 }
 
