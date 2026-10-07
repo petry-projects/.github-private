@@ -6,9 +6,6 @@ on:
 engine: claude
 model: claude
 
-models:
-  claude: [sonnet]
-
 permissions:
   contents: read
   pull-requests: read
