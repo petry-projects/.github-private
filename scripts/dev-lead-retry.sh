@@ -698,6 +698,7 @@ scan_pr_for_undispositioned_bot_comments() {
     echo "0"; return 0
   fi
   local labels_json
+  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
   if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
     echo "0"; return 0
   fi
@@ -1015,6 +1016,20 @@ scan_pr_for_dropped_reviews() {
 
   if has_unaddressed_head_findings "$pr_number" "$head_sha" "$trusted_csv" \
        "$reviews_json" "$review_comments_json" "$comments_json"; then
+    # Re-check for guard before posting: a concurrent caller may have posted one
+    # between the initial guard check (line 1009) and here, while we were fetching
+    # findings. Fetch fresh comments to verify.
+    local fresh_guard_check rc=0
+    fresh_guard_check=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+      --jq '[.[].body]' 2>/dev/null | jq -s 'add // []') || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "  [skip] dropped-reviews: PR ${pr_number} could not verify dispatch guard (read failed) — skipping to avoid duplicate dispatch" >&2
+      echo "0"; return 0
+    fi
+    if has_dispatch_guard "$fresh_guard_check" "$head_sha"; then
+      echo "  [skip] dropped-reviews: PR ${pr_number} SHA ${head_sha:0:8} concurrent guard detected — skipping dispatch" >&2
+      echo "0"; return 0
+    fi
     # Observable signal (#1741 AC #2): a ::warning:: distinguishes "a run was
     # dropped and is being recovered" from "nothing to do" without a manual sweep.
     echo "::warning::dev-lead dropped-review recovery: PR ${pr_number} in ${repo} has trusted-reviewer findings on HEAD ${head_sha:0:8} with no dev-lead-fix-reviews marker — a pending run was likely cancelled before it ran (#1741). Re-dispatching fix-reviews." >&2
