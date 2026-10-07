@@ -80,6 +80,7 @@ fetch_dev_lead_runs() {
     | jq -s 'add // []'
 }
 
+# main: measure dev-lead cancellation share over a time window and report metrics
 main() {
   local repo="${REPO:-petry-projects/.github-private}"
   local wf="${WORKFLOW_FILE:-dev-lead.yml}"

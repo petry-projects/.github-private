@@ -1213,6 +1213,7 @@ list_repos_for_org() {
   echo "$result"
 }
 
+# main: scan repos for rate-limited markers and failed issues, dispatch retries
 main() {
   echo "[retry] dev-lead-retry starting at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "[retry] dry_run=${DRY_RUN} dispatch_delay=${DISPATCH_DELAY_SEC}s"

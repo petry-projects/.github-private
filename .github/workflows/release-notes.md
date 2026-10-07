@@ -4,6 +4,7 @@ on:
     branches: [main]
 
 engine: claude
+model: claude
 
 models:
   claude: [sonnet]
