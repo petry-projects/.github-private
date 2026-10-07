@@ -10,6 +10,7 @@ permissions:
   pull-requests: read
 
 engine: claude
+model: claude
 
 models:
   claude: [sonnet]
