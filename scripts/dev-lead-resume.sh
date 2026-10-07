@@ -34,6 +34,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=dev-lead-retry.sh
 source "$SCRIPT_DIR/dev-lead-retry.sh"
 
+# resume_main: event-first resume dispatch for rate-limited or dropped dev-lead work
+# Reuses scan_pr_for_rate_limits and scan_pr_for_dropped_reviews from dev-lead-retry.sh
+# to dispatch retries only when rate-limit reset window has elapsed and all stop
+# conditions (human gates, budget exhaustion) remain clear. Shares the dispatch-dedup
+# guard with the cron path so no duplicates fire on concurrent event+cron arrival.
 resume_main() {
   local repo="${REPO:-}" pr="${PR_NUMBER:-}"
 
