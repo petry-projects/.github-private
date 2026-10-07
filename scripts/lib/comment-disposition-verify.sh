@@ -152,7 +152,7 @@ _cdv_is_valid_disposition() {
 #   Decide whether the harness may resolve (minimize RESOLVED) the ORIGINAL
 #   comment. <is_human> and <verified> are the strings "true"/"false".
 #     - <verified> is the disposition-specific verification the CALLER computed:
-#         fixed        → the cited sha is on the PR head and its diff is non-empty
+#         fixed        → cdv_fixed_verdict accepted the cited sha (#2004)
 #         out-of-scope → the referenced issue exists
 #         invalid/answered/informational → a reply with non-empty evidence exists
 #     - A human maintainer's comment is auto-resolved ONLY on a verified `fixed`
@@ -166,6 +166,196 @@ cdv_authorize() {
   if [[ "$is_human" == "true" ]]; then
     [[ "$disposition" == "fixed" ]] && return 0
     return 1
+  fi
+  return 0
+}
+
+# ── `fixed` verification by diff content (#2004) ──────────────────────────────
+# On PR #1977 a `fixed` disposition cited 89f46597, the commit that INTRODUCED the
+# finding (its diff added `--emit-workflow-only`), not e7e7008b, the commit that
+# removed it. The old rule ("the cited sha was produced by THIS pass") could never
+# accept the real fix from an earlier pass, so the comment stayed open forever.
+# Accepting any later commit instead would fail OPEN: an unrelated commit would
+# resolve the comment. So the cited commit's own diff must REMOVE (a `-` line) a
+# distinctive token named by the finding and must not ADD it (a `+` line). Only a
+# finding with no extractable token falls back to the date rule, and the verdict
+# fails closed unless the cited commit was produced by this pass (`tokenless-not-this-pass`).
+
+# The jq program behind cdv_finding_tokens. HTML comments and fenced code blocks
+# are dropped first: a fenced block is usually a suggested patch, whose text the
+# fixing commit ADDS. Then it collects backticked spans, `--flag` names, and
+# double- or single-quoted identifiers. A single quote counts only when it is not
+# inside a word, so prose apostrophes ("it's") never open a span. The "p" flag
+# lets `.` cross newlines, so a multi-line comment or fence is removed whole.
+_CDV_TOKEN_JQ=$(cat <<'JQ'
+def generic:
+  (ascii_downcase) as $t
+  | ($t | test("^[0-9]+([.][0-9]+)?$"))
+    or ($t | test("^(local|true|false|if|then|else|elif|fi|return|echo|exit|set|unset|null|none|for|do|done|while|case|esac|in|function|export|readonly|declare|eval|test|and|or|not|the|and|git|jq|gh|bash|sh)$"))
+    or ($t | test("^[a-z0-9_.-]*/[a-z0-9_./-]*$"))
+    or ($t | test("^[a-z0-9_.-]+[.](sh|md|yml|yaml|json|bats|py|js|ts|txt)$"));
+$b
+| gsub("<!--.*?-->"; ""; "p")
+| gsub("```.*?```"; ""; "p")
+| [ (scan("`([^`\n]+)`") | .[0]),
+    (scan("(?:^|[^A-Za-z0-9_-])(--[A-Za-z][A-Za-z0-9_-]*[A-Za-z0-9])") | .[0]),
+    (scan("[\"“]([A-Za-z_][A-Za-z0-9_.:/-]*)[\"”]") | .[0]),
+    (scan("(?:^|[^A-Za-z0-9])'([A-Za-z_][A-Za-z0-9_.:/-]*)'(?![A-Za-z0-9])") | .[0]) ]
+| map(gsub("^\\s+|\\s+$"; ""))
+| map(select(length >= 3 and length <= 200))
+| map(select(generic | not))
+| unique
+| .[]
+JQ
+)
+readonly _CDV_TOKEN_JQ
+
+# cdv_finding_tokens <comment_body>
+#   Echo the finding's distinctive tokens, one per line (sorted, unique). Spans
+#   shorter than 3 characters, shell keywords, bare numbers and pure path-like spans
+#   are dropped as too generic to identify a fix. Echoes
+#   nothing (rc 0) when the body names no token. Pure.
+cdv_finding_tokens() {
+  local body="${1:-}"
+  [[ -z "$body" ]] && return 0
+  jq -rn --arg b "$body" "$_CDV_TOKEN_JQ" 2>/dev/null || true
+}
+
+# _cdv_diff_side <diff> <-|+>
+#   The removed (`-`) or added (`+`) lines of a unified diff, without the
+#   `--- a/…` / `+++ b/…` file headers and without the one-character diff
+#   marker, so a token at column 0 is not flanked by `-`/`+`. Pure.
+_cdv_diff_side() {
+  local diff="${1:-}" side="${2:-}"
+  if [[ "$side" == "-" ]]; then
+    { grep -E '^-' <<< "$diff" || true; } | { grep -vE '^--- (a/|/dev/null)' || true; } | sed 's/^.//'
+  else
+    { grep -E '^\+' <<< "$diff" || true; } | { grep -vE '^\+\+\+ (b/|/dev/null)' || true; } | sed 's/^.//'
+  fi
+}
+
+# _cdv_has_token <text> <token>
+#   rc 0 when <token> occurs in <text> as a whole token: not flanked by a
+#   word character or `-`, so `--emit-workflow` never matches inside
+#   `--emit-workflow-only`. Pure.
+_cdv_has_token() {
+  local text="${1:-}" tok="${2:-}" esc
+  esc=$(sed 's/[][\.^$*+?(){}|/]/\\&/g' <<< "$tok")
+  grep -qE -- "(^|[^A-Za-z0-9_-])${esc}($|[^A-Za-z0-9_-])" <<< "$text"
+}
+
+# cdv_removed_token <diff> <tokens>
+#   Echo the first token (from the newline-separated <tokens>) that appears on a
+#   removed line of <diff> and on no added line; rc 0. rc 1 when there is none.
+#   Matching is whole-token (see _cdv_has_token). Pure.
+cdv_removed_token() {
+  local diff="${1:-}" tokens="${2:-}" removed added tok
+  removed=$(_cdv_diff_side "$diff" "-")
+  added=$(_cdv_diff_side "$diff" "+")
+  while IFS= read -r tok; do
+    [[ -z "$tok" ]] && continue
+    if _cdv_has_token "$removed" "$tok" && ! _cdv_has_token "$added" "$tok"; then
+      printf '%s' "$tok"
+      return 0
+    fi
+  done <<< "$tokens"
+  return 1
+}
+
+# cdv_diff_token_verdict <diff> <tokens>
+#   Judge whether the cited commit's diff addresses the finding. Echoes one token:
+#     content-removes-token    — a token is removed and not re-added (rc 0)
+#     content-adds-token       — no such token, and the diff ADDS one (the
+#                                introducing commit, the #1977 shape) (rc 1)
+#     content-no-token-removed — the diff does not touch any token (an unrelated
+#                                commit) (rc 1)
+#     no-tokens                — <tokens> is empty (rc 1); cdv_fixed_verdict then
+#                                requires the commit to be from this pass
+#   Note: #2051 — when a finding has multiple distinct issues (multiple tokens),
+#   this function accepts a commit that removes only one, even if others remain.
+#   The verification could be strengthened by requiring all tokens to be removed
+#   or by checking that no unrelated changes accompany the token removal.
+#   Pure.
+cdv_diff_token_verdict() {
+  local diff="${1:-}" tokens="${2:-}" added tok
+  local cleaned_tokens
+  cleaned_tokens=$(sed '/^[[:space:]]*$/d' <<< "$tokens") || true
+  if [[ -z "$cleaned_tokens" ]]; then
+    echo "no-tokens"
+    return 1
+  fi
+  if cdv_removed_token "$diff" "$tokens" >/dev/null; then
+    echo "content-removes-token"
+    return 0
+  fi
+  added=$(_cdv_diff_side "$diff" "+")
+  while IFS= read -r tok; do
+    [[ -z "$tok" ]] && continue
+    if _cdv_has_token "$added" "$tok"; then
+      echo "content-adds-token"
+      return 1
+    fi
+  done <<< "$tokens"
+  echo "content-no-token-removed"
+  return 1
+}
+
+# cdv_fixed_verdict <on_head> <in_base> <own_files> <commit_date> <finding_created> <content_verdict> [this_pass]
+#   The full `fixed` verdict. Arguments are facts the caller gathered:
+#     <on_head>          "true" when the sha is reachable from the PR's pushed head
+#     <in_base>          "true" / "false" (the sha is / is not on the base branch),
+#                        or "unknown" when the base branch could not be read
+#     <own_files>        the number of files in the sha's own diff
+#     <commit_date>      the sha's committer date (ISO-8601 Z), "" if unreadable
+#     <finding_created>  the original comment's createdAt (ISO-8601 Z)
+#     <content_verdict>  cdv_diff_token_verdict's token
+#     <this_pass>        "true" when the sha is a commit produced by THIS pass (not
+#                        reachable from RESOLUTION_BASE_SHA); only a tokenless
+#                        finding consults it
+#   Echoes the first failing reason, in this order: not-on-head | base-unknown |
+#   on-base-branch | empty-diff | content-adds-token | content-no-token-removed |
+#   content-unknown | undated | predates-finding | tokenless-not-this-pass (rc 1).
+#   On success echoes content-removes-token, or tokenless-this-pass when the finding
+#   had no token and the commit was produced by this pass (rc 0).
+#   Fails closed on every unreadable input. Pure.
+cdv_fixed_verdict() {
+  local on_head="${1:-}" in_base="${2:-}" own_files="${3:-0}" commit_date="${4:-}"
+  local finding_created="${5:-}" content="${6:-}" this_pass="${7:-false}"
+  local iso='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+  if [[ "$on_head" != "true" ]]; then
+    echo "not-on-head"; return 1
+  fi
+  if [[ "$in_base" != "true" && "$in_base" != "false" ]]; then
+    echo "base-unknown"; return 1
+  fi
+  if [[ "$in_base" == "true" ]]; then
+    echo "on-base-branch"; return 1
+  fi
+  if [[ ! "$own_files" =~ ^[0-9]+$ ]] || [[ "$own_files" -eq 0 ]]; then
+    echo "empty-diff"; return 1
+  fi
+  case "$content" in
+    content-removes-token|no-tokens) ;;
+    content-adds-token|content-no-token-removed)
+      echo "$content"; return 1 ;;
+    *)
+      echo "content-unknown"; return 1 ;;
+  esac
+  if [[ ! "$commit_date" =~ $iso ]]; then
+    echo "undated"; return 1
+  fi
+  # An unreadable finding time cannot show the commit came after it: fail closed.
+  if [[ ! "$finding_created" =~ $iso ]] || [[ "$commit_date" < "$finding_created" ]]; then
+    echo "predates-finding"; return 1
+  fi
+  if [[ "$content" == "no-tokens" ]]; then
+    # No token to match against a diff: only a commit this pass produced counts.
+    if [[ "$this_pass" != "true" ]]; then
+      echo "tokenless-not-this-pass"; return 1
+    fi
+    echo "tokenless-this-pass"
+  else
+    echo "content-removes-token"
   fi
   return 0
 }
