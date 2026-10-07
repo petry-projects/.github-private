@@ -1,3 +1,18 @@
+---
+on:
+  push:
+    branches: [main]
+
+engine: claude
+
+models:
+  claude: [sonnet]
+
+permissions:
+  contents: read
+  pull-requests: read
+---
+
 # Release Notes Generator — Workflow Spec
 
 ## Purpose

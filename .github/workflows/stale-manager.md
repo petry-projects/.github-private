@@ -1,3 +1,19 @@
+---
+on:
+  schedule:
+    - cron: '29 9 * * 1'
+  workflow_dispatch:
+
+engine: claude
+
+models:
+  claude: [sonnet]
+
+permissions:
+  issues: read
+  pull-requests: read
+---
+
 # Stale Manager — Workflow Spec
 
 ## Purpose
