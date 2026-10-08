@@ -945,12 +945,12 @@ has_active_main_run() {
   # If it succeeds but shows active runs, skip the retry to avoid concurrent
   # dispatch into separate concurrency lanes.
   active_count=$(gh api "repos/${repo}/actions/runs?per_page=100&status=queued" 2>/dev/null \
-    | jq --arg pr "$pr_number" '[.workflow_runs[] | select((.name | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
+    | jq --arg pr "$pr_number" '[.workflow_runs[] | select(((.name // "") | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
   if [ "${active_count:-0}" -gt 0 ]; then
     return 0
   fi
   active_count=$(gh api "repos/${repo}/actions/runs?per_page=100&status=in_progress" 2>/dev/null \
-    | jq --arg pr "$pr_number" '[.workflow_runs[] | select((.name | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
+    | jq --arg pr "$pr_number" '[.workflow_runs[] | select(((.name // "") | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
   [ "${active_count:-0}" -gt 0 ]
 }
 
