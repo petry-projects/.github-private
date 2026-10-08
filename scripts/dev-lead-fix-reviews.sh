@@ -1079,12 +1079,24 @@ rdc_find_fixing_commit() {
 _dtv_fetch_and_verify_tracker() {
   local ref="$1" thread_id="$2" origin_db_id="$3"
   local issue_json issue_comments
-  issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>/dev/null) || issue_json=""
+  local issue_err
+  issue_err=$(mktemp 2>/dev/null) || issue_err="/dev/null"
+  if ! issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>"$issue_err"); then
+    issue_json=""
+    # Only a genuine 404 means the issue is missing. Any other failure (5xx, rate
+    # limit, network) fails closed as unreadable so the caller counts it.
+    if ! grep -qE 'HTTP 404|Not Found' "$issue_err" 2>/dev/null; then
+      [ "$issue_err" != "/dev/null" ] && rm -f "$issue_err"
+      echo "issue-unreadable"
+      return 2
+    fi
+  fi
+  [ "$issue_err" != "/dev/null" ] && rm -f "$issue_err"
   # A failed page must not read as "no comments" (that would surface as no-mention
   # and skip the thread without counting a failure): fail closed as unreadable.
   local raw_comments
   if [ -z "$issue_json" ]; then
-    # Unreadable/nonexistent issue: the verifier reports `missing`; no comments to fetch.
+    # Confirmed nonexistent issue (404): the verifier reports `missing`; no comments to fetch.
     dtv_verify_tracking_issue "" "[]" "$thread_id" "$origin_db_id" "$REPO" "$PR_NUMBER"
     return
   fi
@@ -1199,7 +1211,7 @@ resolve_deferred_bot_threads() {
     local verdict_rc=0
     verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
     if [ "$verdict_rc" -ne 0 ]; then
-      [ "$verdict" = "comments-unreadable" ] && failed_count=$((failed_count + 1))
+      { [ "$verdict" = "comments-unreadable" ] || [ "$verdict" = "issue-unreadable" ]; } && failed_count=$((failed_count + 1))
       echo "::notice::skipping thread ${id} — tracking issue #${ref} cannot back the deferral (${verdict}); leaving unresolved (#2045)"
       continue
     fi
@@ -1227,7 +1239,7 @@ resolve_deferred_bot_threads() {
     verdict_rc=0
     verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
     if [ "$verdict_rc" -ne 0 ]; then
-      [ "$verdict" = "comments-unreadable" ] && failed_count=$((failed_count + 1))
+      { [ "$verdict" = "comments-unreadable" ] || [ "$verdict" = "issue-unreadable" ]; } && failed_count=$((failed_count + 1))
       echo "::notice::skipping thread ${id} — tracking issue #${ref} no longer backs the deferral (${verdict}); leaving unresolved (#2045)"
       continue
     fi
