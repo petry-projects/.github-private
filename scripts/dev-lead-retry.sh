@@ -170,9 +170,9 @@ post_dispatch_guard() {
 # check_name on head_sha, so the retry dispatch has full failure context.
 lookup_check_run_details() {
   local repo="$1" head_sha="$2" check_name="$3"
-  gh api "repos/${repo}/commits/${head_sha}/check-runs?per_page=100" \
-    --arg name "$check_name" \
-    --jq '.check_runs
+  # gh api's --jq cannot bind variables (no --arg); pipe to jq instead.
+  gh api "repos/${repo}/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null \
+    | jq --arg name "$check_name" '.check_runs
      | map(select(.name == $name and .conclusion == "failure"))
      | sort_by(.completed_at)
      | last
@@ -944,15 +944,13 @@ has_active_main_run() {
   # Fail safe: if the query fails, assume no active run (continue with retry).
   # If it succeeds but shows active runs, skip the retry to avoid concurrent
   # dispatch into separate concurrency lanes.
-  active_count=$(gh api "repos/${repo}/actions/runs?per_page=100&status=queued" \
-    --arg pr "$pr_number" \
-    --jq '[.workflow_runs[] | select((.name | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
+  active_count=$(gh api "repos/${repo}/actions/runs?per_page=100&status=queued" 2>/dev/null \
+    | jq --arg pr "$pr_number" '[.workflow_runs[] | select((.name | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
   if [ "${active_count:-0}" -gt 0 ]; then
     return 0
   fi
-  active_count=$(gh api "repos/${repo}/actions/runs?per_page=100&status=in_progress" \
-    --arg pr "$pr_number" \
-    --jq '[.workflow_runs[] | select((.name | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
+  active_count=$(gh api "repos/${repo}/actions/runs?per_page=100&status=in_progress" 2>/dev/null \
+    | jq --arg pr "$pr_number" '[.workflow_runs[] | select((.name | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
   [ "${active_count:-0}" -gt 0 ]
 }
 
