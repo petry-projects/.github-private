@@ -494,15 +494,21 @@ scan_pr_for_rate_limits() {
       # a partial marker every pass): hold after PARTIAL_MAX_RETRIES on this SHA
       # instead of re-running the engine. A new head SHA starts a fresh count.
       local partial_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=partial"
+      local done_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes)"
       local partial_count
-      partial_count=$(echo "$comments_json" | jq -r --arg ppat "$partial_pattern" \
-        '[.[] | select(test($ppat))] | length' 2>/dev/null || echo 0)
+      # Only count partial markers positioned after the latest completed marker,
+      # so a completed pass (e.g. human-triggered) resets the retry budget.
+      partial_count=$(echo "$comments_json" | jq -r \
+        --arg ppat "$partial_pattern" --arg tpat "$done_pattern" \
+        'to_entries as $e
+         | ([$e[] | select(.value | test($tpat)) | .key] | max // -1) as $t
+         | [$e[] | select(.key > $t and (.value | test($ppat)))] | length' 2>/dev/null || echo 0)
       if [[ "$partial_count" =~ ^[0-9]+$ ]] && [ "$partial_count" -ge "$PARTIAL_MAX_RETRIES" ]; then
         echo "::warning::${intent_type} partial ${partial_count}x for PR ${pr_number} SHA ${head_sha:0:8} — holding for a human (persistent failure, retry limit ${PARTIAL_MAX_RETRIES})" >&2
         # Hold the PR for the rest of the scan so the #2008 stale-disposition
         # dispatch below cannot re-run the engine, and escalate to a human.
         held=1
-        pr_automation_escalate "$pr_number" "$repo" || true
+        pr_automation_escalate "$pr_number" "$repo" >&2 || true
         continue
       fi
 
