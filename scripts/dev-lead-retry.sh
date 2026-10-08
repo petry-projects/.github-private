@@ -452,7 +452,7 @@ scan_pr_for_rate_limits() {
   # status=blocked (non-quota PR blockers). Matching both keeps re-dispatch behaviour
   # unchanged and leaves pre-#1568 status=rate-limited blocked markers parseable.
   for intent_type in $RETRYABLE_REVIEW_INTENTS; do
-    local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(rate-limited|blocked|history-unavailable)"
+    local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(rate-limited|blocked|history-unavailable|partial)"
     if echo "$comments_json" | jq -e --arg pat "$reviews_pattern" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
       local reset_time
       reset_time=$(echo "$comments_json" | jq -r \
