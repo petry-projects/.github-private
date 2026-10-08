@@ -107,6 +107,13 @@ main() {
 
   local runs windowed metrics
   runs=$(fetch_dev_lead_runs "$repo" "$wf" "$since_iso" "$until_iso")
+  # The workflow-runs endpoint returns at most 1,000 results even with --paginate;
+  # at that cap the window is truncated and the percentages are understated.
+  local fetched
+  fetched=$(jq 'length' <<< "$runs")
+  if [ "${fetched:-0}" -ge 1000 ]; then
+    echo "[metrics] warning: fetched ${fetched} runs, which hits GitHub's 1000-run cap — the window is likely truncated and percentages understated; narrow SINCE_ISO/UNTIL_ISO" >&2
+  fi
   windowed=$(filter_runs_in_window "$runs" "$since_iso" "$until_iso")
   metrics=$(compute_cancellation_metrics "$windowed" "$NEVER_RAN_SEC")
 
