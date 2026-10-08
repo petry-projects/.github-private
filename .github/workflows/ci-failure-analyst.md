@@ -10,9 +10,6 @@ permissions:
   pull-requests: read
 
 engine: claude
-models:
-  claude:
-    - sonnet
 
 tools:
   github:

@@ -3,9 +3,6 @@ on:
   issues:
     types: [opened]
 engine: claude
-models:
-  claude:
-    - sonnet
 
 permissions:
   issues: read

@@ -6,7 +6,7 @@ on:
 
 engine: claude
 models:
-  claude:
+  "":
     - sonnet
 
 permissions:
