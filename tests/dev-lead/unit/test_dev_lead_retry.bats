@@ -353,6 +353,15 @@ _scan_with_markers() {
   [[ "$output" != *"ESCALATE"* ]]
 }
 
+@test "retry: partial markers before a later no-changes marker do not hold or escalate" {
+  local p='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->'
+  local nc='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=no-changes -->'
+  pr_automation_escalate() { echo "ESCALATE $1" >&2; }
+  _scan_with_markers "[\"$p\",\"$p\",\"$p\",\"$nc\"]"
+  [[ "$output" != *"DISPATCH"* ]]
+  [[ "$output" != *"ESCALATE"* ]]
+}
+
 @test "retry: unrelated-histories after history-unavailable is terminal" {
   _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=unrelated-histories -->"]'
   [[ "$output" != *"DISPATCH"* ]]

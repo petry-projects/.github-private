@@ -490,10 +490,29 @@ scan_pr_for_rate_limits() {
       local dispatch_intent="${intent_type}"
       [ "$dispatch_intent" = "human-pr" ] && dispatch_intent="review-changes"
 
+      # Skip if a terminal marker was already posted (prior retry ran to completion)
+      # Check this BEFORE the partial count so a newer terminal marker prevents
+      # hold/escalation, even if there are partial markers after an older terminal.
+      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed|unrelated-histories)"
+      # A terminal marker older than a later status=history-unavailable or
+      # status=partial marker is stale (the pass failed, or could not re-open a
+      # comment, after it), so it must not mask the retry. Comments are
+      # chronological; compare positions.
+      local history_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=history-unavailable"
+      local partial_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=partial"
+      if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" --arg hpat "$history_pattern" --arg ppat "$partial_pattern" '
+          to_entries as $e
+          | ([$e[] | select(.value | test($pat)) | .key] | max) as $t
+          | ([$e[] | select(.value | test($hpat)) | .key] | max) as $h
+          | ([$e[] | select(.value | test($ppat)) | .key] | max) as $p
+          | $t != null and ($h == null or $h < $t) and ($p == null or $p < $t)' >/dev/null 2>&1; then
+        echo "  [skip] ${intent_type} already has terminal result for PR ${pr_number} SHA ${head_sha:0:8}" >&2
+        continue
+      fi
+
       # Bound persistent partial results (a comment that cannot be re-opened posts
       # a partial marker every pass): hold after PARTIAL_MAX_RETRIES on this SHA
       # instead of re-running the engine. A new head SHA starts a fresh count.
-      local partial_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=partial"
       local done_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes)"
       local partial_count
       # Only count partial markers positioned after the latest completed marker,
@@ -509,23 +528,6 @@ scan_pr_for_rate_limits() {
         # dispatch below cannot re-run the engine, and escalate to a human.
         held=1
         pr_automation_escalate "$pr_number" "$repo" >&2 || true
-        continue
-      fi
-
-      # Skip if a terminal marker was already posted (prior retry ran to completion)
-      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed|unrelated-histories)"
-      # A terminal marker older than a later status=history-unavailable or
-      # status=partial marker is stale (the pass failed, or could not re-open a
-      # comment, after it), so it must not mask the retry. Comments are
-      # chronological; compare positions.
-      local history_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=history-unavailable"
-      if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" --arg hpat "$history_pattern" --arg ppat "$partial_pattern" '
-          to_entries as $e
-          | ([$e[] | select(.value | test($pat)) | .key] | max) as $t
-          | ([$e[] | select(.value | test($hpat)) | .key] | max) as $h
-          | ([$e[] | select(.value | test($ppat)) | .key] | max) as $p
-          | $t != null and ($h == null or $h < $t) and ($p == null or $p < $t)' >/dev/null 2>&1; then
-        echo "  [skip] ${intent_type} already has terminal result for PR ${pr_number} SHA ${head_sha:0:8}" >&2
         continue
       fi
 
