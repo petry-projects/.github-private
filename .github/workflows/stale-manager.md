@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 
 engine: claude
+models:
+  claude:
+    - sonnet
 
 permissions:
   issues: read

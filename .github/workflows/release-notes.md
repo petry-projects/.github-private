@@ -4,6 +4,9 @@ on:
     branches: [main]
 
 engine: claude
+models:
+  claude:
+    - sonnet
 
 permissions:
   contents: read
