@@ -1767,7 +1767,6 @@ case "\$ARGS" in
     if [ -n "\${DEFER_ISSUE_COMMENTS_FAIL:-}" ]; then echo '{"message":"Server Error"}'; exit 1; fi
     cat "$fx/issue-comments.json"
     ;;
-  *"repos/petry-projects/.github-private/issues/2050/comments"*) cat "$fx/issue-comments.json" ;;
   *"repos/petry-projects/.github-private/issues/2050"*)
     if [ -s "$fx/issue.json" ]; then cat "$fx/issue.json"; else echo '{"message":"Not Found"}'; exit 1; fi
     ;;
@@ -1931,6 +1930,7 @@ _2045_open_issue() {
   export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings (none linked)"}'
   export DEFER_ISSUE_COMMENTS_FAIL=1
   _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
   [[ "$_HARNESS_OUTPUT" == *"(comments-unreadable)"* ]]
   [[ "$_HARNESS_OUTPUT" != *"(no-mention)"* ]]
   run grep -q "PRRT_2045" "$_MUTATIONS_FILE"

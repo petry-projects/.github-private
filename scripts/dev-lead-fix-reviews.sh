@@ -1232,8 +1232,9 @@ resolve_deferred_bot_threads() {
       continue
     fi
 
-    if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
-        -f id="$id" >/dev/null 2>&1; then
+    resolve_resp=$(gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+        -f id="$id" 2>/dev/null) || resolve_resp=""
+    if [ "$(printf '%s' "$resolve_resp" | jq -r '.data.resolveReviewThread.thread.isResolved // false' 2>/dev/null)" = "true" ]; then
       resolved_count=$((resolved_count + 1))
       echo "::notice::resolved deferred bot thread ${id} (tracked in #${ref})"
     else
