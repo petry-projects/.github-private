@@ -3155,7 +3155,13 @@ case "$INTENT_TYPE" in
       fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
-        [ "$deferred_rc" -eq 0 ] && finalize_review_application "fix-reviews"
+        if [ "$deferred_rc" -eq 0 ]; then
+          finalize_review_application "fix-reviews" || {
+            echo "::warning::fix-reviews: finalize_review_application failed — posting retry marker"
+            post_reviews_rate_limited "fix-reviews" "resolve-failed"
+            rc=1
+          }
+        fi
       elif [ "$cp_rc" -eq 3 ]; then
         # No-op guard (#1340): the fix nets base…head to zero — already flagged
         # for a human, auto-merge disabled. Post no applied/no-changes/retry
@@ -3410,7 +3416,13 @@ case "$INTENT_TYPE" in
       fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
-        [ "$deferred_rc" -eq 0 ] && finalize_review_application "review-changes"
+        if [ "$deferred_rc" -eq 0 ]; then
+          finalize_review_application "review-changes" || {
+            echo "::warning::review-changes: finalize_review_application failed — posting retry marker"
+            post_reviews_rate_limited "review-changes" "resolve-failed"
+            rc=1
+          }
+        fi
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
