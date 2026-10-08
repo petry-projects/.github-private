@@ -1369,9 +1369,11 @@ resolve_dispositioned_comments() {
             echo "::warning::comment ${cid}: its body changed or could not be re-read since it was captured; no correction posted, it stays open for a disposition of the current body (#2004)"
             if [ "$reverify" = "true" ]; then
               # Already RESOLVED: a changed body must not stay minimized (#2008).
-              gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
-                -f id="$cid" >/dev/null 2>&1 \
-                || echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+              if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                  -f id="$cid" >/dev/null 2>&1; then
+                echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                unminimize_failed=1
+              fi
             fi
             continue
           fi
@@ -1389,9 +1391,11 @@ resolve_dispositioned_comments() {
                 echo "::warning::comment ${cid}: its body changed while the correction was posted; leaving it open for a disposition of the current body (#2004)"
                 if [ "$reverify" = "true" ]; then
                   # Already RESOLVED: a changed body must not stay minimized (#2008).
-                  gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
-                    -f id="$cid" >/dev/null 2>&1 \
-                    || echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                  if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                      -f id="$cid" >/dev/null 2>&1; then
+                    echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                    unminimize_failed=1
+                  fi
                 fi
                 continue
               fi
