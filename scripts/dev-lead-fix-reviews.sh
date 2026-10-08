@@ -1085,7 +1085,10 @@ _dtv_fetch_and_verify_tracker() {
     # Only a genuine 404 means the issue is missing. Any other failure (5xx, rate
     # limit, network) fails closed as unreadable so the caller counts it.
     # gh writes the error body to stdout (captured in issue_json) and the status to stderr.
-    if ! { printf '%s\n' "$issue_json"; cat "$issue_err" 2>/dev/null; } | grep -qE 'HTTP 404|Not Found'; then
+    # Require the explicit status (stderr `(HTTP 404)`) or the exact error object
+    # (`{"message":"Not Found"}`); arbitrary "Not Found" text must not downgrade.
+    if ! { grep -qE '\(HTTP 404\)' "$issue_err" 2>/dev/null \
+           || printf '%s' "$issue_json" | jq -e 'type == "object" and .message == "Not Found" and ((.status // "404") | tostring) == "404"' >/dev/null 2>&1; }; then
       [ "$issue_err" != "/dev/null" ] && rm -f "$issue_err"
       echo "issue-unreadable"
       return 2
@@ -1217,9 +1220,19 @@ resolve_deferred_bot_threads() {
       continue
     fi
 
-    # The tracking-issue calls above took time: re-read the thread and require it to
-    # be unchanged (still unresolved, same comments) so a reply that landed meanwhile
-    # is never overridden.
+    # Re-fetch and re-verify the tracking issue immediately before the mutation: it
+    # may have been closed, converted, or edited to drop the thread link meanwhile.
+    verdict_rc=0
+    verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
+    if [ "$verdict_rc" -ne 0 ]; then
+      { [ "$verdict" = "comments-unreadable" ] || [ "$verdict" = "issue-unreadable" ]; } && failed_count=$((failed_count + 1))
+      echo "::notice::skipping thread ${id} — tracking issue #${ref} no longer backs the deferral (${verdict}); leaving unresolved (#2045)"
+      continue
+    fi
+
+    # The tracking-issue calls above took time: as the LAST read before the mutation,
+    # re-read the thread and require it to be unchanged (still unresolved, same
+    # comments) so a reply that landed meanwhile is never overridden.
     local fresh_json fresh_comments
     fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null) || fresh_json=""
     if [ "$(printf '%s' "$fresh_json" | jq -r 'if .data.node.isResolved == null then "unknown" else "ok" end' 2>/dev/null || echo unknown)" = "unknown" ]; then
@@ -1232,16 +1245,6 @@ resolve_deferred_bot_threads() {
        then .data.node.comments.nodes else "changed" end' 2>/dev/null || echo '"changed"')
     if [ "$fresh_comments" != "$comments_json" ]; then
       echo "::notice::skipping thread ${id} — thread changed while verifying the tracking issue; leaving unresolved (#2045)"
-      continue
-    fi
-
-    # Re-fetch and re-verify the tracking issue immediately before the mutation: it
-    # may have been closed, converted, or edited to drop the thread link meanwhile.
-    verdict_rc=0
-    verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
-    if [ "$verdict_rc" -ne 0 ]; then
-      { [ "$verdict" = "comments-unreadable" ] || [ "$verdict" = "issue-unreadable" ]; } && failed_count=$((failed_count + 1))
-      echo "::notice::skipping thread ${id} — tracking issue #${ref} no longer backs the deferral (${verdict}); leaving unresolved (#2045)"
       continue
     fi
 
@@ -3139,9 +3142,20 @@ case "$INTENT_TYPE" in
       else
         resolve_dispositioned_comments "fix-reviews" || _DISPOSITIONS_UNRESOLVED=1
       fi
+      # Deferred bot threads (#2045) resolve BEFORE any terminal marker is posted: a
+      # failed resolution must leave no `applied`/`no-changes` terminal, because
+      # dev-lead-retry.sh skips an intent+SHA that has one and the thread would stay
+      # merge-blocking forever. They are verified against their tracking issue, not
+      # the diff, so they run outside the head-advance gate and on guard aborts too.
+      deferred_rc=0
+      resolve_deferred_bot_threads "fix-reviews" || deferred_rc=1
+      if [ "$deferred_rc" -ne 0 ]; then
+        rc=1
+        echo "::warning::fix-reviews: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
-        finalize_review_application "fix-reviews"
+        [ "$deferred_rc" -eq 0 ] && finalize_review_application "fix-reviews"
       elif [ "$cp_rc" -eq 3 ]; then
         # No-op guard (#1340): the fix nets base…head to zero — already flagged
         # for a human, auto-merge disabled. Post no applied/no-changes/retry
@@ -3156,15 +3170,10 @@ case "$INTENT_TYPE" in
           post_reviews_rate_limited "fix-reviews" "blocked"
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
-        else
+        elif [ "$deferred_rc" -eq 0 ]; then
           post_no_changes "fix-reviews"
         fi
       fi
-      # Deferred bot threads (#2045) are verified against their tracking issue, not
-      # the diff, so they resolve outside the head-advance gate below — and even on a
-      # guard abort (rc 3/4): those add needs-human-review, after which no later pass
-      # revisits the deferral and the thread would block merge forever.
-      resolve_deferred_bot_threads "fix-reviews" || rc=1
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
@@ -3269,13 +3278,19 @@ case "$INTENT_TYPE" in
           _fbc_terminal=""
         fi
       fi
+      # Deferred bot threads (#2045): verified against the tracking issue, so outside
+      # the head-advance gate below and run on guard aborts (rc 3/4) too. Resolved
+      # BEFORE the terminal marker so a failure leaves no terminal that would stop
+      # dev-lead-retry.sh from retrying this intent+SHA.
+      if ! resolve_deferred_bot_threads "fix-bot-comment"; then
+        rc=1
+        echo "::warning::fix-bot-comment: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
+        _fbc_terminal=""
+      fi
       case "$_fbc_terminal" in
         applied)    post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed." ;;
         no-changes) post_no_changes "fix-bot-comment" ;;
       esac
-      # Deferred bot threads (#2045): verified against the tracking issue, so outside
-      # the head-advance gate below and run on guard aborts (rc 3/4) too.
-      resolve_deferred_bot_threads "fix-bot-comment" || rc=1
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
@@ -3384,9 +3399,18 @@ case "$INTENT_TYPE" in
       # independently verified, so outside the head-movement resolution gate.
       # Runs BEFORE the terminal marker (#2037) — see fix-reviews above.
       resolve_dispositioned_comments "review-changes" || _DISPOSITIONS_UNRESOLVED=1
+      # Deferred bot threads (#2045): verified against the tracking issue, so outside
+      # the head-advance gate below. Resolved BEFORE any terminal marker so a failure
+      # leaves none (dev-lead-retry.sh skips an intent+SHA that has one).
+      deferred_rc=0
+      resolve_deferred_bot_threads "review-changes" || deferred_rc=1
+      if [ "$deferred_rc" -ne 0 ]; then
+        rc=1
+        echo "::warning::review-changes: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
-        finalize_review_application "review-changes"
+        [ "$deferred_rc" -eq 0 ] && finalize_review_application "review-changes"
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -3394,13 +3418,10 @@ case "$INTENT_TYPE" in
           post_reviews_rate_limited "review-changes" "blocked"
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
-        else
+        elif [ "$deferred_rc" -eq 0 ]; then
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
-      # Deferred bot threads (#2045): verified against the tracking issue, so
-      # outside the head-advance gate below.
-      resolve_deferred_bot_threads "review-changes" || rc=1
       # Resolution gate (#1617): auto-resolve threads only when this pass advanced
       # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
       if resolution_gate_open "$cp_rc"; then
