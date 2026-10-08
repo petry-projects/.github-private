@@ -4,7 +4,6 @@ on:
     branches: [main]
 
 engine: claude
-model: claude
 
 permissions:
   contents: read

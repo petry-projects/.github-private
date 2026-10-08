@@ -5,7 +5,6 @@ on:
   workflow_dispatch:
 
 engine: claude
-model: claude
 
 permissions:
   issues: read

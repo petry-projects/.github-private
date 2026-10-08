@@ -10,7 +10,6 @@ permissions:
   pull-requests: read
 
 engine: claude
-model: claude
 
 tools:
   github:
