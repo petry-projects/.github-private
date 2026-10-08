@@ -1082,14 +1082,15 @@ _dtv_fetch_and_verify_tracker() {
   local issue_err
   issue_err=$(mktemp 2>/dev/null) || issue_err="/dev/null"
   if ! issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>"$issue_err"); then
-    issue_json=""
     # Only a genuine 404 means the issue is missing. Any other failure (5xx, rate
     # limit, network) fails closed as unreadable so the caller counts it.
-    if ! grep -qE 'HTTP 404|Not Found' "$issue_err" 2>/dev/null; then
+    # gh writes the error body to stdout (captured in issue_json) and the status to stderr.
+    if ! { printf '%s\n' "$issue_json"; cat "$issue_err" 2>/dev/null; } | grep -qE 'HTTP 404|Not Found'; then
       [ "$issue_err" != "/dev/null" ] && rm -f "$issue_err"
       echo "issue-unreadable"
       return 2
     fi
+    issue_json=""
   fi
   [ "$issue_err" != "/dev/null" ] && rm -f "$issue_err"
   # A failed page must not read as "no comments" (that would surface as no-mention
