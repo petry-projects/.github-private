@@ -932,12 +932,36 @@ has_unaddressed_head_findings() {
   return 0
 }
 
+# has_active_main_run <repo> <pr_number>
+# Returns 0 if there's an in-progress or queued run for this PR on the dev-lead
+# workflow. Used by dropped-review recovery to avoid dispatching a retry while
+# the main run might still be processing findings (#1741).
+has_active_main_run() {
+  local repo="$1" pr_number="$2"
+  local active_count
+  # Query workflow runs for this repo, checking for any dev-lead runs (by name)
+  # that are queued or in_progress and associated with this PR number.
+  # Fail safe: if the query fails, assume no active run (continue with retry).
+  # If it succeeds but shows active runs, skip the retry to avoid concurrent
+  # dispatch into separate concurrency lanes.
+  active_count=$(gh api "repos/${repo}/actions/runs?per_page=100&status=queued" \
+    --jq --arg pr "$pr_number" '[.workflow_runs[] | select((.name | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
+  if [ "${active_count:-0}" -gt 0 ]; then
+    return 0
+  fi
+  active_count=$(gh api "repos/${repo}/actions/runs?per_page=100&status=in_progress" \
+    --jq --arg pr "$pr_number" '[.workflow_runs[] | select((.name | contains("Dev-Lead") or contains("dev-lead")) and (.pull_requests[]?.number | tostring) == $pr)] | length' 2>/dev/null || echo "0")
+  [ "${active_count:-0}" -gt 0 ]
+}
+
 # scan_pr_for_dropped_reviews <repo> <pr_number>
 # Recovers a PR whose review-handling run was dropped while pending. Prints only
 # a single integer (retries dispatched) to stdout; all other output goes to
 # stderr so callers can capture the count. Shares every stop-condition with the
 # rate-limited scan (open-state, pr_resume_suppressed budget/human gate, and the
-# dispatch-dedup guard) so it can never re-ignite the #860 amplifier.
+# dispatch-dedup guard) so it can never re-ignite the #860 amplifier. Also checks
+# that no active run is in progress on the main dev-lead-pr-<n> lane (#1741)
+# before dispatching the retry.
 scan_pr_for_dropped_reviews() {
   local repo="$1" pr_number="$2"
 
@@ -1016,6 +1040,12 @@ scan_pr_for_dropped_reviews() {
 
   if has_unaddressed_head_findings "$pr_number" "$head_sha" "$trusted_csv" \
        "$reviews_json" "$review_comments_json" "$comments_json"; then
+    # Guard against dispatching while the main run is still active (#1741):
+    # only retry if the main dev-lead-pr-<n> lane has no queued/in-progress runs.
+    if has_active_main_run "$repo" "$pr_number"; then
+      echo "  [skip] dropped-reviews: PR ${pr_number} has an active run in the main dev-lead-pr-* lane — skipping retry to avoid concurrent dispatch (#1741)" >&2
+      echo "0"; return 0
+    fi
     # Re-check for guard before posting: a concurrent caller may have posted one
     # between the initial guard check (line 1009) and here, while we were fetching
     # findings. Fetch fresh comments to verify.
