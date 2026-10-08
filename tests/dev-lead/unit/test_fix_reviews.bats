@@ -4899,6 +4899,10 @@ case "$ARGS" in
     echo "$ARGS" >> "$MINLOG"
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
   *"on IssueComment"*)
+    # NODE_REOPENS=1: a successful unminimize call re-opens the node on readback.
+    if [ "${NODE_REOPENS:-}" = "1" ] && grep -q 'unminimizeComment' "$MINLOG" 2>/dev/null; then
+      printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0
+    fi
     if [ "${NODE_RESOLVED:-}" = "1" ]; then
       printf '%s' '{"data":{"node":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}'; exit 0
     fi
@@ -5705,6 +5709,20 @@ _succeed_fix_bot_comment() {
   grep -Eq 'unminimizeComment.*id=IC_ORIG' "$MINLOG"
   grep -q 'intent=fix-bot-comment status=no-changes' "$COMMENTLOG"
   ! grep -q 'status=partial' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): once the unminimize re-opens the target, fix-bot-comment posts no terminal marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export NODE_REOPENS=1
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  grep -Eq 'unminimizeComment.*id=IC_ORIG' "$MINLOG"
+  # The target is open and awaits a verified disposition: no terminal marker.
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
 }
 
 @test "resolve_dispositioned_comments(#2037): a failed re-open (edited after its latest disposition) fails the pass even with no other candidate" {

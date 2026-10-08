@@ -2944,8 +2944,12 @@ case "$INTENT_TYPE" in
           try_enable_auto_merge
         fi
       fi
-      # #2037: the pass ends failed so it is visibly not done.
-      [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
+      # #2037: the pass ends failed so it is visibly not done. Also drop the EXIT-trap
+      # auto-merge restore, or it would re-enable merge over a RESOLVED comment.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
+      fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992). The engine
       # may have posted disposition replies and then errored or hit the writer-tier
@@ -3040,8 +3044,11 @@ case "$INTENT_TYPE" in
         fi
         [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] || try_enable_auto_merge
       fi
-      # #2037: the pass ends failed so it is visibly not done.
-      [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
+      # #2037: the pass ends failed so it is visibly not done; no auto-merge restore.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
+      fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
@@ -3158,8 +3165,11 @@ case "$INTENT_TYPE" in
          && [ "${_DISPOSITIONS_UNRESOLVED:-0}" -ne 1 ]; then
         try_enable_auto_merge
       fi
-      # #2037: the pass ends failed so it is visibly not done.
-      [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
+      # #2037: the pass ends failed so it is visibly not done; no auto-merge restore.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
+      fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.

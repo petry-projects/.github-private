@@ -311,6 +311,17 @@ _scan_with_markers() {
   [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
 }
 
+@test "retry: partial marker AFTER an older terminal no-changes marker still dispatches" {
+  _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=no-changes -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->"]'
+  [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
+}
+
+@test "retry: repeated partial markers hit the retry limit and stop dispatching" {
+  local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->'
+  _scan_with_markers "[\"$m\",\"$m\",\"$m\"]"
+  [[ "$output" != *"DISPATCH"* ]]
+}
+
 @test "retry: unrelated-histories after history-unavailable is terminal" {
   _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=unrelated-histories -->"]'
   [[ "$output" != *"DISPATCH"* ]]
