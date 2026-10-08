@@ -499,6 +499,10 @@ scan_pr_for_rate_limits() {
         '[.[] | select(test($ppat))] | length' 2>/dev/null || echo 0)
       if [[ "$partial_count" =~ ^[0-9]+$ ]] && [ "$partial_count" -ge "$PARTIAL_MAX_RETRIES" ]; then
         echo "::warning::${intent_type} partial ${partial_count}x for PR ${pr_number} SHA ${head_sha:0:8} — holding for a human (persistent failure, retry limit ${PARTIAL_MAX_RETRIES})" >&2
+        # Hold the PR for the rest of the scan so the #2008 stale-disposition
+        # dispatch below cannot re-run the engine, and escalate to a human.
+        held=1
+        pr_automation_escalate "$pr_number" "$repo" || true
         continue
       fi
 

@@ -322,6 +322,28 @@ _scan_with_markers() {
   [[ "$output" != *"DISPATCH"* ]]
 }
 
+@test "retry: partial retry limit holds the PR, escalates, and blocks the stale-disposition dispatch" {
+  local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->'
+  export MARKERS_JSON="[\"$m\",\"$m\",\"$m\"]"
+  gh() {
+    case "$*" in
+      *"/pulls/2000"*) echo '{"state":"open","head":{"sha":"abc"},"labels":[]}' ;;
+      *"/comments"*) echo "$MARKERS_JSON" ;;
+      *) echo '[]' ;;
+    esac
+  }
+  pr_resume_suppressed() { return 1; }
+  post_dispatch_guard() { :; }
+  pr_automation_escalate() { echo "ESCALATE $1" >&2; }
+  # The stale-disposition path would dispatch if the hold did not apply.
+  fetch_pr_comment_nodes() { echo '[{"id":"x"}]'; }
+  stale_disposition_needs_dispatch() { return 0; }
+  dispatch_reviews_retry() { echo "DISPATCH intent=$4" >&2; }
+  run scan_pr_for_rate_limits "petry-projects/.github-private" 2000
+  [[ "$output" != *"DISPATCH"* ]]
+  [[ "$output" == *"ESCALATE 2000"* ]]
+}
+
 @test "retry: unrelated-histories after history-unavailable is terminal" {
   _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=unrelated-histories -->"]'
   [[ "$output" != *"DISPATCH"* ]]
