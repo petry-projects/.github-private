@@ -97,9 +97,11 @@ sent_fields() {
         case "$prev" in
           -f|-F|--field|--raw-field) kv+=("$a") ;;
         esac
-        # The attached forms gh also accepts: --field=k=v, --raw-field=k=v, -fk=v, -Fk=v.
+        # The attached forms gh also accepts: --field=k=v, --raw-field=k=v,
+        # -f=k=v / -F=k=v, and -fk=v / -Fk=v.
         case "$a" in
           --field=*|--raw-field=*) kv+=("${a#*=}") ;;
+          -f=*|-F=*) kv+=("${a:3}") ;;
           -f?*|-F?*) kv+=("${a:2}") ;;
         esac
         prev="$a"
