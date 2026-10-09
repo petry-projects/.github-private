@@ -776,8 +776,7 @@ is to keep degrading from moving the outage onto an unmetered provider.
   plus the cooldowns recorded.
 
 **Dry-run budget poller (shipped, #2029: slice 2 of #1565). It is dry-run only and has no
-write path.** `.github/workflows/budget-poller.yml` runs hourly (`:17`) and on
-`workflow_dispatch` with read-only `permissions:` (`contents: read`, `actions: read`).
+write path.** `.github/workflows/budget-poller.yml` runs hourly (`:17`) with read-only `permissions:` (`contents: read`, `actions: read`).
 It authenticates with the existing `CLAUDE_CODE_OAUTH_TOKEN` secret. It does **not**
 set, clear, or write any Actions variable (org or repo) under any input, and there
 is no flag to make it do so. `tests/dev-lead/unit/test_budget_poller.bats` asserts
