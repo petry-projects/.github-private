@@ -965,11 +965,13 @@ scan_pr_for_unreplied_bot_threads() {
     echo "  [warn] bot-thread retry: could not render skip decisions for PR ${pr_number}" >&2
   fi
 
-  post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"
-
   local ids attempt now_iso
   ids=$(jq -r '.dispatch | join(",")' <<< "$decisions")
   if [ -z "$ids" ]; then
+    # Only when nothing is dispatched: a fix-reviews pass covers EVERY unresolved
+    # thread, the exhausted ones included, so a notice posted alongside a dispatch
+    # could go stale while its marker blocks a corrected one.
+    post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"
     echo "0"; return 0
   fi
   attempt=$(jq -r '.attempt' <<< "$decisions")

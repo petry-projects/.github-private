@@ -445,6 +445,22 @@ _comments_page() {
   ! grep -q -- '--method POST' "$GH_LOG"
 }
 
+@test "sweep: no exhaustion notice while another thread is dispatched (the pass covers every thread)" {
+  export THREADS_RESPONSE COMMENTS_RESPONSE
+  THREADS_RESPONSE="$(_threads_page \
+    "$(_thread PRRT_cubic cubic-dev-ai 2026-10-01T10:00:00Z)" \
+    "$(_thread PRRT_codex chatgpt-codex-connector 2026-10-01T22:49:00Z)")"
+  COMMENTS_RESPONSE="$(_comments_page \
+    "$(_ours "$(_retry_marker PRRT_cubic 1 2026-10-01T12:00:00Z)" 2026-10-01T12:00:00Z)" \
+    "$(_ours "$(_retry_marker PRRT_cubic 2 2026-10-01T15:00:00Z)" 2026-10-01T15:00:00Z)")"
+  _setup_sweep
+
+  run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
+  [ "${lines[-1]}" = "1" ]
+  [ "$(grep -c '/dispatches' "$GH_LOG")" -eq 1 ]
+  ! grep -q 'dev-lead-bot-thread-retry-exhausted' "$GH_LOG"
+}
+
 @test "sweep: a PR dev-lead did not author is never scanned" {
   export THREADS_RESPONSE
   THREADS_RESPONSE="$(_threads_page "$(_thread PRRT_cubic cubic-dev-ai)")"
