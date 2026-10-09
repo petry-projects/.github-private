@@ -163,6 +163,9 @@ _mk_repo() {
   echo 'f() { echo success; }' > scripts/canary.sh
   git add -A; git commit -q -m base
   BASE="$(git rev-parse HEAD)"
+  # The merge base of the PR branch and its base branch: here the PR has no
+  # commits of its own yet, so it is the pre-pass head too.
+  MB="$BASE"
 }
 
 @test "ttg_scan_pass: code change + NEW test -> clean" {
@@ -170,7 +173,7 @@ _mk_repo() {
   echo 'g() { :; }' >> scripts/canary.sh
   printf '@test "new" {\n  run g\n}\n' >> tests/canary.bats
   git commit -q -am "fix(reviews): address review comments"
-  run ttg_scan_pass "$BASE" HEAD
+  run ttg_scan_pass "$BASE" HEAD "$MB"
   [[ "$status" -eq 0 ]]
   [[ "$(printf '%s' "$output" | head -1)" == "clean" ]]
 }
@@ -180,7 +183,7 @@ _mk_repo() {
   sed -i 's/success precedence/failure precedence/; s/= success/= failure/' tests/canary.bats
   echo 'f() { echo failure; }' > scripts/canary.sh
   git commit -q -am "fix(reviews): address review comments"
-  run ttg_scan_pass "$BASE" HEAD
+  run ttg_scan_pass "$BASE" HEAD "$MB"
   [[ "$status" -eq 1 ]]
   [[ "$(printf '%s' "$output" | head -1)" == "tampered" ]]
   [[ "$output" == *"tests/canary.bats"* ]]
@@ -190,7 +193,7 @@ _mk_repo() {
   _mk_repo
   sed -i 's/= success/= SUCCESS/' tests/canary.bats
   git commit -q -am $'fix: rename\n\nTest-Change-Justification: maintainer asked to upper-case the status token in review #4159678193'
-  run ttg_scan_pass "$BASE" HEAD
+  run ttg_scan_pass "$BASE" HEAD "$MB"
   [[ "$status" -eq 0 ]]
   [[ "$(printf '%s' "$output" | head -1)" == "justified" ]]
 }
@@ -198,14 +201,202 @@ _mk_repo() {
 @test "ttg_scan_pass: uncommitted working-tree edits to an existing test are scanned too" {
   _mk_repo
   sed -i 's/= success/= failure/' tests/canary.bats
-  run ttg_scan_pass "$BASE" HEAD
+  run ttg_scan_pass "$BASE" HEAD "$MB"
   [[ "$status" -eq 1 ]]
   [[ "$(printf '%s' "$output" | head -1)" == "tampered" ]]
 }
 
 @test "ttg_scan_pass: unknown base fails closed -> unknown rc2" {
   _mk_repo
-  run ttg_scan_pass "" HEAD
+  run ttg_scan_pass "" HEAD "$MB"
   [[ "$status" -eq 2 ]]
   [[ "$(printf '%s' "$output" | head -1)" == "unknown" ]]
+}
+
+# ---------------------------------------------------------------------------
+# "Existing" means existing before the PR (#2141)
+#
+# On PR #2135 a fix-bot-comment pass edited tests/dev-lead/unit/
+# test_ai_engines_config.bats — a file the PR itself added (+195 −0, absent on
+# main). The guard compared against the pre-pass head, called it an existing test,
+# refused the push and retracted five unrelated "Fixed" replies. Only a line that
+# is present at the merge base of the PR branch and its base is protected.
+# ---------------------------------------------------------------------------
+
+# ttg_count_preexisting_removals — pure line-number arithmetic over -U0 diffs
+
+@test "ttg_count_preexisting_removals: removing a line the PR added is not counted" {
+  # PR (merge base -> pre-pass head) added lines 5-7; the pass removes line 6.
+  run ttg_count_preexisting_removals $'@@ -5,1 +5,1 @@\n-x\n+y' $'@@ -4,0 +5,3 @@\n+a\n+b\n+c'
+  [[ "$output" == "0" ]]
+}
+
+@test "ttg_count_preexisting_removals: removing a line that exists at the merge base is counted" {
+  run ttg_count_preexisting_removals $'@@ -2,2 +2,2 @@\n-x\n-y\n+X\n+Y' $'@@ -4,0 +5,3 @@\n+a\n+b\n+c'
+  [[ "$output" == "2" ]]
+}
+
+@test "ttg_count_preexisting_removals: a hunk spanning PR-added and merge-base lines counts only the latter" {
+  # Pass removes lines 4-6; PR added 5-7, so only line 4 pre-dates the PR.
+  run ttg_count_preexisting_removals $'@@ -4,3 +3,0 @@\n-a\n-b\n-c' $'@@ -4,0 +5,3 @@\n+a\n+b\n+c'
+  [[ "$output" == "1" ]]
+}
+
+@test "ttg_count_preexisting_removals: an omitted hunk count means 1; a pure insertion removes nothing" {
+  run ttg_count_preexisting_removals $'@@ -3 +3 @@\n-x\n+y\n@@ -9,0 +10,2 @@\n+n\n+m' ''
+  [[ "$output" == "1" ]]
+}
+
+@test "ttg_count_preexisting_removals: a file the PR created (all lines PR-added) is never counted" {
+  run ttg_count_preexisting_removals $'@@ -1,4 +1,4 @@\n-a\n-b\n-c\n-d\n+A\n+B\n+C\n+D' $'@@ -0,0 +1,10 @@\n+1'
+  [[ "$output" == "0" ]]
+}
+
+# ttg_scan_pass against a real merge base
+
+# _mk_pr: the base commit (main) holds tests/canary.bats; the PR branch then adds a
+# whole new test file AND a new test case inside the existing file. BASE becomes
+# the pre-pass head (PR tip); MB stays the merge base.
+_mk_pr() {
+  _mk_repo
+  git checkout -q -b feat
+  printf '@test "engines config" {\n  run cfg\n  [ "$output" = gemini ]\n}\n' > tests/ai_engines_config.bats
+  printf '@test "pr case" {\n  run f\n  [ "$status" -eq 0 ]\n}\n' >> tests/canary.bats
+  git add -A; git commit -q -m "feat: PR adds tests"
+  BASE="$(git rev-parse HEAD)"
+}
+
+@test "ttg_scan_pass (#2141): a PR-added test file edited in a later pass -> clean" {
+  _mk_pr
+  sed -i 's/= gemini/= claude/' tests/ai_engines_config.bats
+  git commit -q -am "fix(bot): address bot feedback"
+  run ttg_scan_pass "$BASE" HEAD "$MB"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clean" ]]
+}
+
+@test "ttg_scan_pass (#2141): deleting a PR-added test file -> clean" {
+  _mk_pr
+  git rm -q tests/ai_engines_config.bats
+  git commit -q -m "fix(bot): drop it"
+  run ttg_scan_pass "$BASE" HEAD "$MB"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clean" ]]
+}
+
+@test "ttg_scan_pass (#2141): a PR-added test case inside a file that exists on the base, edited -> clean" {
+  _mk_pr
+  sed -i 's/"\$status" -eq 0/"$status" -eq 1/' tests/canary.bats
+  git commit -q -am "fix(reviews): address review comments"
+  run ttg_scan_pass "$BASE" HEAD "$MB"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clean" ]]
+}
+
+@test "ttg_scan_pass (#2141): the #1220 shape — an assertion present at the merge base inverted -> tampered" {
+  _mk_pr
+  sed -i 's/= success/= failure/' tests/canary.bats
+  git commit -q -am "fix(reviews): address review comments"
+  run ttg_scan_pass "$BASE" HEAD "$MB"
+  [[ "$status" -eq 1 ]]
+  [[ "$(printf '%s' "$output" | head -1)" == "tampered" ]]
+  [[ "$output" == *"tests/canary.bats"* ]]
+}
+
+@test "ttg_scan_pass (#2141): a skip added to a test that exists at the merge base still counts" {
+  _mk_pr
+  sed -i 's/^  run f$/  skip "flaky"\n  run f/' tests/canary.bats
+  git commit -q -am "fix(reviews): address review comments"
+  run ttg_scan_pass "$BASE" HEAD "$MB"
+  [[ "$status" -eq 1 ]]
+  [[ "$(printf '%s' "$output" | head -1)" == "tampered" ]]
+}
+
+@test "ttg_scan_pass (#2141): a skip added to a PR-added test file -> clean" {
+  _mk_pr
+  sed -i 's/^  run cfg$/  skip "pending engine"\n  run cfg/' tests/ai_engines_config.bats
+  git commit -q -am "fix(bot): address bot feedback"
+  run ttg_scan_pass "$BASE" HEAD "$MB"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clean" ]]
+}
+
+@test "ttg_scan_pass (#2141): merge base missing or unresolvable fails closed -> unknown rc2" {
+  _mk_pr
+  sed -i 's/= gemini/= claude/' tests/ai_engines_config.bats
+  run ttg_scan_pass "$BASE" HEAD ""
+  [[ "$status" -eq 2 ]]
+  [[ "$output" == "unknown" ]]
+  run ttg_scan_pass "$BASE" HEAD "0000000000000000000000000000000000000000"
+  [[ "$status" -eq 2 ]]
+  [[ "$output" == "unknown" ]]
+}
+
+@test "ttg_scan_pass (#2141): a pass touching no test file is clean without a merge base" {
+  _mk_pr
+  echo 'h() { :; }' >> scripts/canary.sh
+  run ttg_scan_pass "$BASE" HEAD ""
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clean" ]]
+}
+
+@test "ttg_pass_touches_tests: true for a test-file change or an unknown base, false otherwise" {
+  _mk_pr
+  echo 'h() { :; }' >> scripts/canary.sh
+  run ttg_pass_touches_tests "$BASE"
+  [[ "$status" -eq 1 ]]
+  echo '# note' >> tests/canary.bats
+  run ttg_pass_touches_tests "$BASE"
+  [[ "$status" -eq 0 ]]
+  run ttg_pass_touches_tests ""
+  [[ "$status" -eq 0 ]]
+}
+
+# ttg_resolve_merge_base — the impure resolver over git_ensure_merge_base (#2053)
+
+# _mk_remote: a bare origin holding main (the base commit) and a clone with the
+# PR branch checked out.
+_mk_remote() {
+  _mk_pr
+  REMOTE="$BATS_TEST_TMPDIR/remote.git"
+  git init -q --bare "$REMOTE"
+  git remote add origin "file://$REMOTE"
+  git push -q origin "$MB:refs/heads/main" feat
+}
+
+@test "ttg_resolve_merge_base: resolves the PR's merge base with origin/<base>" {
+  _mk_remote
+  run ttg_resolve_merge_base main "$BASE" feat
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "$MB" ]]
+}
+
+@test "ttg_resolve_merge_base: a base branch that cannot be fetched fails closed (non-zero, no SHA)" {
+  _mk_remote
+  run ttg_resolve_merge_base no-such-branch "$BASE" feat
+  [[ "$status" -ne 0 ]]
+  [[ ! "$output" =~ ^[0-9a-f]{40}$ ]]
+}
+
+@test "ttg_resolve_merge_base: unrelated histories (no merge base) fail closed" {
+  _mk_remote
+  # A root commit sharing no history with the PR branch becomes origin's main.
+  local orphan
+  orphan=$(git commit-tree -m orphan "$(git mktree </dev/null)")
+  git push -q --force origin "$orphan:refs/heads/main"
+  run ttg_resolve_merge_base main "$BASE" feat
+  [[ "$status" -ne 0 ]]
+}
+
+@test "ttg_scan_pass: a skip added to a non-ASCII test path at the merge base still counts" {
+  _mk_repo
+  mkdir -p src
+  printf 'it "x" do\n  expect(1).to eq 1\nend\n' > "src/café_spec.rb"
+  git add -A; git commit -q -m "base spec"
+  BASE="$(git rev-parse HEAD)"; MB="$BASE"
+  sed -i 's/^it "x" do$/it "x" do\n  skip "flaky"/' "src/café_spec.rb"
+  git commit -q -am "fix(reviews): address review comments"
+  run ttg_scan_pass "$BASE" HEAD "$MB"
+  [[ "$status" -eq 1 ]]
+  [[ "$(printf '%s' "$output" | head -1)" == "tampered" ]]
 }

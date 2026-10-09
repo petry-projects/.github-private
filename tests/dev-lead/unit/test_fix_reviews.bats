@@ -5991,7 +5991,20 @@ _setup_2013() {
   printf '@test "success precedence" {\n  [ ok = ok ]\n}\n' > "$T2013_DIR/tests/existing.bats"
   git -C "$T2013_DIR" add .
   git -C "$T2013_DIR" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  # A real origin holding main: the test-tamper guard resolves the PR's merge base
+  # with git_ensure_merge_base, which fetches origin/main and fails closed without
+  # it (#2141). Pushed before the git stub below, which swallows `git push`.
+  git init -q --bare "$BATS_TEST_TMPDIR/origin.git"
+  git -C "$T2013_DIR" remote add origin "file://$BATS_TEST_TMPDIR/origin.git"
+  git -C "$T2013_DIR" push -q origin HEAD:refs/heads/main
   git -C "$T2013_DIR" update-ref refs/remotes/origin/main "$(git -C "$T2013_DIR" rev-parse HEAD)"
+  # Optional PR commit on top of main (T2013_PR_SETUP): content the PR itself
+  # added, so the merge base is NOT the pre-pass head.
+  if [ -n "${T2013_PR_SETUP:-}" ]; then
+    (cd "$T2013_DIR" && eval "$T2013_PR_SETUP")
+    git -C "$T2013_DIR" add .
+    git -C "$T2013_DIR" -c user.email="t@test" -c user.name="T" commit -q -m "feat: PR commit"
+  fi
   T2013_BASE="$(git -C "$T2013_DIR" rev-parse HEAD)"
   [ "$claim_sha" = "BASE" ] && claim_sha="$T2013_BASE"
 
@@ -6025,6 +6038,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*".base.ref"*) echo main ;;
   *"pulls/"*) echo '{"head":{"sha":"${T2013_BASE}"},"auto_merge":null}' ;;
   *"issues/"*"comments"*) echo '[]' ;;
   *"pr checkout"*) exit 0 ;;
@@ -6132,6 +6146,37 @@ _run_2013() {
   [ -s "$T2013_PUSH" ]
   [[ "$output" != *"Test-tamper guard"* ]]
   grep -q "PRRT_2013" "$T2013_MUT"
+}
+
+@test "#2141: fix-bot-comment revising a test file the PR itself added is pushed (PR #2135 shape)" {
+  T2013_PR_SETUP="printf '@test \"engines config\" {\n  [ gemini = gemini ]\n}\n' > tests/ai_engines_config.bats" \
+    _setup_2013 HEAD "printf 'fixed\n' > fix.txt; sed -i 's/gemini = gemini/claude = claude/' tests/ai_engines_config.bats"
+  _run_2013 fix-bot-comment
+
+  [ -s "$T2013_PUSH" ]
+  [[ "$output" != *"Test-tamper guard"* ]]
+  [ ! -s "$T2013_PATCH" ]
+}
+
+@test "#2141: a test that exists on the base is still protected when the PR added other tests" {
+  T2013_PR_SETUP="printf '@test \"engines config\" {\n  [ gemini = gemini ]\n}\n' > tests/ai_engines_config.bats" \
+    _setup_2013 HEAD "printf 'fixed\n' > fix.txt; sed -i 's/success precedence/failure precedence/' tests/existing.bats"
+  _run_2013 fix-bot-comment
+
+  [ ! -s "$T2013_PUSH" ]
+  [[ "$output" == *"Test-tamper guard"* ]]
+  [[ "$output" == *"tests/existing.bats"* ]]
+  [[ "$output" != *"ai_engines_config"* ]]
+}
+
+@test "#2141: an unresolvable merge base refuses the push (fail closed)" {
+  # The pass touches a test file, so the merge base is needed — and origin is gone.
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; printf '@test \"new\" {\n  true\n}\n' >> tests/existing.bats; git remote remove origin; git update-ref -d refs/remotes/origin/main"
+  _run_2013 fix-reviews
+
+  [ ! -s "$T2013_PUSH" ]
+  [[ "$output" == *"merge base with main unknown"* ]]
+  [[ "$output" == *"needs-human-review"* ]]
 }
 
 # ── review-changes / human-pr parity + test-regression guard (#2013) ───────────
