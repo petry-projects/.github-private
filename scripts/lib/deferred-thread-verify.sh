@@ -35,6 +35,10 @@ set -euo pipefail
 readonly _DTV_MARKER_PREFIX='<!-- dev-lead:deferred'
 readonly _DTV_MARKER_SUFFIX='-->'
 readonly _DTV_TRACKER_TITLE='dev-lead: deferred review findings'
+# Only text written by these author associations can link a thread to the tracker:
+# anyone who can open or comment on an issue must not be able to authorize
+# resolving a merge-blocking bot thread.
+readonly _DTV_TRUSTED_ASSOC='["OWNER","MEMBER","COLLABORATOR"]'
 
 # dtv_parse_deferral <reply_body>
 #   Extract the tracking-issue number from the single deferral marker in a reply.
@@ -153,7 +157,9 @@ dtv_text_mentions_thread() {
 #   <issue_comments_json> is the REST array of its comments ({body}). Echoes "ok"
 #   and returns 0 when the issue is an OPEN ISSUE (not a pull request) whose body or
 #   any comment links the thread (dtv_text_mentions_thread). Otherwise echoes a
-#   reason and returns 1: missing | not-an-issue | wrong-title | closed | no-mention.
+#   reason and returns 1: missing | not-an-issue | wrong-title | closed | no-mention |
+#   untrusted-mention. Only the issue body (when the issue's author_association is
+#   OWNER/MEMBER/COLLABORATOR) and comments by such authors can link the thread.
 #   The issue must carry the exact shared-tracker title
 #   `dev-lead: deferred review findings` (AC6), never a per-finding issue. An empty or
 #   unparseable <issue_json> (a failed or 404 fetch) reads as missing; unparseable
@@ -162,11 +168,12 @@ dtv_verify_tracking_issue() {
   local issue_json="${1:-}" comments_json="${2:-}" thread_id="${3:-}" db_id="${4:-}"
   local repo="${5:-}" pr="${6:-}"
   local facts
-  facts=$(jq -c '
+  facts=$(jq -c --argjson trusted "$_DTV_TRUSTED_ASSOC" '
       if type == "object" and ((.number // null) | type) == "number" then
         {kind: (if has("pull_request") and .pull_request != null then "pr" else "issue" end),
          state: ((.state // "") | ascii_downcase),
          title: (.title // ""),
+         trusted: (((.author_association // "") | ascii_upcase) as $a | $trusted | index($a) != null),
          body: (.body // "")}
       else empty end
     ' <<<"$issue_json" 2>/dev/null || true)
@@ -191,18 +198,30 @@ dtv_verify_tracking_issue() {
     echo "closed"
     return 1
   fi
-  local text
+  local text trusted
   text=$(jq -r '.body' <<<"$facts" 2>/dev/null) || text=""
-  if dtv_text_mentions_thread "$text" "$thread_id" "$db_id" "$repo" "$pr"; then
+  trusted=$(jq -r '.trusted' <<<"$facts" 2>/dev/null) || trusted="false"
+  if [[ "$trusted" == "true" ]] && dtv_text_mentions_thread "$text" "$thread_id" "$db_id" "$repo" "$pr"; then
     echo "ok"
     return 0
   fi
   local comment_text
-  comment_text=$(jq -r 'if type == "array" then .[] | objects | (.body // "") else empty end' \
-    <<<"${comments_json:-[]}" 2>/dev/null || true)
+  comment_text=$(jq -r --argjson trusted "$_DTV_TRUSTED_ASSOC" '
+      if type == "array" then .[] | objects
+        | select(((.author_association // "") | ascii_upcase) as $a | $trusted | index($a) != null)
+        | (.body // "")
+      else empty end' <<<"${comments_json:-[]}" 2>/dev/null || true)
   if dtv_text_mentions_thread "$comment_text" "$thread_id" "$db_id" "$repo" "$pr"; then
     echo "ok"
     return 0
+  fi
+  # A link written only by an untrusted author is reported separately for the logs.
+  local any_text
+  any_text=$(jq -r 'if type == "array" then .[] | objects | (.body // "") else empty end' \
+    <<<"${comments_json:-[]}" 2>/dev/null || true)
+  if dtv_text_mentions_thread "${text}"$'\n'"${any_text}" "$thread_id" "$db_id" "$repo" "$pr"; then
+    echo "untrusted-mention"
+    return 1
   fi
   echo "no-mention"
   return 1

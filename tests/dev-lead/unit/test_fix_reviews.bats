@@ -1869,7 +1869,7 @@ _2045_comments() {
 
 _2045_open_issue() {
   jq -cn --arg b "Deferred review findings\n- [ ] duration_ms — ${_2045_LINK}" \
-    '{number:2050,title:"dev-lead: deferred review findings",state:"open",body:$b}'
+    '{number:2050,title:"dev-lead: deferred review findings",author_association:"MEMBER",state:"open",body:$b}'
 }
 
 @test "resolve_deferred_bot_threads (#2045): verified deferral resolves on a NO-commit pass" {
@@ -1895,8 +1895,8 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): a link in a tracking-issue COMMENT is enough" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
-  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings"}'
-  export DEFER_ISSUE_COMMENTS="$(jq -cn --arg b "- duration_ms: ${_2045_LINK}" '[{body:$b}]')"
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred review findings"}'
+  export DEFER_ISSUE_COMMENTS="$(jq -cn --arg b "- duration_ms: ${_2045_LINK}" '[{author_association:"MEMBER",body:$b}]')"
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   grep -q "PRRT_2045" "$_MUTATIONS_FILE"
@@ -1945,7 +1945,7 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): ref to a CLOSED issue -> stays open" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
-  export DEFER_ISSUE_JSON="$(jq -cn --arg b "${_2045_LINK}" '{number:2050,title:"dev-lead: deferred review findings",state:"closed",body:$b}')"
+  export DEFER_ISSUE_JSON="$(jq -cn --arg b "${_2045_LINK}" '{number:2050,title:"dev-lead: deferred review findings",author_association:"MEMBER",state:"closed",body:$b}')"
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   [[ "$_HARNESS_OUTPUT" == *"(closed)"* ]]
@@ -1955,7 +1955,7 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): tracking issue that does not mention the thread -> stays open" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
-  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings (none linked)"}'
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred review findings (none linked)"}'
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   [[ "$_HARNESS_OUTPUT" == *"(no-mention)"* ]]
@@ -1965,7 +1965,7 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): tracking-issue comments page failure -> stays open and counts as failure" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
-  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings (none linked)"}'
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred review findings (none linked)"}'
   export DEFER_ISSUE_COMMENTS_FAIL=1
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 1 ]
@@ -2030,6 +2030,29 @@ _2045_open_issue() {
   [ "$_HARNESS_STATUS" -eq 1 ]
   [[ "$_HARNESS_OUTPUT" == *"did not advance (endCursor unchanged)"* ]]
   grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+}
+
+@test "resolve_deferred_bot_threads (#2045): a tracker linked only by an untrusted author -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(jq -cn --arg b "${_2045_LINK}" '{number:2050,title:"dev-lead: deferred review findings",author_association:"NONE",state:"open",body:$b}')"
+  _2045_run_case
+  [[ "$_HARNESS_OUTPUT" == *"untrusted-mention"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a failed deferral on a commit pass never enables auto-merge (#1567)" {
+  export DEFER_COMMIT=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  # try_enable_auto_merge never runs (the stub reports auto-merge as already on,
+  # so reaching it logs "auto-merge already enabled").
+  [[ "$_HARNESS_OUTPUT" != *"auto-merge already enabled"* ]]
+  run grep -E "pr merge.*--auto" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
 }
 
 @test "resolve_deferred_bot_threads (#2045): a fix-bot-comment resolution failure posts a PR-wide fix-reviews retry marker" {
