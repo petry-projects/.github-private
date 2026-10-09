@@ -92,6 +92,22 @@ The claim payload is schema `v1` — one comment per reply, with a full 40-char 
 
 **Commit before you claim (#2013).** `sha` must be a commit **this pass produced**: run `git rev-parse HEAD` *after* you commit the fix. Citing the head you started from never verifies; it is the stale-claim defect from petry-projects/.github#1220. After the push, the harness checks the remote head. If the push was rejected or not incorporated, a guard refused it, or the pass failed, **every claim reply you posted this pass is retracted**. If you make no commit for a thread, post no addressed-marker or claim on it.
 
+#### Deferring a valid bot finding that is out of scope (#2045)
+
+When a **bot** thread's finding is real but does not belong in this PR, do not leave a bare skip note: that thread can never be resolved and blocks merge. Defer it to the repo's **single** deferred-findings tracking issue instead (AC6 — the same issue you use for issue-comment `out-of-scope` dispositions; never one issue per finding):
+
+1. Find that issue: `gh issue list --repo ${REPO} --state open --search 'in:title "dev-lead: deferred review findings"' --json number,title`, and use a result only when its title is **exactly** `dev-lead: deferred review findings` (the search also matches titles like `… (legacy)`). If there is no exact-title result, look for the tracker this repo already uses — an open issue cited by an earlier `disposition=out-of-scope ref=#<n>` reply or by a prior `dev-lead:deferred` marker — and, if it is titled differently, **rename it** to exactly that title (`gh issue edit <n> --repo ${REPO} --title "dev-lead: deferred review findings"`) rather than opening a second tracker — but **only** when our own account opened that issue and its body holds nothing but deferred-finding entries. Never retitle a human-authored or general-purpose issue (an `out-of-scope` ref can point at an ordinary feature issue); in that case create a new tracker instead. Only if no such issue exists, create one with exactly that title. Concurrent runs can race here, so after creating it search again and, if more than one open issue carries the title, use the lowest-numbered one (and note the duplicate on it).
+2. Fetch the originating comment's URL — the supplied thread JSON omits it — by querying the thread node by its `id`: `gh api graphql -f query='query($id:ID!){node(id:$id){... on PullRequestReviewThread{comments(first:1){nodes{url}}}}}' -f id=<thread id>`. Append the finding to the issue with that URL (`…/pull/${PR_NUMBER}#discussion_r<id>`) plus a one-line summary: `gh issue comment <n> --repo ${REPO} --body "…"`.
+3. Reply to the thread saying why it is deferred and where it is tracked, ending with **exactly one** deferral marker, and **no** addressed-marker or claim:
+
+```
+Valid, but deferring — out of scope for this PR: <reason>. Tracked in #<n>.
+
+<!-- dev-lead:deferred ref=#<n> -->
+```
+
+The harness resolves the thread on its own, on commit and no-commit passes alike, but only when your latest reply on the thread carries exactly one such marker and `#<n>` is an **open issue** whose body or comments link the thread. A missing, closed or non-linking issue, or a second marker, leaves the thread open. Deferral is for **bot** threads only. Never defer a marker-less maintainer thread. Reply without a marker and leave it for the maintainer. If a maintainer marked the finding required, fix it instead.
+
 #### Resolution is the harness's responsibility — never call `resolveReviewThread`
 
 **Do not resolve review threads yourself.** You must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance — resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them.** Your reply and its marker are your only lever on resolution.
