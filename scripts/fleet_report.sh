@@ -839,3 +839,38 @@ persona_optout_alert_json() {
           missing: (.[4] | split(",") | map(select(length > 0))) }
     ]' < "$f"
 }
+
+# generate_rate_limit_samples_report [jsonl_file...]
+# Renders the "Unparsed rate-limit messages" section (#2140) from token-ledger
+# JSONL files: every kind:"rate_limit_sample" record (one per message shape per
+# run, already redacted and truncated by engine.sh) grouped by shape across runs,
+# with an occurrence count, the first-seen time, and the earliest sample —
+# HTML-escaped inside <pre> so a sample cannot break the rendered page. This is
+# the real text the reset parser could not read, kept so a follow-up parser
+# (e.g. the weekly cap, #1863) is built from it. Always renders: with no samples
+# (or no files) it prints a "None" line. Malformed lines are skipped.
+generate_rate_limit_samples_report() {
+  local samples
+  samples=$(cat "$@" 2>/dev/null </dev/null | jq -cR '
+    fromjson? | select(type == "object" and .kind == "rate_limit_sample"
+                       and (.shape // "") != "" and (.sample // "") != "")' \
+    | jq -cs '
+    group_by(.shape)
+    | map(sort_by(.ts // "") | {shape: .[0].shape, count: length,
+                                first_seen: (.[0].ts // "unknown"),
+                                sample: .[0].sample})
+    | sort_by(.first_seen)' 2>/dev/null)
+  [ -n "$samples" ] || samples='[]'
+
+  printf '## Unparsed rate-limit messages\n\n'
+  if [ "$(jq 'length' <<< "$samples")" -eq 0 ]; then
+    printf '_None — every rate-limit message in the window carried a reset time the parser could read._\n'
+    return 0
+  fi
+  printf '%s distinct message shape(s) the reset parser could not read (redacted, truncated):\n\n' \
+    "$(jq 'length' <<< "$samples")"
+  jq -r '.[] |
+    "#### Shape `\(.shape)` — \(.count) occurrence(s), first seen \(.first_seen)\n\n<pre>\(
+      .sample | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))</pre>\n"' \
+    <<< "$samples"
+}
