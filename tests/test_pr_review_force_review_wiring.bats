@@ -11,26 +11,34 @@ setup() {
   WF="$REPO_ROOT/.github/workflows/pr-review.yml"
 }
 
-_env_line() { grep -E "^[[:space:]]+$1:[[:space:]]" "$WF"; }
+# The value of a job-level env key, exactly as written (the expression text). The
+# match is anchored on the key, so re-indenting the file does not break it, and
+# exactly one definition must exist.
+_env_val() {
+  local n
+  n=$(grep -cE "^[[:space:]]+$1:[[:space:]]" "$WF")
+  [ "$n" -eq 1 ] || { echo "expected exactly one $1 definition, found $n" >&2; return 1; }
+  grep -E "^[[:space:]]+$1:[[:space:]]" "$WF" | sed -E "s/^[[:space:]]+$1:[[:space:]]+//"
+}
 
-@test "FORCE_REVIEW requires an explicit client_payload.force_review flag" {
-  run _env_line FORCE_REVIEW
+# Exact expressions: any broadening (e.g. an added `|| 'true'`) fails the test.
+FORCE_REVIEW_EXPR="\${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.force_review == true || github.event.client_payload.force_review == 'true') && 'true' || 'false' }}"
+FORCE_RE_REVIEW_EXPR="\${{ inputs.force_review || (github.event_name == 'repository_dispatch' && 'true') || 'false' }}"
+
+@test "FORCE_REVIEW is exactly the explicit client_payload.force_review expression" {
+  run _env_val FORCE_REVIEW
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 1 ]
-  [[ "$output" == *"github.event.client_payload.force_review == true"* ]]
-  [[ "$output" == *"github.event.client_payload.force_review == 'true'"* ]]
+  [ "$output" = "$FORCE_REVIEW_EXPR" ]
 }
 
 @test "FORCE_REVIEW is never derived from the event name alone" {
-  run _env_line FORCE_REVIEW
+  run _env_val FORCE_REVIEW
   [ "$status" -eq 0 ]
-  [[ "$output" != *"github.event_name == 'repository_dispatch' && 'true'"* ]]
+  [[ "$output" != *"github.event_name == 'repository_dispatch' && 'true' ||"* ]]
 }
 
 @test "a repository_dispatch without the flag gets only the narrow FORCE_RE_REVIEW bypass" {
-  run _env_line FORCE_RE_REVIEW
+  run _env_val FORCE_RE_REVIEW
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 1 ]
-  [[ "$output" == *"inputs.force_review"* ]]
-  [[ "$output" == *"github.event_name == 'repository_dispatch' && 'true'"* ]]
+  [ "$output" = "$FORCE_RE_REVIEW_EXPR" ]
 }
