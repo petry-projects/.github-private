@@ -188,7 +188,7 @@ _trg_log_failures() {
   n=$(grep -c . <<<"$fail" || true)
   (( n > 0 )) || return 0
   {
-    echo "Test-regression guard: ${label}: ${n} named failing test(s) parsed"
+    echo "Test-regression guard: ${label}: ${n} failing test(s)"
     grep . <<<"$fail" | head -20 | sed 's/^/  /' || true
     if (( n > 20 )); then echo "  … and $(( n - 20 )) more"; fi
   } >&2
