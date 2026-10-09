@@ -1158,6 +1158,11 @@ resolve_deferred_bot_threads() {
     }
   }'
 
+  # ok | more (a second page of comments) | unknown (errors or a malformed connection).
+  local snapshot_state_jq='if ((.errors // []) | length) > 0 then "unknown"
+    elif (.data.node.comments.nodes | type) != "array" then "unknown"
+    elif (.data.node.comments.pageInfo.hasNextPage | type) != "boolean" then "unknown"
+    elif .data.node.comments.pageInfo.hasNextPage then "more" else "ok" end'
   local resolved_count=0 failed_count=0
   local id node_json cur_resolved comments_json origin_bot reply_idx reply_body
   local ref parse_rc post_reason post_rc disp_rc origin_db_id
@@ -1177,13 +1182,23 @@ resolve_deferred_bot_threads() {
       continue
     fi
     [ "$cur_resolved" = "false" ] || continue
-    # Fail closed on a thread longer than one page: later replies could supersede
-    # the deferral and we would not see them.
-    if [ "$(printf '%s' "$node_json" | jq -r 'if .data.node.comments.pageInfo.hasNextPage == false then "false" else "true" end' 2>/dev/null || echo true)" != "false" ]; then
-      echo "::notice::skipping thread ${id} — more than 100 comments (or page info unreadable); leaving unresolved (#2045)"
+    # A partial snapshot (GraphQL errors, or a comments connection without a nodes
+    # array or boolean pagination) is unreadable, not "no deferral": counting it as
+    # empty would let the caller post a terminal over an unevaluated thread.
+    local page_state
+    page_state=$(printf '%s' "$node_json" | jq -r "$snapshot_state_jq" 2>/dev/null || echo unknown)
+    if [ "$page_state" = "unknown" ]; then
+      echo "::warning::partial snapshot of review thread ${id} while checking deferrals"
+      failed_count=$((failed_count + 1))
       continue
     fi
-    comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+    # Fail closed on a thread longer than one page: later replies could supersede
+    # the deferral and we would not see them.
+    if [ "$page_state" = "more" ]; then
+      echo "::notice::skipping thread ${id} — more than 100 comments; leaving unresolved (#2045)"
+      continue
+    fi
+    comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes' 2>/dev/null || echo "[]")
 
     # Re-check the bot origin on the fresh read: a maintainer thread is never ours
     # to resolve (#1415), even if the enumeration snapshot said otherwise.
@@ -1278,7 +1293,8 @@ resolve_deferred_bot_threads() {
     # comments) so a reply that landed meanwhile is never overridden.
     local fresh_json fresh_comments
     fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null) || fresh_json=""
-    if [ "$(printf '%s' "$fresh_json" | jq -r 'if .data.node.isResolved == null then "unknown" else "ok" end' 2>/dev/null || echo unknown)" = "unknown" ]; then
+    if [ "$(printf '%s' "$fresh_json" | jq -r 'if .data.node.isResolved == null then "unknown" else "ok" end' 2>/dev/null || echo unknown)" = "unknown" ] \
+       || [ "$(printf '%s' "$fresh_json" | jq -r "$snapshot_state_jq" 2>/dev/null || echo unknown)" = "unknown" ]; then
       echo "::warning::could not re-read review thread ${id} before resolving its deferral"
       failed_count=$((failed_count + 1))
       continue
@@ -3359,6 +3375,12 @@ case "$INTENT_TYPE" in
         rc=1
         echo "::warning::fix-bot-comment: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
         _fbc_terminal=""
+        # The bot-comment retry selects only undispositioned comments and the
+        # bot-thread retry only unreplied threads, so neither re-runs this resolver.
+        # Hand it to a PR-wide fix-reviews retry. Guard aborts (3/4) are flagged for a human.
+        if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
+          post_reviews_rate_limited "fix-reviews" "resolve-failed"
+        fi
       fi
       case "$_fbc_terminal" in
         applied)    post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed." ;;

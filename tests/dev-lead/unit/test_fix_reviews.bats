@@ -1361,6 +1361,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     # The claim names the commit THIS pass produced (resolved at call time), not the
     # pre-pass base_sha: since #2013 a pre-pass SHA is the stale-claim defect and
@@ -1429,6 +1432,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Skipping — first-party channel tag, intentional mutable ref."}]}}}}'
     ;;
@@ -1549,6 +1555,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"someone-else"},"body":"Applied in scripts/foo.sh. <!-- dev-lead:addressed -->"}]}}}}'
     ;;
@@ -1633,6 +1642,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"${marker_reply}","createdAt":"2026-09-01T10:00:00Z"},${POST_MARKER_NODE}]}}}}'
     ;;
@@ -1726,6 +1738,8 @@ GITEOF
 #   DEFER_ISSUE_JSON       REST body for issues/2050 ("" -> 404 for any issue)
 #   DEFER_ISSUE_COMMENTS   REST body for issues/2050/comments (default [])
 #   DEFER_COMMIT           "true" -> the engine advances the head
+#   DEFER_NODE_JSON        raw body for the thread node re-read (overrides the above)
+#   DEFER_INTENT           intent to run (default fix-reviews)
 _2045_run_case() {
   local tmpdir="$BATS_TEST_TMPDIR/workdir"
   mkdir -p "$tmpdir"
@@ -1743,8 +1757,12 @@ _2045_run_case() {
   git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
   base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
 
-  jq -cn --argjson c "$DEFER_THREAD_COMMENTS" --argjson more "${DEFER_HAS_NEXT_PAGE:-false}" \
-    '{data:{node:{isResolved:false,path:"scripts/canary_report.sh",comments:{pageInfo:{hasNextPage:$more},nodes:$c}}}}' > "$fx/node.json"
+  if [ -n "${DEFER_NODE_JSON:-}" ]; then
+    printf '%s' "$DEFER_NODE_JSON" > "$fx/node.json"
+  else
+    jq -cn --argjson c "$DEFER_THREAD_COMMENTS" --argjson more "${DEFER_HAS_NEXT_PAGE:-false}" \
+      '{data:{node:{isResolved:false,path:"scripts/canary_report.sh",comments:{pageInfo:{hasNextPage:$more},nodes:$c}}}}' > "$fx/node.json"
+  fi
   jq -cn --arg t "${DEFER_ORIGIN_TYPENAME:-Bot}" '{data:{repository:{pullRequest:{reviewThreads:{
       pageInfo:{hasNextPage:false,endCursor:""},
       nodes:[{id:"PRRT_2045",isResolved:false,isOutdated:false,
@@ -1808,10 +1826,10 @@ GITEOF
 
   run bash -c "
     cd '$tmpdir'
-    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export INTENT_TYPE=${DEFER_INTENT:-fix-reviews} DEV_LEAD_DRY_RUN=false
     export PR_NUMBER=54 HEAD_SHA=$base_sha REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
-    export ACTOR='chatgpt-codex-connector[bot]'
+    export ACTOR='chatgpt-codex-connector[bot]' COMMENT_BODY='P2: finding'
     export BOT_USER='donpetry-bot'
     export PATH='$STUB_BIN_DIR:$PATH'
     bash '$FIX_REVIEWS_SCRIPT'
@@ -1952,6 +1970,43 @@ _2045_open_issue() {
   # Non-quota: recorded as status=blocked, never as a provider rate limit.
   grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
   run grep -q "status=rate-limited reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a fix-bot-comment resolution failure posts a PR-wide fix-reviews retry marker" {
+  # Neither the bot-comment retry (undispositioned comments) nor the bot-thread
+  # retry (unreplied threads) would re-select this thread, so fix-reviews must.
+  export DEFER_INTENT=fix-bot-comment
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"failed to resolve deferred bot thread PRRT_2045"* ]]
+  grep -q "intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+}
+
+@test "resolve_deferred_bot_threads (#2045): a partial thread snapshot (no comment nodes) -> stays open and counts as failure" {
+  export DEFER_NODE_JSON='{"data":{"node":{"isResolved":false,"path":"scripts/canary_report.sh","comments":{"pageInfo":{"hasNextPage":false}}}}}'
+  export DEFER_THREAD_COMMENTS='[]'
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"partial snapshot of review thread PRRT_2045"* ]]
+  grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a snapshot carrying GraphQL errors -> stays open and counts as failure" {
+  export DEFER_NODE_JSON="$(jq -cn --argjson c "$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')" \
+    '{errors:[{message:"Something went wrong"}],data:{node:{isResolved:false,comments:{pageInfo:{hasNextPage:false},nodes:$c}}}}')"
+  export DEFER_THREAD_COMMENTS='[]'
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"partial snapshot of review thread PRRT_2045"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
   [ "$status" -eq 1 ]
 }
 
@@ -2147,6 +2202,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Looked into this but made no change."}]}}}}'
     ;;
@@ -2267,6 +2325,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"scripts/other.sh","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in scripts/other.sh. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"'"\$(git rev-parse HEAD)"'\",\"files\":[\"scripts/other.sh\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
@@ -2312,6 +2373,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in fix.txt. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"${absent_sha}\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
@@ -2354,6 +2418,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1, not valid json} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
@@ -2397,6 +2464,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"a-maintainer","__typename":"User"},"body":"ACCEPTED — required before merge","createdAt":"2099-01-01T00:00:00Z"},{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in fix.txt. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"'"\$(git rev-parse HEAD)"'\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
@@ -2452,6 +2522,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Applied. <!-- dev-lead:addressed -->"}]}}}}'
     ;;
@@ -5827,6 +5900,9 @@ case "\$ARGS" in
     echo "\$*" >> "$T2013_MUT"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     printf '%s\n' "{\"data\":{\"node\":{\"isResolved\":false,\"path\":\"fix.txt\",\"comments\":{\"nodes\":[{\"author\":{\"login\":\"donpetry-bot\",\"__typename\":\"User\"},\"body\":\"\${reply}\",\"createdAt\":\"2099-01-01T00:00:00Z\"}]}}}}"
     ;;
