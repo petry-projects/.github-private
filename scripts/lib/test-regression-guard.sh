@@ -175,7 +175,7 @@ _trg_stage() {
       git -C "$scratch/tree" \
         -c user.name=trg -c user.email=trg@invalid -c commit.gpgsign=false \
         commit -q --no-verify --allow-empty -m snapshot
-  ) >/dev/null 2>&1 || {
+  ) 2>&1 || {
     echo "Test-regression guard: could not create the scratch snapshot commit (#2055); the suite cannot run" >&2
     return 1
   }
@@ -186,11 +186,12 @@ _trg_stage() {
 _trg_log_failures() {
   local label="$1" fail="$2" n
   n=$(grep -c . <<<"$fail" || true)
-  (( n > 0 )) || return 0
   {
-    echo "Test-regression guard: ${label}: ${n} failing test(s)"
-    grep . <<<"$fail" | head -20 | sed 's/^/  /' || true
-    if (( n > 20 )); then echo "  … and $(( n - 20 )) more"; fi
+    echo "Test-regression guard: ${label}: ${n} parsed/named failing test(s)"
+    if (( n > 0 )); then
+      grep . <<<"$fail" | head -20 | sed 's/^/  /' || true
+      if (( n > 20 )); then echo "  … and $(( n - 20 )) more"; fi
+    fi
   } >&2
   return 0
 }
