@@ -702,7 +702,7 @@ resolve_bot_outdated_threads() {
 # resolve_addressed_bot_threads and resolve_deferred_bot_threads.
 list_unresolved_bot_thread_ids() {
   local ids=""
-  local cursor="" has_next_page="true" page_response page_ids
+  local cursor="" prev_cursor="" has_next_page="true" page_response page_ids
   local cursor_args=()
   local bot_threads_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
     repository(owner:$owner,name:$repo){
@@ -718,6 +718,7 @@ list_unresolved_bot_thread_ids() {
     }
   }'
   while [ "$has_next_page" = "true" ]; do
+    prev_cursor="$cursor"
     page_response=$(gh api graphql -f query="$bot_threads_query" \
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
       "${cursor_args[@]}" 2>/dev/null) || {
@@ -749,6 +750,11 @@ list_unresolved_bot_thread_ids() {
       '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
       2>/dev/null || echo "")
     [ -z "$cursor" ] && has_next_page="false"
+    # A cursor that does not advance would re-read the same page forever.
+    if [ "$has_next_page" = "true" ] && [ "$cursor" = "$prev_cursor" ]; then
+      echo "::error::review-thread pagination for PR #${PR_NUMBER} did not advance (endCursor unchanged)" >&2
+      return 1
+    fi
     cursor_args=("-f" "cursor=${cursor}")
   done
   printf '%s\n' "$ids" | sed '/^[[:space:]]*$/d'

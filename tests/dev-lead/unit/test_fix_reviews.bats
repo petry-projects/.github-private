@@ -1741,6 +1741,7 @@ GITEOF
 #   DEFER_NODE_JSON        raw body for the thread node re-read (overrides the above)
 #   DEFER_INTENT           intent to run (default fix-reviews)
 #   DEFER_ENGINE_FAIL      "true" -> the engine exits non-zero (a failed pass)
+#   DEFER_THREADS_STUCK    "true" -> the deferral enumerator's thread pages never advance
 _2045_run_case() {
   local tmpdir="$BATS_TEST_TMPDIR/workdir"
   mkdir -p "$tmpdir"
@@ -1783,7 +1784,15 @@ case "\$ARGS" in
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"PullRequestReviewThread"*) cat "$fx/node.json" ;;
-  *"reviewThreads"*) cat "$fx/threads.json" ;;
+  *"reviewThreads"*)
+    # DEFER_THREADS_STUCK: the deferral enumerator (its query aliases origin:) sees
+    # hasNextPage with an endCursor that never advances.
+    if [ "\${DEFER_THREADS_STUCK:-false}" = "true" ] && [[ "\$ARGS" == *"origin: comments"* ]]; then
+      jq -c '.data.repository.pullRequest.reviewThreads.pageInfo = {hasNextPage:true,endCursor:"c1"}' "$fx/threads.json"
+    else
+      cat "$fx/threads.json"
+    fi
+    ;;
   *"repos/petry-projects/.github-private/issues/2050/comments"*)
     if [ -n "\${DEFER_ISSUE_COMMENTS_FAIL:-}" ]; then echo '{"message":"Server Error"}'; exit 1; fi
     cat "$fx/issue-comments.json"
@@ -1831,7 +1840,7 @@ exec /usr/bin/git "$@"
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
-  run bash -c "
+  run timeout "${DEFER_RUN_TIMEOUT:-0}" bash -c "
     cd '$tmpdir'
     export INTENT_TYPE=${DEFER_INTENT:-fix-reviews} DEV_LEAD_DRY_RUN=false
     export PR_NUMBER=54 HEAD_SHA=$base_sha REPO='petry-projects/.github-private'
@@ -2010,6 +2019,17 @@ _2045_open_issue() {
   [ "$_HARNESS_STATUS" -ne 0 ]
   [[ "$_HARNESS_OUTPUT" == *"failed to resolve deferred bot thread PRRT_2045"* ]]
   grep -q "intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+}
+
+@test "resolve_deferred_bot_threads (#2045): a review-thread cursor that never advances fails instead of looping" {
+  export DEFER_THREADS_STUCK=true DEFER_RUN_TIMEOUT=120
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -ne 124 ]
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"did not advance (endCursor unchanged)"* ]]
+  grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
 }
 
 @test "resolve_deferred_bot_threads (#2045): a fix-bot-comment resolution failure posts a PR-wide fix-reviews retry marker" {
