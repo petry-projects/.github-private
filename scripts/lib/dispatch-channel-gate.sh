@@ -49,9 +49,10 @@ dcg_parse_agent_ref() {
 # branch). Returns 2 when the repo has no dev-lead.yml, 1 on any other read
 # failure or a malformed pin.
 dcg_read_repo_pin() {
-  local repo="$1" out
-  if ! out="$(gh api "repos/${repo}/contents/.github/workflows/dev-lead.yml" \
-      -H "Accept: application/vnd.github.raw" 2>&1)"; then
+  local repo="$1" out gh_status=0
+  out="$(gh api "repos/${repo}/contents/.github/workflows/dev-lead.yml" \
+      -H "Accept: application/vnd.github.raw" 2>&1)" || gh_status=$?
+  if [ "$gh_status" -ne 0 ]; then
     if [[ "$out" == *"HTTP 404"* ]]; then
       return 2
     fi
@@ -73,12 +74,13 @@ dcg_resolve_sweep_ref() {
 # dcg_pin_compat <target_ref> <sweep_ref>: 0 = the target's channel has every
 # commit the sweep's has; 1 = it is older (or diverged); 2 = unknown. Cached.
 dcg_pin_compat() {
-  local target="$1" sweep="$2" status rc
+  local target="$1" sweep="$2" status rc cmp_status=0
   [ "$target" = "$sweep" ] && return 0
   if [ -n "${_DCG_COMPAT_CACHE[$target]+set}" ]; then
     return "${_DCG_COMPAT_CACHE[$target]}"
   fi
-  if ! status="$(gh api "repos/${DCG_HOST_REPO}/compare/${target}...${sweep}" --jq '.status' 2>/dev/null)"; then
+  status="$(gh api "repos/${DCG_HOST_REPO}/compare/${target}...${sweep}" --jq '.status' 2>/dev/null)" || cmp_status=$?
+  if [ "$cmp_status" -ne 0 ]; then
     status=""
   fi
   case "$status" in

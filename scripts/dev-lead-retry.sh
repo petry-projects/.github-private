@@ -1272,8 +1272,9 @@ main() {
   # Gate each target on its own dev-lead.yml pin (#2086). If the sweep's own pin
   # is unreadable the gate is off: failing closed here would silence the whole
   # safety net on one transient read.
-  local sweep_ref=""
-  if sweep_ref="$(dcg_resolve_sweep_ref)"; then
+  local sweep_ref="" sweep_status=0
+  sweep_ref="$(dcg_resolve_sweep_ref)" || sweep_status=$?
+  if [ "$sweep_status" -eq 0 ]; then
     echo "[retry] sweep channel: ${sweep_ref} (repos pinned older are skipped)"
   else
     sweep_ref=""
