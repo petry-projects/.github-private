@@ -11,26 +11,23 @@ setup() {
   WF="$REPO_ROOT/.github/workflows/pr-review.yml"
 }
 
-_env_line() { grep -E "^[[:space:]]+$1:[[:space:]]" "$WF"; }
+# Structural lookup (yq) so indentation/quoting changes cannot break the assertions.
+_env_val() { yq -r "[.. | select(tag == \"!!map\" and has(\"$1\")) | .$1] | .[0]" "$WF"; }
 
-@test "FORCE_REVIEW requires an explicit client_payload.force_review flag" {
-  run _env_line FORCE_REVIEW
+@test "FORCE_REVIEW is exactly the explicit client_payload.force_review expression" {
+  run _env_val FORCE_REVIEW
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 1 ]
-  [[ "$output" == *"github.event.client_payload.force_review == true"* ]]
-  [[ "$output" == *"github.event.client_payload.force_review == 'true'"* ]]
+  [ "$output" = "\${{ github.event_name == 'repository_dispatch' && (github.event.client_payload.force_review == true || github.event.client_payload.force_review == 'true') && 'true' || 'false' }}" ]
 }
 
 @test "FORCE_REVIEW is never derived from the event name alone" {
-  run _env_line FORCE_REVIEW
+  run _env_val FORCE_REVIEW
   [ "$status" -eq 0 ]
   [[ "$output" != *"github.event_name == 'repository_dispatch' && 'true'"* ]]
 }
 
 @test "a repository_dispatch without the flag gets only the narrow FORCE_RE_REVIEW bypass" {
-  run _env_line FORCE_RE_REVIEW
+  run _env_val FORCE_RE_REVIEW
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 1 ]
-  [[ "$output" == *"inputs.force_review"* ]]
-  [[ "$output" == *"github.event_name == 'repository_dispatch' && 'true'"* ]]
+  [ "$output" = "\${{ inputs.force_review || (github.event_name == 'repository_dispatch' && 'true') || 'false' }}" ]
 }
