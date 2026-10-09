@@ -11,17 +11,17 @@ tools: ["read", "search", "execute"]
 # Why isn't this PR approved?
 
 pr-review approves a PR only after a chain of gates passes, in this order: CI,
-advisory-bot reviews, maintainer comments, maintainer review threads, the
-already-reviewed-at-head check, the human-escalation hold and cycle cap, and the
-per-PR automation budget. Then the model review runs and its verdict decides.
+advisory-bot reviews, maintainer comments, maintainer review threads, standing
+change requests, the already-reviewed-at-head check, the human-escalation hold and
+cycle cap, and the per-PR automation budget. Then the model review runs and its verdict decides.
 This skill finds the first gate holding the PR by running that real chain, not by
 reading the PR and guessing.
 
 ## Run the diagnostic
 
 The script lives in `petry-projects/.github-private`. If it is not in your checkout,
-make a shallow clone of that repo first:
-`git clone --depth 1 https://github.com/petry-projects/.github-private`. You need
+make a shallow clone of that repo first, through `gh` so the private repo is
+authenticated: `gh repo clone petry-projects/.github-private -- --depth 1`. You need
 `gh` authenticated with repo read on the PR's repository.
 
 ```bash
@@ -33,7 +33,7 @@ That mode is read-only and never forced, and it stops before any model runs. The
 output is a Markdown report:
 - what pr-review would do now (`decision` and `reason`);
 - what changes that;
-- hold labels;
+- dev-lead hold labels (pr-review itself gates only on `needs-human-review`);
 - approvals at the head;
 - the gate log.
 
@@ -58,6 +58,7 @@ Common reasons:
 | `human-escalated` | pr-review escalated to a human and `needs-human-review` is on | A human reviews and removes the label, or @mentions the bot |
 | `max-cycles-reached` | Three review cycles without converging | A human removes `needs-human-review` for a fresh budget |
 | `automation-budget-exhausted` | Too much automated activity since a human last acted | Any human comment or approval resets it |
+| `automation-budget-unreadable` | The PR's activity could not be read (a GitHub API error) | Re-run the diagnostic |
 | `gates-clear` (`proceed`) | Nothing holds the PR | The next pr-review run reviews it; its verdict decides |
 
 If the PR is already approved but not merging, the report's merge state says why
@@ -65,8 +66,9 @@ If the PR is already approved but not merging, the report's merge state says why
 
 ## When the script cannot run
 
-Without a checkout or `gh` credentials, read the PR's latest pr-review verdict
-line from its run log or step summary. Every run records
-`decision / reason / would_change` there (#1552, #1894). Do not reconstruct the
+Without a checkout or `gh` credentials, look at the PR's latest pr-review run. A
+run that a gate stopped records `decision / reason / would_change` in its log and
+step summary (#1552, #1894). A run that reached the model review answers with the
+review it posted on the PR instead: read that review. Do not reconstruct the
 gates by hand: that copy drifts from the real ones, which is why #1902's first
 version was replaced.

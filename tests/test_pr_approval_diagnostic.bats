@@ -84,7 +84,7 @@ write_snap() {
 _assert_read_only() {
   # Explicit failure: a negated command is exempt from errexit, so `! grep` here
   # would never fail the test.
-  if grep -qE 'pr (comment|edit|review|merge)|mutation|--method (POST|PUT|PATCH|DELETE)|-X (POST|PUT|PATCH|DELETE)' "$GH_LOG"; then
+  if grep -qiE 'pr (comment|edit|review|merge|close)|issue (comment|edit)|mutation|--method[= ](POST|PUT|PATCH|DELETE)|-X ?(POST|PUT|PATCH|DELETE)' "$GH_LOG"; then
     cat "$GH_LOG"
     return 1
   fi
@@ -157,7 +157,8 @@ _verdict() { grep -E '^\{"pr":' <<<"$output" | tail -n 1; }
   [[ "$output" == *"## pr-review approval diagnostic: $PR_URL"* ]]
   [[ "$output" == *'**Not approved** (review decision: `REVIEW_REQUIRED`).'* ]]
   [[ "$output" == *'| What pr-review would do now | `skip` — `ci-failing` |'* ]]
-  [[ "$output" == *'| Hold labels | `dev-lead:hands-off` |'* ]]
+  [[ "$output" == *'| dev-lead hold labels | `dev-lead:hands-off` |'* ]]
+  [[ "$output" == *'pr-review gates only on `needs-human-review`'* ]]
   [[ "$output" == *'| Approvals at head | cubic-dev-ai |'* ]]
   [[ "$output" == *"This is the first gate that holds the PR"* ]]
   _assert_read_only
@@ -170,6 +171,65 @@ _verdict() { grep -E '^\{"pr":' <<<"$output" | tail -n 1; }
   [ "$(jq -r '.decision' <<<"$output")" = "proceed" ]
   [ "$(jq -r '.facts.reviewDecision' <<<"$output")" = "REVIEW_REQUIRED" ]
   [ "$(jq -r '.facts.holds | length' <<<"$output")" = "0" ]
+}
+
+@test "wrapper: an unreadable PR, or a head that moved since the gate run, is no diagnosis (#1902 review)" {
+  write_snap "$ROLLUP_FAIL"
+  # The gate run reads the snapshot; the facts read (the --json view without --jq) fails.
+  cat > "$TEST_DIR/bin/gh-facts" <<'EOF2'
+#!/bin/bash
+case "$*" in *"--json state,isDraft"*) exit 1 ;; esac
+exec "$REAL_GH_STUB" "$@"
+EOF2
+  mv "$TEST_DIR/bin/gh" "$TEST_DIR/gh-stub"; mv "$TEST_DIR/bin/gh-facts" "$TEST_DIR/bin/gh"
+  chmod +x "$TEST_DIR/bin/gh"
+  REAL_GH_STUB="$TEST_DIR/gh-stub" run timeout 30 bash "$DIAG_SCRIPT" "$PR_URL"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"could not read the PR's review facts"* ]]
+  [[ "$output" != *"Approvals at head"* ]]
+
+  # The facts read sees a different head than the gate run did.
+  cat > "$TEST_DIR/bin/gh" <<'EOF2'
+#!/bin/bash
+case "$*" in *"--json state,isDraft"*) jq '.headRefOid = "ffffffffffffffffffffffffffffffffffffffff"' "$SNAPSHOT"; exit 0 ;; esac
+exec "$REAL_GH_STUB" "$@"
+EOF2
+  REAL_GH_STUB="$TEST_DIR/gh-stub" run timeout 30 bash "$DIAG_SCRIPT" "$PR_URL"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"head moved while diagnosing"* ]]
+}
+
+@test "diagnose mode: gh itself refuses every write, whatever the spelling (#1902 review)" {
+  # Load the classifier and the diagnose-mode gh wrapper exactly as review-one-pr.sh defines them.
+  # shellcheck source=/dev/null
+  source <(sed -n '/^_diagnose_gh_is_write() {/,/^}/p' "$REVIEW_SCRIPT")
+  local w
+  for w in "pr comment $PR_URL --body x" "pr edit $PR_URL --add-label needs-human-review" \
+           "pr review $PR_URL --approve" "issue comment 5 --body x" "label create x" \
+           "api -X POST repos/o/r/issues/1/comments" "api -XPATCH repos/o/r/issues/comments/1" \
+           "api --method=DELETE repos/o/r/issues/1/labels/x" "api --method put repos/o/r/x" \
+           "api repos/o/r/issues/1/comments -f body=x" "api repos/o/r/dispatches --input -" \
+           "api graphql -f query=mutation(\$id:ID!){x}"; do
+    # shellcheck disable=SC2086
+    _diagnose_gh_is_write $w || { echo "not classified as a write: gh $w"; return 1; }
+  done
+  for w in "pr view $PR_URL --json labels" "pr list --state open" "api repos/o/r/pulls/1" \
+           "api -X GET repos/o/r/pulls/1/reviews -f per_page=100" "api --paginate repos/o/r/issues/1/events" \
+           "api graphql -f query=query{viewer{login}}" "auth status"; do
+    # shellcheck disable=SC2086
+    if _diagnose_gh_is_write $w; then echo "read classified as a write: gh $w"; return 1; fi
+  done
+  # The wrapper refuses (non-zero, logged) without reaching gh; reads reach it.
+  # shellcheck source=/dev/null
+  source <(sed -n '/^  gh() {$/,/^  }$/p' "$REVIEW_SCRIPT")
+  [ "$(type -t gh)" = function ]
+  run gh pr comment "$PR_URL" --body x
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"diagnose: refused a GitHub write (gh pr comment)"* ]]
+  [ ! -s "$GH_LOG" ]
+  run gh pr view "$PR_URL" --json labels --jq '.labels'
+  [ "$status" -eq 0 ]
+  grep -q '^pr view' "$GH_LOG"
 }
 
 @test "wrapper: rejects a non-PR URL" {

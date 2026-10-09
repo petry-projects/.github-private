@@ -122,9 +122,52 @@ export PR_URL
 # break-glass and the orphan-rescue bypass are both off. The answer is the run's
 # single emit_verdict line (decision, reason, would_change). Used by
 # scripts/pr-approval-diagnostic.sh; never set by the review workflows.
+#
+# DRY_RUN alone is not a guarantee — a gate's write that predates its DRY_RUN
+# guard (the advisory rate-limited marker did, #1902 review) would still post.
+# So in diagnose mode `gh` itself refuses every write: the refused call fails
+# (visible in the log, never silently "succeeds"), and reads pass through.
+_diagnose_gh_is_write() {
+  local sub="${1:-}" verb="${2:-}" a prev="" method="" has_params=false query=""
+  case "$sub" in
+    pr|issue) case "$verb" in view|list|status|diff|checks) return 1 ;; *) return 0 ;; esac ;;
+    label|release|repo|workflow|run|secret|variable)
+      case "$verb" in view|list|download|watch) return 1 ;; *) return 0 ;; esac ;;
+    api) ;;
+    *) return 1 ;;
+  esac
+  shift
+  for a in "$@"; do
+    case "$a" in
+      -X?*) method="${a#-X}" ;;
+      --method=*) method="${a#--method=}" ;;
+    esac
+    case "$prev" in
+      -X|--method) method="$a" ;;
+      -f|-F|--field|--raw-field) has_params=true; [[ "$a" == query=* ]] && query="${a#query=}" ;;
+      --input) has_params=true ;;
+    esac
+    prev="$a"
+  done
+  method=$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')
+  if [ "${1:-}" = "graphql" ]; then
+    # GraphQL is always POST; it writes only through a mutation.
+    [[ "$query" =~ ^[[:space:]]*mutation ]] && return 0
+    return 1
+  fi
+  [ -n "$method" ] && { [ "$method" != "GET" ]; return; }
+  $has_params   # gh api defaults to POST when fields or an --input body are given
+}
 if [ "${PR_REVIEW_DIAGNOSE:-false}" = "true" ]; then
   DRY_RUN=true FORCE_REVIEW=false FORCE_RE_REVIEW=false
   export DRY_RUN FORCE_REVIEW FORCE_RE_REVIEW
+  gh() {
+    if _diagnose_gh_is_write "$@"; then
+      echo "    diagnose: refused a GitHub write (gh $1 ${2:-}) — diagnose mode is read-only" >&2
+      return 1
+    fi
+    command gh "$@"
+  }
 fi
 
 # emit_verdict <decision> <reason> <would_change>
@@ -146,7 +189,8 @@ emit_verdict() {
     --arg would_change "$3" \
     '{pr:$pr, sha:$sha, decision:$decision, reason:$reason, would_change:$would_change}'
   # #1894: also record it in the step summary, so "why not approved?" is answered
-  # where an operator looks, not only in the run log. Best-effort.
+  # where an operator looks, not only in the run log. Best-effort. (A run that
+  # reaches the model cascade answers with the review it posts instead.)
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     local _sha="${PR_HEAD_SHA:-}"
     printf -- '- **%s** at `%s`: `%s` (%s). Changes when: %s\n' \
@@ -912,10 +956,16 @@ if [ "${DRY_RUN:-false}" != "true" ]; then
   fi
 elif [ "${PR_REVIEW_DIAGNOSE:-false}" = "true" ]; then
   # Read-only: report an exhausted budget without escalating (enforce_pr_budget writes).
-  if _diag_events=$(gather_pr_automation_events \
-        "$(echo "$PR_URL" | sed -E 's|.*/pull/([0-9]+).*|\1|')" \
-        "$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')") \
-     && pr_budget_exhausted "$_diag_events"; then
+  # An unreadable event list is not "budget remaining": report it, never gates-clear.
+  _diag_rc=0
+  _diag_events=$(gather_pr_automation_events \
+      "$(echo "$PR_URL" | sed -E 's|.*/pull/([0-9]+).*|\1|')" \
+      "$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')") || _diag_rc=$?
+  if [ "$_diag_rc" -ne 0 ]; then
+    emit_verdict error automation-budget-unreadable "the PR's commits, comments and reviews become readable (a GitHub API error); re-run the diagnostic"
+    exit 100
+  fi
+  if pr_budget_exhausted "$_diag_events"; then
     emit_verdict escalate automation-budget-exhausted "a human interaction (comment or approval) resets the per-PR automation budget"
     exit 100
   fi
