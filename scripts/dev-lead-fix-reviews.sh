@@ -836,7 +836,7 @@ resolve_addressed_bot_threads() {
       ... on PullRequestReviewThread {
         isResolved
         path
-        comments(first:100){nodes{author{login __typename} authorAssociation body createdAt}}
+        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} authorAssociation body createdAt}}
       }
     }
   }'
@@ -870,7 +870,13 @@ resolve_addressed_bot_threads() {
     # without an addressed-marker by asserting "no changes needed" or a false-positive
     # disposition. This is checked FIRST, before the addressed-marker path (#1735).
     local nochange_disposition nochange_rc
-    nochange_disposition=$(acv_latest_nochange_disposition "$comments_json") && nochange_rc=0 || nochange_rc=$?
+    # A truncated comment page may hide a later neutral maintainer comment that
+    # supersedes the affirmation -> fail closed (skip this path) unless fully read.
+    if [ "$(printf '%s' "$node_json" | jq -r '.data.node.comments.pageInfo.hasNextPage // true' 2>/dev/null || echo true)" = "false" ]; then
+      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json") && nochange_rc=0 || nochange_rc=$?
+    else
+      nochange_disposition="" nochange_rc=1
+    fi
     if [ "${nochange_rc:-0}" -eq 0 ] && [ -n "$nochange_disposition" ]; then
       # A no-change disposition was found. Re-read the thread immediately before
       # resolution to ensure it hasn't changed (no new required disposition or bot finding).

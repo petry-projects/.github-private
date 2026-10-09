@@ -467,10 +467,10 @@ acv_latest_nochange_disposition() {
     ' <<<"$comments_json" 2>/dev/null) || return 1
   [[ -z "$rows" ]] && return 1
 
-  # latest_maintainer tracks the newest eligible maintainer comment of ANY content: an
+  # latest_nonaffirm tracks the newest eligible maintainer comment that does not affirm: an
   # older affirmation is superseded by a later maintainer comment that does not itself
   # affirm no-change (e.g. a hedge, a question, a negation, or unrelated follow-up).
-  local latest="" latest_maintainer="" saw_unparseable=0 affirms
+  local latest="" latest_nonaffirm="" saw_unparseable=0 affirms
   local login typename created assoc body_b64 body up
   while IFS=$'\x1f' read -r login typename created assoc body_b64; do
     [[ -z "$login$typename$created$assoc$body_b64" ]] && continue
@@ -489,9 +489,6 @@ acv_latest_nochange_disposition() {
       saw_unparseable=1
       continue
     fi
-    if [[ -z "$latest_maintainer" || "$created" > "$latest_maintainer" ]]; then
-      latest_maintainer="$created"
-    fi
     affirms=1
     # A negated phrase ("this is not a false positive") is not an affirmative
     # disposition -> fail closed.
@@ -502,7 +499,12 @@ acv_latest_nochange_disposition() {
     # positive") -> fail closed.
     [[ "$up" == *'?'* ]] && affirms=0
     [[ "$up" =~ (MAY|MIGHT|COULD[[:space:]]BE|DISAGREE|DECLINE|REFUSE|DOUBT|UNCLEAR|NOT[[:space:]]SURE|UNSURE|NOT[[:space:]]CONVINCED) ]] && affirms=0
-    [[ "$affirms" -eq 1 ]] || continue
+    if [[ "$affirms" -ne 1 ]]; then
+      if [[ -z "$latest_nonaffirm" || "$created" > "$latest_nonaffirm" ]]; then
+        latest_nonaffirm="$created"
+      fi
+      continue
+    fi
     if [[ -z "$latest" || "$created" > "$latest" ]]; then
       latest="$created"
     fi
@@ -512,8 +514,9 @@ acv_latest_nochange_disposition() {
     echo "unparseable"
     return 2
   fi
-  # The newest maintainer comment must itself be the affirmation.
-  if [[ -n "$latest" && "$latest" == "$latest_maintainer" ]]; then
+  # The newest maintainer comment must itself be the affirmation: strictly newer than
+  # every non-affirming one, so a same-timestamp tie fails closed.
+  if [[ -n "$latest" && ( -z "$latest_nonaffirm" || "$latest" > "$latest_nonaffirm" ) ]]; then
     echo "$latest"
     return 0
   fi

@@ -809,3 +809,9 @@ setup() {
   run acv_latest_nochange_disposition "$comments"
   [[ "$status" -eq 1 ]]
 }
+
+@test "acv_latest_nochange_disposition: same-timestamp non-affirming comment fails closed -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"This is a false positive.","createdAt":"2026-09-02T12:00:00Z"},{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Actually, please look again.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments"
+  [[ "$status" -eq 1 ]]
+}
