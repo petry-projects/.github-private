@@ -540,7 +540,8 @@ gq_remaining() {
     --argjson ds "$ds" --argjson de "$( [ "$rolling" = "0" ] && printf '%s' "$de" || printf 'null')" '
     def left($cap; $used): if $cap == null then null elif $cap > $used then $cap - $used else 0 end;
     { key_index: $k, model: $m, state: $state, reason: $reason,
-      remaining: { rpd: left($rpd; $ud), rpm: left($rpm; $ur), tpm: left($tpm; $ut) },
+      remaining: (if $state == "unknown" then { rpd: null, rpm: null, tpm: null }
+                  else { rpd: left($rpd; $ud), rpm: left($rpm; $ur), tpm: left($tpm; $ut) } end),
       used: { rpd: $ud, rpm: $ur, tpm: $ut },
       caps: { tier: $tier, rpm: $crpm, tpm: $ctpm, rpd: $crpd },
       until: $until, day_start: $ds, day_end: $de }
@@ -883,7 +884,7 @@ gq_history_days() {
 # = cooldown records; cap_hit = requests reached the daily cap, or a minute reached
 # the per-minute cap (any use of a cap-0 limit counts). Reads every key in the ledger.
 gq_day_history() {
-  local n="${1:-$(gq_history_days)}" f bf rf af key idx model calls rej peak ev req row crpm crpd hit k
+  local n="${1:-$(gq_history_days)}" f bf rf af key idx model calls rej peak tpeak ev req row crpm crtpm crpd hit k
   local -A capcache=()
   bf="$(mktemp)" || return 1
   rf="$(mktemp)" || { rm -f "$bf"; return 1; }
@@ -894,7 +895,8 @@ gq_day_history() {
     jq -R -r 'try fromjson catch empty
         | select(type == "object" and .engine == "gemini" and .key_index != null)
         | ((.ts // "") | try fromdateiso8601 catch null) as $e | select($e != null)
-        | [ (.kind // "token_usage"), (.key_index | tostring), (.model // "-"), $e ] | @tsv' \
+        | [ (.kind // "token_usage"), (.key_index | tostring), (.model // "-"), $e,
+            (if .kind == "token_usage" then (.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0) else 0 end) ] | @tsv' \
         "$f" 2>/dev/null \
     | awk -F'\t' -v bounds="$bf" '
         BEGIN { while ((getline l < bounds) > 0) { split(l, b, "\t"); nb++; bs[nb] = b[2]; be[nb] = b[3] } }
@@ -903,23 +905,25 @@ gq_day_history() {
           for (i = 1; i <= nb; i++) if ($4 >= bs[i] && $4 < be[i]) { kd = i - 1; break }
           if (kd < 0) next
           k = kd "\t" $2 "\t" $3; seen[k] = 1
-          if ($1 == "token_usage")          { calls[k]++; req[k]++; mm[k SUBSEP int($4 / 60)]++ }
-          else if ($1 == "gemini_attempt")  { rej[k]++;   req[k]++; mm[k SUBSEP int($4 / 60)]++ }
+          min = int($4 / 60)
+          if ($1 == "token_usage")          { calls[k]++; req[k]++; mm[k SUBSEP min]++; tt[k SUBSEP min] += $5 }
+          else if ($1 == "gemini_attempt")  { rej[k]++;   req[k]++; mm[k SUBSEP min]++ }
           else if ($1 == "gemini_key_cooldown") ev[k]++
         }
         END {
           for (m in mm) { split(m, p, SUBSEP); if (mm[m] > peak[p[1]]) peak[p[1]] = mm[m] }
-          for (k in seen) printf "%s\t%d\t%d\t%d\t%d\t%d\n", k, calls[k], rej[k], peak[k], ev[k], req[k]
+          for (m in tt) { split(m, p, SUBSEP); if (tt[m] > tpeak[p[1]]) tpeak[p[1]] = tt[m] }
+          for (k in seen) printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\n", k, calls[k], rej[k], peak[k], (tpeak[k] ? tpeak[k] : 0), ev[k], req[k]
         }' | sort -t$'\t' -k1,1n -k2,2 -k3,3 > "$af"
   fi
-  while IFS=$'\t' read -r key idx model calls rej peak ev req; do
+  while IFS=$'\t' read -r key idx model calls rej peak tpeak ev req; do
     [ -n "$key" ] || continue
     k="$idx"$'\t'"$model"
     if [ -z "${capcache[$k]+x}" ]; then
       row="$(gq_caps_row_for "$idx" "$model")"
-      capcache[$k]="$(printf '%s' "$row" | awk -F'\t' '{ print $3 "\t" $5 }')"
+      capcache[$k]="$(printf '%s' "$row" | awk -F'\t' '{ print $3 "\t" $4 "\t" $5 }')"
     fi
-    IFS=$'\t' read -r crpm crpd <<< "${capcache[$k]}"
+    IFS=$'\t' read -r crpm crtpm crpd <<< "${capcache[$k]}"
     hit=0
     if [[ "$crpd" =~ ^[0-9]+$ ]]; then
       { [ $(( 10#$crpd )) -eq 0 ] && [ "$req" -gt 0 ]; } && hit=1
@@ -928,6 +932,10 @@ gq_day_history() {
     if [[ "$crpm" =~ ^[0-9]+$ ]]; then
       { [ $(( 10#$crpm )) -eq 0 ] && [ "$req" -gt 0 ]; } && hit=1
       { [ $(( 10#$crpm )) -gt 0 ] && [ "$peak" -ge $(( 10#$crpm )) ]; } && hit=1
+    fi
+    if [[ "$crtpm" =~ ^[0-9]+$ ]]; then
+      { [ $(( 10#$crtpm )) -eq 0 ] && [ "$tpeak" -gt 0 ]; } && hit=1
+      { [ $(( 10#$crtpm )) -gt 0 ] && [ "$tpeak" -ge $(( 10#$crtpm )) ]; } && hit=1
     fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$key" "$idx" "$model" "$calls" "$rej" "$peak" "$ev" "$hit" >> "$rf"
   done < "$af"
