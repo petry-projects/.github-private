@@ -218,7 +218,8 @@ main() {
   # idempotent (_AM_NEEDS_RESTORE guards it), so the EXIT trap no-ops cleanly
   # when check_idempotency causes an early exit with nothing to restore.
   # checkout_pr_in_worktree chains its own cleanup onto this trap.
-  trap 'restore_auto_merge; hold_label_exit_guard' EXIT
+  # shellcheck disable=SC2154 # rc is set by the trap string itself
+  trap 'rc=$?; restore_auto_merge; hold_label_exit_guard "$rc"' EXIT
   hold_auto_merge
 
   if check_idempotency; then

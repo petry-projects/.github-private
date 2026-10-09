@@ -12,6 +12,7 @@ source "$(dirname "$0")/lib/premature-closure-detect.sh"
 # required description sections so the PR is not escalated by triage for a
 # description gap.
 source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
+source "$(dirname "$0")/lib/hold-label.sh"
 # Pure comment renderer (#1566): render_issue_comments filters + size-bounds the
 # issue's comments into the ISSUE_COMMENTS prompt variable.
 source "$(dirname "$0")/lib/issue-comments.sh"
@@ -96,7 +97,7 @@ ensure_needs_human_label() {
   gh label create "$NEEDS_HUMAN_LABEL" --repo "$REPO" \
     --color B60205 --description "dev-lead could not complete this issue; needs human attention" \
     2>/dev/null || true
-  gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --add-label "$NEEDS_HUMAN_LABEL" 2>/dev/null || true
+  add_label_rest "$REPO" "$ISSUE_NUMBER" "$NEEDS_HUMAN_LABEL" || true
 }
 
 # escalate_needs_human <reason> <attempt> <snippet> <error_line> <cause_markdown> [exit_code]
@@ -720,10 +721,9 @@ ${lint_output}
     gh label create "auto-rebase:ready" --repo "$REPO" \
       --description "Opts a non-draft PR into auto-rebase without an approval (auto-rebase ready_label)" \
       --color "0e8a16" >/dev/null 2>&1 || true
-    # Best-effort, but never silent (#2142): log gh's message when the label fails.
-    local label_err
-    label_err=$(gh pr edit "$pr_url" --repo "$REPO" --add-label "auto-rebase:ready" 2>&1 >/dev/null) \
-      || echo "::warning::could not add auto-rebase:ready to ${pr_url}: ${label_err//$'\n'/ }"
+    # REST endpoint: `gh pr edit --add-label` fails under the workflow token (#2142).
+    # Best-effort; add_label_rest logs the API's message on failure.
+    add_label_rest "$REPO" "${pr_url##*/}" "auto-rebase:ready" || true
   fi
 
   # Durable completion claim (#1445): posted ONLY here — after commits are pushed

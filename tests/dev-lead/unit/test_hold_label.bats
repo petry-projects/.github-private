@@ -160,3 +160,34 @@ teardown() { rm -rf "$STUB_BIN_DIR" "$GH_CALLS"; }
   LABEL_RC=1 run bash -c "source '$LIB'; other() { true; }; trap 'other; hold_label_exit_guard' EXIT; apply_hold_label owner/repo 77 || true; exit 0"
   [ "$status" -ne 0 ]
 }
+
+# ── review follow-ups (#2142) ─────────────────────────────────────────────────
+
+@test "add_label_rest: POSTs any label to the REST labels endpoint without touching hold state" {
+  source "$LIB"
+  run add_label_rest owner/repo 5 auto-rebase:ready
+  [ "$status" -eq 0 ]
+  grep -q "gh api -X POST repos/owner/repo/issues/5/labels -f labels\[\]=auto-rebase:ready" "$GH_CALLS"
+  LABEL_RC=1 add_label_rest owner/repo 5 auto-rebase:ready 2>/dev/null >/dev/null || true
+  [ "${HOLD_LABEL_FAILED:-0}" = "0" ]
+}
+
+@test "hold_label_exit_guard: chained with a captured status keeps the original exit code" {
+  LABEL_RC=1 run bash -c "source '$LIB'; other() { true; }; trap 'rc=\$?; other; hold_label_exit_guard \"\$rc\"' EXIT; apply_hold_label owner/repo 77 || true; exit 4"
+  [ "$status" -eq 4 ]
+}
+
+@test "disable_auto_merge_for_hold: a refused disable on an active auto-merge fails the hold" {
+  source "$LIB"
+  cat > "$STUB_BIN_DIR/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"pr merge"*) echo "refused" >&2; exit 1 ;;
+  *"pr view"*) echo true ;;
+esac
+EOF
+  rc=0
+  disable_auto_merge_for_hold owner/repo 77 >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 1 ]
+  [ "$HOLD_LABEL_FAILED" = "1" ]
+}

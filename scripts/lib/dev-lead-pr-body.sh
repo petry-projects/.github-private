@@ -261,7 +261,8 @@ dlpb_backfill_pr_body() {
   fi
 
   local edit_err
-  if edit_err=$(gh pr edit "$pr" --repo "$repo" --body-file "$tmp" 2>&1 >/dev/null); then
+  # REST PATCH: `gh pr edit` fails under the workflow token (#2142).
+  if edit_err=$(gh api -X PATCH "repos/${repo}/pulls/${pr}" -F "body=@${tmp}" 2>&1 >/dev/null); then
     echo "::notice::Backfilled required description sections into PR #${pr} body (idempotent, marker-keyed)."
   else
     # Best-effort, but never silent (#2142): log gh's message.

@@ -43,20 +43,37 @@ _hold_label_api_message() {
   printf '%s' "$msg" | tr '\n`' '  ' | cut -c1-300
 }
 
+# add_label_rest <repo> <number> <label>
+#   Add any label to an issue or PR through the REST issues-labels endpoint
+#   (`gh issue edit` / `gh pr edit --add-label` fail under the workflow token).
+#   Returns 0 when applied. Otherwise logs ::error:: with the API's message,
+#   leaves it in ADD_LABEL_ERR, and returns 1. Touches no hold state.
+ADD_LABEL_ERR=""
+add_label_rest() {
+  local repo="$1" number="$2" label="$3" out
+  ADD_LABEL_ERR=""
+  if out=$(gh api -X POST "repos/${repo}/issues/${number}/labels" -f "labels[]=${label}" 2>&1); then
+    return 0
+  fi
+  ADD_LABEL_ERR="$(_hold_label_api_message "$out")"
+  echo "::error::could not add ${label} label on #${number}: ${ADD_LABEL_ERR}"
+  return 1
+}
+
 # apply_hold_label <repo> <number> [label]
-#   Add the hold label through the REST issues-labels endpoint. Returns 0 when
-#   the label is applied. Otherwise logs ::error:: with the API's message, sets
-#   HOLD_LABEL_FAILED=1 and HOLD_LABEL_NOTE, and returns 1.
+#   Add the hold label through add_label_rest. Returns 0 when the label is
+#   applied. Otherwise sets HOLD_LABEL_FAILED=1 and HOLD_LABEL_NOTE, and
+#   returns 1.
 apply_hold_label() {
   local repo="$1" number="$2" label="${3:-${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}}"
-  local out msg
+  local msg
   HOLD_LABEL_NOTE=""
-  if out=$(gh api -X POST "repos/${repo}/issues/${number}/labels" -f "labels[]=${label}" 2>&1); then
+  if add_label_rest "$repo" "$number" "$label"; then
     echo "::notice::applied ${label} to PR #${number} — dev-lead will hold it for a human"
     return 0
   fi
-  msg="$(_hold_label_api_message "$out")"
-  echo "::error::could not add ${label} label on PR #${number}: ${msg} — the PR is flagged but NOT held (#2142)"
+  msg="$ADD_LABEL_ERR"
+  echo "::error::PR #${number} is flagged but NOT held (#2142)"
   HOLD_LABEL_FAILED=1
   HOLD_LABEL_NOTE="
 
@@ -72,18 +89,33 @@ apply_hold_label() {
 post_hold_failure_note() {
   local repo="$1" number="$2"
   [ -n "$HOLD_LABEL_NOTE" ] || return 0
-  gh pr comment "$number" --repo "$repo" --body "## Dev-Lead — hold failed${HOLD_LABEL_NOTE}" \
+  # Marker-keyed: repeated deduped escalations post the note once.
+  local marker="<!-- dev-lead:hold-failed -->"
+  if gh api --paginate "repos/${repo}/issues/${number}/comments?per_page=100" 2>/dev/null \
+       | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
+    return 0
+  fi
+  gh pr comment "$number" --repo "$repo" --body "${marker}
+## Dev-Lead — hold failed${HOLD_LABEL_NOTE}" \
     || echo "::error::could not post the not-held note on PR #${number}"
 }
 
 # disable_auto_merge_for_hold <repo> <number>
 #   Disable auto-merge on an escalated PR. gh fails both when auto-merge was not
-#   on and when the call is refused, so the message is logged rather than
-#   discarded: the run log shows which it was. Never fails the caller.
+#   on and when the call is refused, so on failure check whether auto-merge is
+#   still active: if so the PR is NOT held (HOLD_LABEL_FAILED=1, returns 1);
+#   if not, it was simply off. Callers treat a non-zero return as non-fatal.
 disable_auto_merge_for_hold() {
-  local repo="$1" number="$2" out
+  local repo="$1" number="$2" out active
   if out=$(gh pr merge "$number" --repo "$repo" --disable-auto 2>&1); then
     return 0
+  fi
+  active=$(gh pr view "$number" --repo "$repo" --json autoMergeRequest \
+    --jq '.autoMergeRequest != null' 2>/dev/null || echo unknown)
+  if [ "$active" = "true" ]; then
+    echo "::error::could not disable auto-merge on PR #${number}: $(_hold_label_api_message "$out") — it may merge despite escalation (#2142)"
+    HOLD_LABEL_FAILED=1
+    return 1
   fi
   echo "::notice::auto-merge not disabled on PR #${number} (not enabled, or refused): $(_hold_label_api_message "$out")"
   return 0
@@ -91,10 +123,10 @@ disable_auto_merge_for_hold() {
 
 # hold_label_exit_guard — EXIT-trap hook. When any hold in this run failed, end
 # the run as a failure: keep the exit code if it is already non-zero, otherwise
-# exit 1. Place it LAST in a chained trap (a handler before it resets $?, so a
-# chained guard exits 1).
+# exit 1. In a chained trap capture the status first and pass it in:
+#   trap 'rc=$?; restore_auto_merge; hold_label_exit_guard "$rc"' EXIT
 hold_label_exit_guard() {
-  local rc=$?
+  local rc=${1:-$?}
   [ "${HOLD_LABEL_FAILED:-0}" = "1" ] || return 0
   echo "::error::a dev-lead escalation could not be held (needs-human-review not applied) — failing the run (#2142)"
   [ "$rc" -ne 0 ] || rc=1

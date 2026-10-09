@@ -1316,5 +1316,7 @@ main() {
 # Run main only when executed directly (bash dev-lead-retry.sh), not when sourced
 # by unit tests that exercise individual functions (scan_issue_for_retry, etc.).
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  # A failed hold (#2142) must fail the scan even though escalation is `|| true`.
+  trap hold_label_exit_guard EXIT
   main "$@"
 fi

@@ -6004,7 +6004,7 @@ sha="${claim_sha}"
 [ "\$sha" = "HEAD" ] && sha="\$(git rev-parse HEAD)"
 reply="Fixed in fix.txt: added the fix. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\\\\\"v\\\\\":1,\\\\\"sha\\\\\":\\\\\"\${sha}\\\\\",\\\\\"files\\\\\":[\\\\\"fix.txt\\\\\"]} -->"
 case "\$ARGS" in
-  *"PATCH"*)
+  *"PATCH"*"pulls/comments/"*)
     echo "\$*" >> "$T2013_PATCH"
     echo '{}'
     ;;

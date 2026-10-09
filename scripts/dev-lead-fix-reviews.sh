@@ -113,7 +113,8 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
   # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
   # cleanup onto this trap.
-  trap 'restore_auto_merge; hold_label_exit_guard' EXIT
+  # shellcheck disable=SC2154 # rc is set by the trap string itself
+  trap 'rc=$?; restore_auto_merge; hold_label_exit_guard "$rc"' EXIT
   hold_auto_merge
   # Resolve HEAD_SHA after holding auto-merge: for issue_comment intents
   # (on-mention, fix-bot-comment) only pr_number is provided, not head_sha.
@@ -2205,7 +2206,7 @@ Resolve the conflict manually, then remove the \`${NEEDS_HUMAN_REVIEW_LABEL:-nee
   # label goes first so the comment can say when the PR could not be held (#2142).
   apply_hold_label "$REPO" "$PR_NUMBER" || true
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${body}${HOLD_LABEL_NOTE}" 2>/dev/null || true
-  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
 }
 
 # escalate_rebase_needs_human <reason>: hand a rebase off to a human immediately
@@ -2224,7 +2225,7 @@ escalate_rebase_needs_human() {
   # Label first so the terminal marker can say when the PR could not be held (#2142).
   apply_hold_label "$REPO" "$PR_NUMBER" || true
   post_reviews_terminal "rebase" "failed" "${reason}${HOLD_LABEL_NOTE}"
-  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
 }
 
 # handle_rebase_failure <reason>: converts a rebase engine failure — a per-tier
@@ -2684,7 +2685,7 @@ The \`${intent}\` pass reverted this PR's own changes, so its net diff against \
 Auto-merge has been disabled and no commit was pushed. A human should restore the correct fix or close this PR.${HOLD_LABEL_NOTE}" \
       || echo "::warning::could not post no-op flag comment on PR #${PR_NUMBER}"
   fi
-  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
   return 0
 }
 
@@ -2964,7 +2965,7 @@ flag_test_regression() {
 The \`${intent}\` pass left the test suite failing on test(s) that passed on the pre-pass head: ${tests}. A fix that breaks a passing test is wrong or incomplete, so dev-lead **did not push** this pass (#2013). Auto-merge has been disabled.${HOLD_LABEL_NOTE}" \
       || echo "::warning::could not post test-regression flag comment on PR #${PR_NUMBER}"
   fi
-  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
   return 0
 }
 
@@ -2996,7 +2997,7 @@ The \`${intent}\` pass changed, deleted, or skipped **existing** test(s) to go w
 If the test really is wrong, a human should make that call, or the fix should carry a \`Test-Change-Justification:\` commit trailer that cites the reason (for example, the review comment that asked for it). Auto-merge has been disabled.${HOLD_LABEL_NOTE}" \
       || echo "::warning::could not post test-tamper flag comment on PR #${PR_NUMBER}"
   fi
-  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
   return 0
 }
 
@@ -3066,7 +3067,7 @@ The \`${intent}\` pass has now committed **${count}** times against this review 
 Auto-merge has been disabled and no further automatic passes will run until a human intervenes. A human should apply the requested changes, or clarify the review.${HOLD_LABEL_NOTE}" \
       || echo "::warning::could not post review non-convergence comment on PR #${PR_NUMBER}"
   fi
-  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
 }
 
 # finalize_review_application <intent> — called after commit_and_push succeeds on
