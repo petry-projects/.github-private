@@ -9,6 +9,8 @@
 #   • the sweep wiring in dev-lead-retry.sh (exactly one dispatch, dedup marker,
 #     payload carries the comment node id — never its body).
 
+bats_require_minimum_version 1.5.0
+
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 LIB="$SCRIPT_DIR/scripts/lib/bot-comment-retry.sh"
 RETRY_SCRIPT="$SCRIPT_DIR/scripts/dev-lead-retry.sh"
@@ -304,21 +306,109 @@ $(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z a
 
 @test "bcr_fetch_pr_comments: a GraphQL response carrying errors fails closed" {
   gh() { printf '%s' '{"errors":[{"message":"rate limited"}],"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; }
-  run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
-  [ "$status" -ne 0 ]
+  run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
+  [[ "$stderr" == *"GraphQL errors"* ]]
 }
 
 @test "bcr_fetch_pr_comments: hasNextPage true without a cursor fails closed" {
   gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}'; }
-  run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
-  [ "$status" -ne 0 ]
+  run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pagination"* ]]
 }
 
 @test "bcr_fetch_pr_comments: a non-boolean hasNextPage fails closed" {
   gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"endCursor":null},"nodes":[]}}}}}'; }
+  run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pagination"* ]]
+}
+
+# #2072: a failed API call and an unparseable page each fail closed with their
+# own reason, so a fetch failure is distinguishable from a parse failure.
+@test "bcr_fetch_pr_comments: a failed API call fails closed with a fetch reason" {
+  gh() { return 1; }
+  run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"API request failed"* ]]
+}
+
+@test "bcr_fetch_pr_comments: an unparseable page fails closed with a parse reason" {
+  gh() { printf '%s' '<html>502 Bad Gateway</html>'; }
+  run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"unparseable"* ]]
+  [[ "$stderr" != *"API request failed"* ]]
+}
+
+# A page that reports more pages but repeats the cursor it was fetched with
+# would loop on the same page forever; it fails closed instead.
+@test "bcr_fetch_pr_comments: a repeated non-empty endCursor fails closed" {
+  gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"same"},"nodes":[]}}}}}'; }
+  run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"did not advance"* ]]
+}
+
+# The temp file holds fetched comment bodies; it is removed on success and failure.
+@test "bcr_fetch_pr_comments: leaves no temp file behind" {
+  export TMPDIR="$BATS_TEST_TMPDIR/tmp"
+  mkdir -p "$TMPDIR"
+  gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; }
   run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  gh() { return 1; }
+  run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
+  [ -z "$(ls -A "$TMPDIR")" ]
+}
+
+# #2072: PR #1953's comment history grew past the per-argument size limit and the
+# scan died with "jq: Argument list too long" because pages were merged through
+# `jq --argjson`. Thousands of comments and several MB of body text — far beyond
+# ARG_MAX — must be read in full.
+@test "bcr_fetch_pr_comments: reads thousands of comments and MBs of text (well over ARG_MAX)" {
+  local pages_dir="$BATS_TEST_TMPDIR/pages" pages=30 per_page=100 i
+  mkdir -p "$pages_dir"
+  for ((i = 1; i <= pages; i++)); do
+    jq -nc --argjson p "$i" --argjson n "$per_page" --argjson last "$pages" '
+      ("x" * 2048) as $pad
+      | {data: {repository: {pullRequest: {comments: {
+          pageInfo: {hasNextPage: ($p < $last),
+                     endCursor: (if $p < $last then "c\($p + 1)" else null end)},
+          nodes: [range($n) as $k
+            | {id: "IC_\($p)_\($k)", author: {login: "coderabbitai", __typename: "Bot"},
+               authorAssociation: "NONE", body: "comment \($p)/\($k) \($pad)",
+               createdAt: "2026-10-01T23:05:43Z", lastEditedAt: null,
+               isMinimized: false, minimizedReason: null}]}}}}}' > "$pages_dir/c$i.json"
+  done
+  export PAGES_DIR="$pages_dir"
+  gh() {
+    local a cursor="c1"
+    for a in "$@"; do
+      case "$a" in cursor=*) cursor="${a#cursor=}" ;; esac
+    done
+    cat "$PAGES_DIR/$cursor.json"
+  }
+  local out_file="$BATS_TEST_TMPDIR/out.json" err_file="$BATS_TEST_TMPDIR/err.txt"
+  bcr_fetch_pr_comments "petry-projects/.github-private" 1953 > "$out_file" 2> "$err_file"
+  [ ! -s "$err_file" ]
+  # Well over ARG_MAX, so it could never have been passed as one argument.
+  [ "$(wc -c < "$out_file")" -gt "$(getconf ARG_MAX)" ]
+  [ "$(jq 'length' "$out_file")" -eq $((pages * per_page)) ]
+  [ "$(jq -r 'first.id' "$out_file")" = "IC_1_0" ]
+  [ "$(jq -r 'last.id' "$out_file")" = "IC_${pages}_$((per_page - 1))" ]
+  # The full set still drives the pure decision without hitting the size limit.
+  run bcr_retry_decisions "$(cat "$out_file")" "$TRUSTED" "$INFO" "$NOW_EPOCH" "$AUTOMATION"
+  [ "$status" -eq 0 ]
+  [ "$(jq 'length' <<< "$output")" -eq $((pages * per_page)) ]
 }
 
 # ── dev-lead-retry.sh sweep wiring ───────────────────────────────────────────

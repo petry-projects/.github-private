@@ -209,10 +209,35 @@ bcr_retry_decisions() {
 
 # bcr_fetch_pr_comments <repo> <pr_number>
 #   Echo every PR issue-comment node (paginated GraphQL) as one JSON array with
-#   the fields bcr_retry_decisions reads. Returns 1 (echoing nothing) on any API or
-#   parse failure — a partial list could hide a disposition, so callers fail closed.
+#   the fields bcr_retry_decisions reads. Returns 1 (echoing nothing on stdout, one
+#   `[warn]` line naming the failure on stderr) on any API or parse failure — a
+#   partial list could hide a disposition, so callers fail closed.
+#   Pages are merged from a temp file, never passed to jq as arguments: a PR's
+#   accumulated comment JSON outgrows the exec argument limit (#2072, PR #1953).
 bcr_fetch_pr_comments() {
-  local repo="$1" pr="$2"
+  local pages_file rc
+  pages_file=$(mktemp "${TMPDIR:-/tmp}/bcr-comments.XXXXXX") || {
+    echo "  [warn] bot-comment retry: could not create a temp file for PR $2 comments" >&2
+    return 1
+  }
+  # A subshell with its own EXIT trap removes the temp file (it holds fetched
+  # comment bodies) even on interruption, without touching the caller's traps;
+  # `|| rc=$?` keeps errexit from skipping the status capture.
+  rc=0
+  (
+    trap 'rm -f "$pages_file"' EXIT
+    _bcr_fetch_pr_comments_into "$1" "$2" "$pages_file"
+  ) || rc=$?
+  rm -f "$pages_file"
+  return "$rc"
+}
+
+# _bcr_fetch_pr_comments_into <repo> <pr_number> <pages_file>
+#   bcr_fetch_pr_comments' body: appends each page's nodes array to <pages_file>
+#   (one per line) and echoes their concatenation once every page has been read.
+_bcr_fetch_pr_comments_into() {
+  local repo="$1" pr="$2" pages_file="$3"
+  local warn="  [warn] bot-comment retry: PR ${pr} comments in ${repo}:"
   # shellcheck disable=SC2016  # $owner/$repo/$pr/$cursor are GraphQL variables
   local query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
     repository(owner:$owner,name:$repo){
@@ -224,27 +249,41 @@ bcr_fetch_pr_comments() {
       }
     }
   }'
-  local all='[]' cursor="" has_next="true" page nodes
+  local cursor="" prev_cursor="" has_next="true" page
   local cursor_args=()
   while [ "$has_next" = "true" ]; do
     page=$(gh api graphql -f query="$query" -F owner="${repo%%/*}" -F repo="${repo##*/}" \
-      -F pr="$pr" "${cursor_args[@]}" 2>/dev/null) || return 1
+      -F pr="$pr" "${cursor_args[@]}" 2>/dev/null) || {
+      echo "${warn} API request failed" >&2; return 1; }
     # A partial response (GraphQL errors alongside data) or an unreadable page
     # cursor is a partial snapshot — it could hide a disposition. Fail closed.
-    printf '%s' "$page" | jq -e '(.errors // []) | length == 0' >/dev/null 2>&1 || return 1
-    nodes=$(printf '%s' "$page" | jq -ce '.data.repository.pullRequest.comments.nodes | arrays' 2>/dev/null) \
-      || return 1
-    all=$(jq -cn --argjson a "$all" --argjson b "$nodes" '$a + $b') || return 1
+    printf '%s' "$page" | jq -e 'type == "object"' >/dev/null 2>&1 || {
+      echo "${warn} unparseable API response" >&2; return 1; }
+    printf '%s' "$page" | jq -e '(.errors // []) | length == 0' >/dev/null 2>&1 || {
+      echo "${warn} response carried GraphQL errors" >&2; return 1; }
+    printf '%s' "$page" | jq -ce '.data.repository.pullRequest.comments.nodes | arrays' \
+      >> "$pages_file" 2>/dev/null || {
+      echo "${warn} unparseable comment page (no nodes array)" >&2; return 1; }
     has_next=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage
-      | if type == "boolean" then tostring else "invalid" end' 2>/dev/null) || return 1
-    case "$has_next" in true|false) ;; *) return 1 ;; esac
-    cursor=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor // ""')
+      | if type == "boolean" then tostring else "invalid" end' 2>/dev/null) || has_next="invalid"
+    cursor=$(printf '%s' "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor // ""' 2>/dev/null) \
+      || cursor=""
+    case "$has_next" in true|false) ;; *)
+      echo "${warn} invalid pagination info (hasNextPage)" >&2; return 1 ;;
+    esac
     if [ "$has_next" = "true" ] && [ -z "$cursor" ]; then
-      return 1
+      echo "${warn} invalid pagination info (no endCursor)" >&2; return 1
     fi
+    # A cursor that did not advance would re-fetch the same page forever.
+    if [ "$has_next" = "true" ] && [ "$cursor" = "$prev_cursor" ]; then
+      echo "${warn} invalid pagination info (endCursor did not advance)" >&2; return 1
+    fi
+    prev_cursor="$cursor"
     cursor_args=(-f "cursor=${cursor}")
   done
-  printf '%s\n' "$all"
+  # Concatenate the pages from the file — never via jq arguments (#2072).
+  jq -cs 'add // []' "$pages_file" 2>/dev/null || {
+    echo "${warn} could not merge comment pages" >&2; return 1; }
 }
 
 # bcr_retry_marker <comment_id> <version> <attempt> <now_iso>
