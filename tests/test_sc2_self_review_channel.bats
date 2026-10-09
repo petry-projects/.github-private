@@ -202,16 +202,33 @@ setup() {
 # stable-tier channel. This is what fails if a future PR repins it to `next`.
 # ---------------------------------------------------------------------------
 
-@test "LIVE: .github/workflows/dev-lead.yml resolves to a stable-tier channel" {
+@test "promoted tier: ring<N> and stable pass; next, @main and a SHA fail" {
+  run src_is_promoted_tier "dev-lead/v139-ring0"; [ "$status" -eq 0 ]
+  run src_is_promoted_tier "dev-lead/v2-ring1"; [ "$status" -eq 0 ]
+  run src_is_promoted_tier "dev-lead/v1-stable"; [ "$status" -eq 0 ]
+  run src_is_promoted_tier "dev-lead/stable"; [ "$status" -eq 0 ]
+  run src_is_promoted_tier "dev-lead/v1-next"; [ "$status" -ne 0 ]
+  run src_is_promoted_tier "main"; [ "$status" -ne 0 ]
+  run src_is_promoted_tier "abcdef1234567890abcdef1234567890abcdef12"; [ "$status" -ne 0 ]
+}
+
+@test "assert: a ring0 stub passes (promoted, rolled back by a tag move)" {
+  run src_assert_self_review_stable "${FIXTURES}/stub-ring0.yml" "dev-lead.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pins a promoted channel"* ]]
+}
+
+@test "LIVE: .github/workflows/dev-lead.yml resolves to a promoted channel" {
   run src_assert_self_review_stable "${REPO_ROOT}/.github/workflows/dev-lead.yml" ".github/workflows/dev-lead.yml"
   [ "$status" -eq 0 ]
 }
 
-@test "LIVE: dev-lead.yml's parsed ref is specifically a stable tier" {
+@test "LIVE: dev-lead.yml's parsed ref is specifically a promoted tier, never next" {
   ref="$(src_stub_uses_ref "${REPO_ROOT}/.github/workflows/dev-lead.yml")"
-  run src_channel_tier "$ref"
+  run src_is_promoted_tier "$ref"
   [ "$status" -eq 0 ]
-  [ "$output" = "stable" ]
+  run src_channel_tier "$ref"
+  [ "$output" != "next" ]
 }
 
 # ---------------------------------------------------------------------------

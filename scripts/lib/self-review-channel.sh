@@ -87,9 +87,20 @@ src_is_stable_tier() {
   [ "$tier" = "stable" ]
 }
 
+# src_is_promoted_tier <ref>
+#   Exit 0 when <ref> is a PROMOTED channel tier — ring<N> or stable — i.e. code
+#   that left `next` only after its promotion gate. This is what SC2 needs: the
+#   duty must never run unpromoted (`next`, `@main`, a SHA) code, and a bad
+#   promoted tier is rolled back by moving its tag, with no PR to block.
+src_is_promoted_tier() {
+  local ref="$1" tier
+  tier="$(src_channel_tier "$ref")" || return 1
+  [ "$tier" = "stable" ] || [[ "$tier" =~ ^ring[0-9]+$ ]]
+}
+
 # src_assert_self_review_stable <stub_file> [<label>]
 #   The end-to-end SC2 guard: parse the stub's channel pin and assert it is a
-#   stable tier. On failure emit a message that NAMES SC2 and explains why a
+#   promoted tier (ring<N> or stable; never next, @main or a SHA). On failure emit a message that NAMES SC2 and explains why a
 #   `next` pin here is a regression — so a future contributor "fixing the ring
 #   drift" is told the constraint rather than deleting the guard.
 src_assert_self_review_stable() {
@@ -100,29 +111,29 @@ src_assert_self_review_stable() {
   fi
   # The `agent_ref` input is the ref dev-lead's own review/merge scripts are
   # checked out from; if it is absent it defaults to `main` in the reusable, so
-  # an unset value is itself non-stable. Fail closed rather than assume stable.
+  # an unset value is itself unpromoted. Fail closed rather than assume promoted.
   if ! agent_ref="$(src_stub_agent_ref "$file")"; then
-    printf '::error::SC2 self-review guard: %s declares no `agent_ref` input, so the dev-lead scripts default to `main` (not stable). Pin `with: agent_ref: <stable channel>`.\n' "$label" >&2
+    printf '::error::SC2 self-review guard: %s declares no `agent_ref` input, so the dev-lead scripts default to `main` (unpromoted). Pin `with: agent_ref: <promoted channel>`.\n' "$label" >&2
     return 1
   fi
   # Both the workflow pin AND the script-checkout ref must be stable: a stable
   # `uses:` with a `next` `agent_ref` still runs the duty logic from an unsafe
   # channel, so validating only the `uses:` ref leaves an SC2 bypass open.
-  if src_is_stable_tier "$ref" && src_is_stable_tier "$agent_ref"; then
-    printf 'SC2 self-review guard: %s pins a stable-tier channel (uses=%s, agent_ref=%s) — OK\n' "$label" "$ref" "$agent_ref"
+  if src_is_promoted_tier "$ref" && src_is_promoted_tier "$agent_ref"; then
+    printf 'SC2 self-review guard: %s pins a promoted channel (uses=%s, agent_ref=%s) — OK\n' "$label" "$ref" "$agent_ref"
     return 0
   fi
   uses_tier="$(src_channel_tier "$ref" 2>/dev/null)" || uses_tier="not-a-channel"
   agent_tier="$(src_channel_tier "$agent_ref" 2>/dev/null)" || agent_tier="not-a-channel"
   {
-    printf '::error::SC2 REGRESSION: %s pins the self-review/dev duty to a non-stable channel (uses ref="%s" tier="%s", agent_ref="%s" tier="%s").\n' "$label" "$ref" "$uses_tier" "$agent_ref" "$agent_tier"
-    printf 'This repo (.github-private) sits in ring `next`, but its dev-lead review/merge duty MUST pin a STABLE-tier channel on BOTH the\n'
+    printf '::error::SC2 REGRESSION: %s pins the self-review/dev duty to an unpromoted channel (uses ref="%s" tier="%s", agent_ref="%s" tier="%s").\n' "$label" "$ref" "$uses_tier" "$agent_ref" "$agent_tier"
+    printf 'This repo (.github-private) sits in ring `next`, but its dev-lead review/merge duty MUST pin a PROMOTED channel (ring<N> or stable) on BOTH the\n'
     printf '`uses:` reusable pin AND the `agent_ref` input (the ref its own review/merge scripts are checked out from) so a broken\n'
-    printf 'in-development version cannot block the PR that fixes its own breakage. A stable `uses:` with a non-stable `agent_ref` still\n'
-    printf 'runs the duty logic from an unsafe channel; restoring a non-stable pin here silently re-arms the self-hosting circular dependency\n'
+    printf 'in-development version cannot block the PR that fixes its own breakage. A promoted `uses:` with a `next` `agent_ref` still\n'
+    printf 'runs the duty logic from an unsafe channel; a `next`, `@main` or SHA pin here silently re-arms the self-hosting circular dependency\n'
     printf '(Safe Release SC2, epic #495 / story #503).\n'
     printf 'If you are "fixing the ring drift" flagged by pinned-version-report: DO NOT repin to `next` — pinned-version-report is\n'
-    printf 'correct from the ring-rollout view and this stable pin is correct from the SC2 view; the stable pin is the DELIBERATE SC2\n'
+    printf 'correct from the ring-rollout view and this promoted pin is correct from the SC2 view; the promoted pin is the DELIBERATE SC2\n'
     printf 'exception. See docs/release/versioning.md and docs/initiatives/agentic-release-strategy.md.\n'
   } >&2
   return 1
