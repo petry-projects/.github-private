@@ -69,6 +69,7 @@ If the PR is already approved but not merging, the report's merge state says why
 Without a checkout or `gh` credentials, look at the PR's latest pr-review run. A
 run that a gate stopped records `decision / reason / would_change` in its log and
 step summary (#1552, #1894). A run that reached the model review answers with the
-review it posted on the PR instead: read that review. Do not reconstruct the
+review it posted on the PR instead: read that review. If no review appears, read
+that run's log for a model or posting failure. Do not reconstruct the
 gates by hand: that copy drifts from the real ones, which is why #1902's first
 version was replaced.

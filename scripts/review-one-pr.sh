@@ -134,7 +134,11 @@ _diagnose_gh_is_write() {
     label|release|repo|workflow|run|secret|variable)
       case "$verb" in view|list|download|watch) return 1 ;; *) return 0 ;; esac ;;
     api) ;;
-    *) return 1 ;;
+    auth) case "$verb" in status|token) return 1 ;; *) return 0 ;; esac ;;
+    search|status|help|version|--version|--help) return 1 ;;
+    # Fail closed: any other subcommand (gist, codespace, ruleset, an extension…)
+    # is refused unless it is listed above as read-only.
+    *) return 0 ;;
   esac
   shift
   for a in "$@"; do

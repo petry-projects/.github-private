@@ -84,7 +84,7 @@ write_snap() {
 _assert_read_only() {
   # Explicit failure: a negated command is exempt from errexit, so `! grep` here
   # would never fail the test.
-  if grep -qiE 'pr (comment|edit|review|merge|close)|issue (comment|edit)|mutation|--method[= ](POST|PUT|PATCH|DELETE)|-X ?(POST|PUT|PATCH|DELETE)' "$GH_LOG"; then
+  if grep -qiE 'pr (comment|edit|review|merge|close)|issue (comment|edit|close|create|reopen)|gist |mutation|--method[= ](POST|PUT|PATCH|DELETE)|-X ?(POST|PUT|PATCH|DELETE)' "$GH_LOG"; then
     cat "$GH_LOG"
     return 1
   fi
@@ -235,13 +235,14 @@ EOF2
            "api -X POST repos/o/r/issues/1/comments" "api -XPATCH repos/o/r/issues/comments/1" \
            "api --method=DELETE repos/o/r/issues/1/labels/x" "api --method put repos/o/r/x" \
            "api repos/o/r/issues/1/comments -f body=x" "api repos/o/r/dispatches --input -" \
-           "api graphql -f query=mutation(\$id:ID!){x}"; do
+           "api graphql -f query=mutation(\$id:ID!){x}" "issue close 5" "gist create f.txt" \
+           "codespace create" "extension-cmd run"; do
     # shellcheck disable=SC2086
     _diagnose_gh_is_write $w || { echo "not classified as a write: gh $w"; return 1; }
   done
   for w in "pr view $PR_URL --json labels" "pr list --state open" "api repos/o/r/pulls/1" \
            "api -X GET repos/o/r/pulls/1/reviews -f per_page=100" "api --paginate repos/o/r/issues/1/events" \
-           "api graphql -f query=query{viewer{login}}" "auth status"; do
+           "api graphql -f query=query{viewer{login}}" "auth status" "search prs is:open"; do
     # shellcheck disable=SC2086
     if _diagnose_gh_is_write $w; then echo "read classified as a write: gh $w"; return 1; fi
   done
