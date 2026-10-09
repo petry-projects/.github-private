@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: check retry payload fields against the pinned intent parser
+      - name: check retry payload fields against the intent parser at every channel of the pinned major
         run: bash scripts/check-retry-payload-fields.sh
 
   bats:

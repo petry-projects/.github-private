@@ -153,6 +153,75 @@ EOF
   [[ "$output" != *"client_payload.pr_number"* ]]
 }
 
+@test "captures a named --input file request body (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF2'
+dispatch_file() {
+  local f; f=$(mktemp)
+  jq -n '{event_type: "x", client_payload: {pr_number: 1, file_field: 2}}' > "$f"
+  gh api --method POST "repos/$1/dispatches" --input "$f"
+  rm -f "$f"
+}
+EOF2
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.file_field (sent by dispatch_file)"* ]]
+}
+
+@test "every dispatch a function makes is checked, not only the last (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF2'
+dispatch_twice() {
+  jq -n '{client_payload: {pr_number: 1, first_only: 1}}' | gh api --method POST "repos/$1/dispatches" --input -
+  jq -n '{client_payload: {pr_number: 1}}' | gh api --method POST "repos/$1/dispatches" --input -
+}
+EOF2
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.first_only (sent by dispatch_twice)"* ]]
+}
+
+@test "a reference inside a jq comment is not a read (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  printf '%s\n' "route4() { jq -r '.client_payload.pr_number # .client_payload.jq_commented is not consumed' \"\$EVENT_PATH\"; }" \
+    >> "$SANDBOX/scripts/dev-lead-intent.sh"
+  write_sweep pr_number jq_commented
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.jq_commented"* ]]
+}
+
+@test "a lib the parser sources that is missing at a tag is a setup error (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  printf '%s\n' 'source "$(dirname "$0")/lib/not-there.sh"' >> "$SANDBOX/scripts/dev-lead-intent.sh"
+  write_sweep pr_number
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"cannot read scripts/lib/not-there.sh"* ]]
+}
+
+@test "refreshing tags never makes a full clone shallow (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  tag_channels "${ALL[@]}"
+  git -C "$SANDBOX" commit -qm second --allow-empty
+  git clone -q "$SANDBOX" "$BATS_TEST_TMPDIR/clone"
+  run bash "$CHECK" "$BATS_TEST_TMPDIR/clone"
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$BATS_TEST_TMPDIR/clone" rev-parse --is-shallow-repository)" = false ]
+}
+
 @test "runs dispatchers defined in libs the sweep sources" {
   write_stub dev-lead/v7-stable
   write_intent pr_number
@@ -260,4 +329,12 @@ EOF
   [[ "$output" != *"SOURCEFAIL"* ]]
   [[ "$output" == *"dispatch_bot_comment_retry comment_node_id"* ]]
   [[ "$output" == *"dispatch_reviews_retry intent_type"* ]]
+}
+
+@test "lint.yml runs the check" {
+  grep -q 'bash scripts/check-retry-payload-fields.sh' "$REPO_ROOT/.github/workflows/lint.yml"
+}
+
+@test "AGENTS.md ordering rule points at the check" {
+  grep -q 'check-retry-payload-fields.sh' "$REPO_ROOT/AGENTS.md"
 }

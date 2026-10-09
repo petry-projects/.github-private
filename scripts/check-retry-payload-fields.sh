@@ -20,16 +20,20 @@ set -euo pipefail
 # comments read as fields, brackets inside strings, a stale tag on fetch failure):
 #   sent — not scanned: every function in the sweep whose body POSTs to
 #          `/dispatches` is EXECUTED with `gh` stubbed to capture the request, and
-#          the payload's top-level `client_payload` keys are read with jq. Both the
-#          `--input -` JSON form and the `-f/-F client_payload[key]=` form are
-#          captured. A dispatcher that sends nothing for the probe arguments is a
-#          setup error, never a silent pass.
+#          the payload's top-level `client_payload` keys are read with jq. Every
+#          dispatch a function makes is kept, in all three request forms: `--input -`,
+#          `--input <file>`, and `-f/-F client_payload[key]=`. A dispatcher that sends
+#          nothing (or an unreadable body) for the probe arguments is a setup error,
+#          never a silent pass.
 #   read — the intent parser (and the libs it sources) at each channel tag is
 #          first parsed by bash (wrapped in a function and printed back with
 #          `declare -f`), which drops shell comments and keeps strings and
 #          heredocs verbatim; `client_payload.<key>` reads are then collected from
 #          that text. A `#` comment INSIDE a jq program string is not shell syntax
-#          and survives — keep field references out of jq comments.
+#          and survives, so a reference with a `#` before it on its line (other than
+#          `$#`) is not counted — that can only under-count reads, which fails the
+#          check loudly rather than certifying an ignored field. A lib the parser
+#          sources that cannot be read at a tag is a setup error.
 #
 # Only top-level client_payload keys are compared; nested keys (e.g.
 # checks[].details_url) are consumed downstream of the parser.
@@ -79,18 +83,27 @@ sent_fields() {
     source "$SWEEP_PATH" >/dev/null 2>&1 || { echo "SOURCEFAIL"; exit 0; }
     set +e +u
     gh() {
-      local a prev="" is_dispatch=false from_stdin=false
+      local a prev="" is_dispatch=false input=""
       local -a kv=()
       for a in "$@"; do
         case "$a" in */dispatches) is_dispatch=true ;; esac
-        if [ "$prev" = "--input" ] && [ "$a" = "-" ]; then from_stdin=true; fi
+        [ "$prev" = "--input" ] && input="$a"
         case "$prev" in
           -f|-F|--field|--raw-field) kv+=("$a") ;;
         esac
         prev="$a"
       done
       if ! $is_dispatch; then echo "{}"; return 0; fi
-      if $from_stdin; then cat >"$CAPTURE"; return 0; fi
+      # One compact JSON line per dispatch (appended), so a function that
+      # dispatches more than once has every request checked; an unreadable body
+      # is recorded as such and fails the check.
+      if [ -n "$input" ]; then
+        local body
+        if [ "$input" = "-" ]; then body=$(cat); else body=$(cat -- "$input" 2>/dev/null); fi
+        jq -ce "if type == \"object\" then . else error end" <<<"$body" >>"$CAPTURE" 2>/dev/null \
+          || echo "\"UNREADABLE\"" >>"$CAPTURE"
+        return 0
+      fi
       local pair keys="[]"
       for pair in "${kv[@]}"; do
         case "$pair" in
@@ -99,16 +112,19 @@ sent_fields() {
             keys=$(jq -c --arg k "${pair%%]=*}" ". + [\$k]" <<<"$keys") ;;
         esac
       done
-      jq -n --argjson keys "$keys" "{client_payload: (\$keys | map({(.): 1}) | add // {})}" >"$CAPTURE"
+      jq -cn --argjson keys "$keys" "{client_payload: (\$keys | map({(.): 1}) | add // {})}" >>"$CAPTURE"
     }
     for fn in $(declare -F | awk "{print \$3}"); do
       [ "$fn" = gh ] && continue
       declare -f "$fn" | grep -q "/dispatches" || continue
       : >"$CAPTURE"
       "$fn" 1 1 1 1 1 1 </dev/null >/dev/null 2>&1
-      if [ ! -s "$CAPTURE" ]; then echo "NOPAYLOAD $fn"; continue; fi
-      jq -r --arg fn "$fn" ".client_payload // {} | keys[] | \"\(\$fn) \(.)\"" "$CAPTURE" 2>/dev/null \
-        || echo "NOPAYLOAD $fn"
+      if [ ! -s "$CAPTURE" ] || grep -qx "\"UNREADABLE\"" "$CAPTURE"; then echo "NOPAYLOAD $fn"; continue; fi
+      if keys=$(jq -r --arg fn "$fn" ".client_payload // {} | keys[] | \"\(\$fn) \(.)\"" "$CAPTURE" 2>/dev/null); then
+        [ -n "$keys" ] && sort -u <<<"$keys"
+      else
+        echo "NOPAYLOAD $fn"
+      fi
     done
   '
   rm -f "$capture"
@@ -135,10 +151,11 @@ fields_read_at() {
   libs=$(grep -oE '/lib/[A-Za-z0-9_.-]+\.sh' <<<"$parsed" | sort -u || true)
   while IFS= read -r lib; do
     [ -n "$lib" ] || continue
-    lib_src=$(git -C "$ROOT" show "${tag}:scripts${lib}" 2>/dev/null) || continue
+    lib_src=$(git -C "$ROOT" show "${tag}:scripts${lib}" 2>/dev/null) || die "cannot read scripts${lib} (sourced by ${PARSER}) at ${tag}"
     out+=$'\n'$(parse_script "$lib_src") || die "cannot parse scripts${lib} at ${tag}"
   done <<<"$libs"
-  grep -oE 'client_payload\.[A-Za-z_][A-Za-z0-9_]*' <<<"$out" | sed 's/^client_payload\.//' | sort -u || true
+  sed -E 's/(^|[^$])#.*$/\1/' <<<"$out" \
+    | grep -oE 'client_payload\.[A-Za-z_][A-Za-z0-9_]*' | sed 's/^client_payload\.//' | sort -u || true
 }
 
 # ── channel tags ─────────────────────────────────────────────────────────────
@@ -148,10 +165,14 @@ fields_read_at() {
 have_origin=false
 git -C "$ROOT" remote get-url origin >/dev/null 2>&1 && have_origin=true
 tags=()
+# --depth=1 only on a clone that is already shallow (a CI checkout): on a full
+# local clone it would make the repository shallow.
+depth=()
+[ "$(git -C "$ROOT" rev-parse --is-shallow-repository 2>/dev/null)" = true ] && depth=(--depth=1)
 for ch in "${CHANNELS[@]}"; do
   tag="dev-lead/${major}-${ch}"
   gone_upstream=false
-  if $have_origin && ! git -C "$ROOT" fetch --quiet --force --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}" 2>/dev/null; then
+  if $have_origin && ! git -C "$ROOT" fetch --quiet --force ${depth[@]+"${depth[@]}"} origin "refs/tags/${tag}:refs/tags/${tag}" 2>/dev/null; then
     # Tell "origin has no such tag" (ls-remote exit 2) apart from "origin could
     # not be reached / the fetch broke" — only the latter risks a stale tag.
     rc=0
