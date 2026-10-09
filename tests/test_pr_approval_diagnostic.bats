@@ -82,7 +82,12 @@ write_snap() {
 
 # _assert_read_only — no GitHub write of any kind, and no engine ran.
 _assert_read_only() {
-  ! grep -qE 'pr (comment|edit|review|merge)|mutation|--method (POST|PUT|PATCH|DELETE)|-X (POST|PUT|PATCH|DELETE)' "$GH_LOG"
+  # Explicit failure: a negated command is exempt from errexit, so `! grep` here
+  # would never fail the test.
+  if grep -qE 'pr (comment|edit|review|merge)|mutation|--method (POST|PUT|PATCH|DELETE)|-X (POST|PUT|PATCH|DELETE)' "$GH_LOG"; then
+    cat "$GH_LOG"
+    return 1
+  fi
   [ ! -s "$ENGINE_LOG" ]
 }
 
