@@ -1740,6 +1740,7 @@ GITEOF
 #   DEFER_COMMIT           "true" -> the engine advances the head
 #   DEFER_NODE_JSON        raw body for the thread node re-read (overrides the above)
 #   DEFER_INTENT           intent to run (default fix-reviews)
+#   DEFER_ENGINE_FAIL      "true" -> the engine exits non-zero (a failed pass)
 _2045_run_case() {
   local tmpdir="$BATS_TEST_TMPDIR/workdir"
   mkdir -p "$tmpdir"
@@ -1803,7 +1804,13 @@ esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
 
-  if [ "${DEFER_COMMIT:-false}" = "true" ]; then
+  if [ "${DEFER_ENGINE_FAIL:-false}" = "true" ]; then
+    cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Posted the deferral, then crashed."
+exit 1
+STUB
+  elif [ "${DEFER_COMMIT:-false}" = "true" ]; then
     cat > "$STUB_BIN_DIR/claude" << 'STUB'
 #!/usr/bin/env bash
 echo "Addressed feedback."
@@ -1991,6 +1998,18 @@ _2045_open_issue() {
   grep -qE "sha=${pushed}[0-9a-f]* intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
   run grep -q "sha=${_2045_BASE_SHA} intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
   [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a resolution failure on a FAILED pass still posts a retry marker" {
+  # A failed pass posts no marker and the bot-thread retry skips replied threads.
+  export DEFER_ENGINE_FAIL=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -ne 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"failed to resolve deferred bot thread PRRT_2045"* ]]
+  grep -q "intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
 }
 
 @test "resolve_deferred_bot_threads (#2045): a fix-bot-comment resolution failure posts a PR-wide fix-reviews retry marker" {

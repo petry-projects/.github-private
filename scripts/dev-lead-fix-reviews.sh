@@ -3319,8 +3319,10 @@ case "$INTENT_TYPE" in
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-reviews" failed || true
       # A deferral is verified against its tracking issue, not a commit, so it can
-      # clear even when the engine failed after posting it.
-      resolve_deferred_bot_threads "fix-reviews" || true
+      # clear even when the engine failed after posting it. A failed pass posts no
+      # marker and the bot-thread retry skips replied threads, so a resolver failure
+      # here needs its own retry marker (the pass keeps its exit code).
+      resolve_deferred_bot_threads "fix-reviews" || post_resolve_failed_marker "fix-reviews" 1 || true
     fi
     exit "$rc"
     ;;
@@ -3427,7 +3429,7 @@ case "$INTENT_TYPE" in
         || echo "::warning::resolve_dispositioned_comments failed on a failed fix-bot-comment pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-bot-comment" failed || true
-      resolve_deferred_bot_threads "fix-bot-comment" || true
+      resolve_deferred_bot_threads "fix-bot-comment" || post_resolve_failed_marker "fix-reviews" 1 || true
     fi
     exit "$rc"
     ;;
@@ -3569,7 +3571,7 @@ case "$INTENT_TYPE" in
       resolve_dispositioned_comments "review-changes" failed \
         || echo "::warning::resolve_dispositioned_comments failed on a failed review-changes pass — keeping the pass's exit code ${rc} (#2037)"
       # A deferral is independently verifiable even when the pass failed (#2045).
-      resolve_deferred_bot_threads "review-changes" || true
+      resolve_deferred_bot_threads "review-changes" || post_resolve_failed_marker "review-changes" 1 || true
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "review-changes" failed || true
     fi
