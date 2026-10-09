@@ -1742,6 +1742,7 @@ GITEOF
 #   DEFER_INTENT           intent to run (default fix-reviews)
 #   DEFER_ENGINE_FAIL      "true" -> the engine exits non-zero (a failed pass)
 #   DEFER_THREADS_STUCK    "true" -> the deferral enumerator's thread pages never advance
+#   DEFER_AM_ON            non-empty -> the PR starts with auto-merge on (held, then restorable)
 _2045_run_case() {
   local tmpdir="$BATS_TEST_TMPDIR/workdir"
   mkdir -p "$tmpdir"
@@ -1804,6 +1805,11 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*"auto_merge.merge_method"*) [ -n "\${DEFER_AM_ON:-}" ] && echo squash ;;
+  *"pulls/"*"auto_merge.commit_"*) : ;;
+  *"pulls/"*"--jq .auto_merge // empty"*) [ -z "\${DEFER_AM_ON:-}" ] && echo '{"merge_method":"squash"}' ;;
+  *"pulls/"*"--jq .state"*) echo open ;;
+  *"pulls/"*"--jq .head.sha"*) echo "${base_sha}" ;;
   *"pulls/"*) echo '{"head":{"sha":"${base_sha}"},"auto_merge":null}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
@@ -2039,6 +2045,28 @@ _2045_open_issue() {
   [[ "$_HARNESS_OUTPUT" == *"untrusted-mention"* ]]
   run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
   [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a failed deferral does not restore auto-merge held off at the start" {
+  export DEFER_AM_ON=1
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"holding auto-merge OFF"* ]]
+  grep -q "pr merge 54 --repo petry-projects/.github-private --disable-auto" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -E "pr merge.*--auto( |$)" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a successful deferral still restores auto-merge held off at the start" {
+  export DEFER_AM_ON=1
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  grep -qE "pr merge 54 .*--auto --squash" "$BATS_TEST_TMPDIR/gh-calls"
 }
 
 @test "resolve_deferred_bot_threads (#2045): a failed deferral on a commit pass never enables auto-merge (#1567)" {

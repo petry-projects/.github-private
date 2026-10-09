@@ -3251,8 +3251,10 @@ case "$INTENT_TYPE" in
       if [ "$deferred_rc" -ne 0 ]; then
         rc=1
         echo "::warning::fix-reviews: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
-        # Not fully applied: never let this pass become auto-mergeable (#1567).
+        # Not fully applied: never let this pass become auto-mergeable (#1567), and
+        # drop the EXIT-trap restore so auto-merge held off at the start stays off.
         _REVIEW_INCOMPLETE=1
+        _AM_NEEDS_RESTORE=0
         # dev-lead-retry.sh re-dispatches only on a retry marker; a merely absent
         # terminal is never retried. Guard aborts (3/4) are flagged for a human.
         if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
@@ -3401,6 +3403,7 @@ case "$INTENT_TYPE" in
         echo "::warning::fix-bot-comment: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
         _fbc_terminal=""
         _REVIEW_INCOMPLETE=1
+        _AM_NEEDS_RESTORE=0
         # The bot-comment retry selects only undispositioned comments and the
         # bot-thread retry only unreplied threads, so neither re-runs this resolver.
         # Hand it to a PR-wide fix-reviews retry. Guard aborts (3/4) are flagged for a human.
@@ -3528,8 +3531,10 @@ case "$INTENT_TYPE" in
       if [ "$deferred_rc" -ne 0 ]; then
         rc=1
         echo "::warning::review-changes: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
-        # Not fully applied: never let this pass become auto-mergeable (#1567).
+        # Not fully applied: never let this pass become auto-mergeable (#1567), and
+        # drop the EXIT-trap restore so auto-merge held off at the start stays off.
         _REVIEW_INCOMPLETE=1
+        _AM_NEEDS_RESTORE=0
         # dev-lead-retry.sh re-dispatches only on a retry marker; a merely absent
         # terminal is never retried.
         post_resolve_failed_marker "review-changes" "$cp_rc"
