@@ -638,6 +638,10 @@ run to `remediate=live` for the configured pilot.
 
 - Scripts must be POSIX-compatible shell (`#!/usr/bin/env bash` with `set -euo pipefail`).
 - No hardcoded tokens or secrets — use `$GITHUB_TOKEN` from the environment.
+- **"Why isn't this PR approved?"** Run `bash scripts/pr-approval-diagnostic.sh <pr-url>`
+  (profile: [`agents/why-not-approved.md`](./agents/why-not-approved.md)). It runs the real
+  pr-review gate chain read-only (`PR_REVIEW_DIAGNOSE=true`) and reports the first gate holding
+  the PR and what clears it. Do not reconstruct the gates by hand (#1894).
 
 ### Model selection — name a family, never pin a version
 
