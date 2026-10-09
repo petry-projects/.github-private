@@ -222,6 +222,52 @@ EOF2
   [ "$(git -C "$BATS_TEST_TMPDIR/clone" rev-parse --is-shallow-repository)" = false ]
 }
 
+@test "a dispatcher that sends a payload with no fields is a setup error (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF2'
+dispatch_empty() {
+  jq -n '{event_type: "x", client_payload: {}}' | gh api --method POST "repos/$1/dispatches" --input -
+}
+EOF2
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"dispatch_empty"* ]]
+}
+
+@test "an endpoint held in a variable is a setup error, never a silent pass (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF2'
+DISPATCH_PATH="dispatches"
+DISPATCH_EP="repos/o/r/$DISPATCH_PATH"
+dispatch_indirect() {
+  jq -n '{client_payload: {pr_number: 1, hidden_field: 1}}' | gh api --method POST "$DISPATCH_EP" --input -
+}
+EOF2
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"holds a /dispatches endpoint"* ]]
+}
+
+@test "a read in a lib sourced by another parser lib counts as read (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  printf '%s\n' 'source "$(dirname "$0")/lib/first.sh"' >> "$SANDBOX/scripts/dev-lead-intent.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'source "$(dirname "${BASH_SOURCE[0]}")/../lib/second.sh"' \
+    'source "$(dirname "${BASH_SOURCE[0]}")/../lib/first.sh"' > "$SANDBOX/scripts/lib/first.sh"
+  printf '%s\n' '#!/usr/bin/env bash' "deep() { jq -r '.client_payload.deep_field' \"\$EVENT_PATH\"; }" \
+    > "$SANDBOX/scripts/lib/second.sh"
+  write_sweep pr_number deep_field
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 0 ]
+}
+
 @test "runs dispatchers defined in libs the sweep sources" {
   write_stub dev-lead/v7-stable
   write_intent pr_number

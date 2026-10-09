@@ -24,7 +24,11 @@ set -euo pipefail
 #          dispatch a function makes is kept, in all three request forms: `--input -`,
 #          `--input <file>`, and `-f/-F client_payload[key]=`. A dispatcher that sends
 #          nothing (or an unreadable body) for the probe arguments is a setup error,
-#          never a silent pass.
+#          never a silent pass. Two conventions keep that complete: each dispatcher
+#          names the `/dispatches` endpoint literally (an endpoint held in a variable
+#          is a setup error), and each dispatcher sends ONE fixed set of fields — a
+#          new payload shape gets a new function (as dispatch_bot_comment_retry
+#          did), never a field added only on some arguments.
 #   read — the intent parser (and the libs it sources) at each channel tag is
 #          first parsed by bash (wrapped in a function and printed back with
 #          `declare -f`), which drops shell comments and keeps strings and
@@ -114,6 +118,12 @@ sent_fields() {
       done
       jq -cn --argjson keys "$keys" "{client_payload: (\$keys | map({(.): 1}) | add // {})}" >>"$CAPTURE"
     }
+    # Dispatchers are found by the endpoint literal in their own body. An endpoint
+    # held in a variable would hide its dispatcher, so that is a setup error.
+    for v in $(compgen -v); do
+      case "$v" in BASH_*|FUNCNAME|_|CAPTURE|SWEEP_PATH) continue ;; esac
+      case "${!v}" in */dispatches*) echo "INDIRECT"; break ;; esac
+    done
     for fn in $(declare -F | awk "{print \$3}"); do
       [ "$fn" = gh ] && continue
       declare -f "$fn" | grep -q "/dispatches" || continue
@@ -121,7 +131,7 @@ sent_fields() {
       "$fn" 1 1 1 1 1 1 </dev/null >/dev/null 2>&1
       if [ ! -s "$CAPTURE" ] || grep -qx "\"UNREADABLE\"" "$CAPTURE"; then echo "NOPAYLOAD $fn"; continue; fi
       if keys=$(jq -r --arg fn "$fn" ".client_payload // {} | keys[] | \"\(\$fn) \(.)\"" "$CAPTURE" 2>/dev/null); then
-        [ -n "$keys" ] && sort -u <<<"$keys"
+        if [ -n "$keys" ]; then sort -u <<<"$keys"; else echo "NOPAYLOAD $fn"; fi
       else
         echo "NOPAYLOAD $fn"
       fi
@@ -148,12 +158,18 @@ fields_read_at() {
   src=$(git -C "$ROOT" show "${tag}:${PARSER}" 2>/dev/null) || die "cannot read ${PARSER} at ${tag}"
   parsed=$(parse_script "$src") || die "cannot parse ${PARSER} at ${tag}"
   out="$parsed"
-  libs=$(grep -oE '/lib/[A-Za-z0-9_.-]+\.sh' <<<"$parsed" | sort -u || true)
-  while IFS= read -r lib; do
-    [ -n "$lib" ] || continue
+  # Walk the source graph (a lib may source another lib), each lib once.
+  local -a queue=() seen=()
+  mapfile -t queue < <(grep -oE '/lib/[A-Za-z0-9_.-]+\.sh' <<<"$parsed" | sort -u)
+  while [ "${#queue[@]}" -gt 0 ]; do
+    lib="${queue[0]}"; queue=("${queue[@]:1}")
+    case " ${seen[*]} " in *" $lib "*) continue ;; esac
+    seen+=("$lib")
     lib_src=$(git -C "$ROOT" show "${tag}:scripts${lib}" 2>/dev/null) || die "cannot read scripts${lib} (sourced by ${PARSER}) at ${tag}"
-    out+=$'\n'$(parse_script "$lib_src") || die "cannot parse scripts${lib} at ${tag}"
-  done <<<"$libs"
+    libs=$(parse_script "$lib_src") || die "cannot parse scripts${lib} at ${tag}"
+    out+=$'\n'"$libs"
+    mapfile -t -O "${#queue[@]}" queue < <(grep -oE '/lib/[A-Za-z0-9_.-]+\.sh' <<<"$libs" | sort -u)
+  done
   sed -E 's/(^|[^$])#.*$/\1/' <<<"$out" \
     | grep -oE 'client_payload\.[A-Za-z_][A-Za-z0-9_]*' | sed 's/^client_payload\.//' | sort -u || true
 }
@@ -196,6 +212,8 @@ done
 # ── compare ──────────────────────────────────────────────────────────────────
 sent=$(sent_fields)
 grep -q '^SOURCEFAIL$' <<<"$sent" && die "sourcing ${SWEEP} failed"
+grep -q '^INDIRECT$' <<<"$sent" \
+  && die "a variable in ${SWEEP} (or a lib it sources) holds a /dispatches endpoint; write the endpoint literally in each dispatcher so the check can find and run it"
 if nopayload=$(grep '^NOPAYLOAD ' <<<"$sent"); then
   die "dispatcher(s) sent no client_payload for the probe call, so their fields cannot be certified: $(cut -d' ' -f2 <<<"$nopayload" | tr '\n' ' ')"
 fi
