@@ -366,6 +366,21 @@ _comments_page() {
   ! grep -q -- '--method POST' "$GH_LOG"
 }
 
+@test "sweep: a recent dispatch guard for the head SHA defers to the run already queued" {
+  export THREADS_RESPONSE COMMENTS_RESPONSE
+  THREADS_RESPONSE="$(_threads_page "$(_thread PRRT_cubic cubic-dev-ai)")"
+  COMMENTS_RESPONSE="$(_comments_page \
+    "$(_ours '<!-- dev-lead-dispatch-guard sha=abc at=2026-10-02T00:58:00Z -->' 2026-10-02T00:58:00Z MEMBER don-petry)")"
+  _setup_sweep
+
+  run --separate-stderr scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
+  [ "$status" -eq 0 ]
+  [ "${lines[-1]}" = "0" ]
+  [[ "$stderr" == *"recent dispatch guard"* ]]
+  ! grep -q '/dispatches' "$GH_LOG"
+  ! grep -q -- '--method POST' "$GH_LOG"
+}
+
 @test "sweep: a concurrent scan's earlier marker wins — this scan withdraws and does not dispatch" {
   export THREADS_RESPONSE MARKER_LISTING
   THREADS_RESPONSE="$(_threads_page "$(_thread PRRT_cubic cubic-dev-ai)")"

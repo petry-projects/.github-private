@@ -705,6 +705,13 @@ scan_pr_for_undispositioned_bot_comments() {
     echo "  [warn] bot-comment retry: could not read PR ${pr_number} comments in ${repo} — skipping (fail closed)" >&2
     echo "0"; return 0
   fi
+  # A run another path queued moments ago for this head (dev-lead-resume.sh or the
+  # rate-limit sweep posts the guard first) is still pending in the per-PR lane; a
+  # second dispatch now would supersede it (#2046). Defer to it.
+  if has_dispatch_guard "$(jq -c '[.[].body // empty]' <<< "$comments" 2>/dev/null || echo '[]')" "$head_sha"; then
+    echo "  [skip] bot-comment retry: PR ${pr_number} SHA ${head_sha:0:8} has a recent dispatch guard — not superseding it" >&2
+    echo "0"; return 0
+  fi
 
   local trusted="${TRUSTED_BOTS:-}"
   if [ -z "$trusted" ]; then
@@ -922,6 +929,13 @@ scan_pr_for_unreplied_bot_threads() {
   fi
   if ! comments=$(bcr_fetch_pr_comments "$repo" "$pr_number"); then
     echo "  [warn] bot-thread retry: could not read PR ${pr_number} comments in ${repo} — skipping (fail closed)" >&2
+    echo "0"; return 0
+  fi
+  # A run another path queued moments ago for this head (dev-lead-resume.sh or the
+  # rate-limit sweep posts the guard first) is still pending in the per-PR lane; a
+  # second dispatch now would supersede it (#2046). Defer to it.
+  if has_dispatch_guard "$(jq -c '[.[].body // empty]' <<< "$comments" 2>/dev/null || echo '[]')" "$head_sha"; then
+    echo "  [skip] bot-thread retry: PR ${pr_number} SHA ${head_sha:0:8} has a recent dispatch guard — not superseding it" >&2
     echo "0"; return 0
   fi
 
