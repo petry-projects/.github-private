@@ -611,7 +611,7 @@ scan_pr_for_rate_limits() {
       local reviews_status
       reviews_status=$(echo "$comments_json" | jq -r \
         --arg pat "$reviews_pattern" \
-        '[.[] | select(. | test($pat))] | .[0] | capture("status=(?<s>[a-z-]+)") | .s // ""' \
+        '[.[] | select(. | test($pat))] | last | capture("status=(?<s>[a-z-]+)") | .s // ""' \
         2>/dev/null || true)
       if [ "$reviews_status" = "rate-limited" ] && usage_hold_active; then
         echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} held by the $(usage_hold_window_label "$USAGE_HOLD_WINDOW") window until ${USAGE_HOLD_UNTIL}" >&2
@@ -698,7 +698,10 @@ scan_pr_for_rate_limits() {
   # dispatched (that pass would see the edit too) and no rate-limit hold is still
   # active, and is deduplicated against fix-reviews runs that already ran after
   # the edit.
-  if [ "$dispatched" -eq 0 ] && [ "$held" -eq 0 ]; then
+  if [ "$dispatched" -eq 0 ] && [ "$held" -eq 0 ] && usage_hold_active; then
+    # No marker needed: the edit re-dispatch spends Claude quota too (#2139).
+    echo "  [skip] stale-disposition fix-reviews for PR ${pr_number} held by the $(usage_hold_window_label "$USAGE_HOLD_WINDOW") window until ${USAGE_HOLD_UNTIL}" >&2
+  elif [ "$dispatched" -eq 0 ] && [ "$held" -eq 0 ]; then
     local comment_nodes
     comment_nodes=$(fetch_pr_comment_nodes "$repo" "$pr_number")
     if [ -n "$comment_nodes" ] && stale_disposition_needs_dispatch "$comment_nodes" "$pr_number"; then

@@ -45,6 +45,8 @@ resume_main() {
   fi
 
   echo "[resume] event-first resume check for ${repo}#${pr} (dry_run=${DRY_RUN})"
+  # main() is not run on this path, so read the usage windows here (#2139).
+  usage_hold_init
   local dispatched
   dispatched=$(scan_pr_for_rate_limits "$repo" "$pr")
   echo "[resume] dispatched ${dispatched} resume(s) for ${repo}#${pr}"

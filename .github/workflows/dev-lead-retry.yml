@@ -109,8 +109,23 @@ jobs:
           token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
           persist-credentials: false
 
+      # Public reader for the Claude usage windows (#2139): the sweep sources
+      # its arl_token_* helpers to hold quota retries until the real reset.
+      - name: Checkout agent-rate-limit library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: petry-projects/.github
+          ref: 2e3d523b4c986a0319f1e96f2ae83ee13178f5a2
+          path: .public-lib
+          sparse-checkout: scripts/lib/agent-rate-limit.sh
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
       - name: Scan and retry rate-limited PRs
         env:
+          AGENT_RATE_LIMIT_LIB: ${{ github.workspace }}/.public-lib/scripts/lib/agent-rate-limit.sh
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Turns on the per-target payload-field gate (#2086).
           SWEEP_AGENT_REF: ${{ steps.channel.outputs.agent_ref }}
         run: bash scripts/dev-lead-retry.sh
