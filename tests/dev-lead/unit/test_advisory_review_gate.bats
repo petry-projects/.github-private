@@ -818,6 +818,34 @@ MOCK_EOF
   [[ "$calls" != *"pr comment"* ]]
 }
 
+@test "maybe_post_rate_limited_marker: DRY_RUN=true posts nothing on the rate-limited path" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cat > "$tmpdir/gh" << MOCK_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$tmpdir/calls"
+exit 0
+MOCK_EOF
+  chmod +x "$tmpdir/gh"
+  # Same sequence review-one-pr.sh runs when the gate withholds: a rate-limited
+  # advisory bot is detected in the snapshot, then the marker helper is called.
+  local snapshot
+  snapshot='{"reviews":[],"comments":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2026-06-07T10:00:00Z","body":"You have reached your usage limit. Please try again later."}]}'
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" DRY_RUN=true bash -c "
+    source '$gate_script'
+    detect_advisory_rate_limit '$snapshot' || exit 9
+    maybe_post_rate_limited_marker 'https://github.com/owner/repo/pull/123' 'abc123' '2999-01-01T00:00:00Z' '$snapshot'
+  "
+  local calls; calls=$(cat "$tmpdir/calls" 2>/dev/null || true)
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+  # A dry run makes no GitHub write — and says what it would have posted.
+  [[ "$calls" != *"pr comment"* ]]
+  [ -z "$calls" ]
+  [[ "$output" == *"DRY_RUN: would post rate-limited marker"* ]]
+}
+
 # ────────────────────────────────────────────────────────────────────
 # NEW ADVISORY REVIEWERS — Qodo Merge + CodeAnt (issue #1349)
 #
