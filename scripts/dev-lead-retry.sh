@@ -42,6 +42,10 @@ set -euo pipefail
 #                         turns on the #2086 per-target payload-field gate
 #                         (dev-lead-retry.yml passes it; unset = gate off)
 #   NOW_ISO             — override current time for testing (ISO-8601 UTC)
+#   CLAUDE_CODE_OAUTH_TOKEN — read by lib/usage-telemetry.sh for the #2139
+#                         usage-window hold; unset = no hold (fail open)
+#   AGENT_RATE_LIMIT_LIB — path to the public agent-rate-limit.sh whose
+#                         arl_token_* readers the hold uses; unreadable = no hold
 #   BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC — seconds to wait after posting a
 #                         bot-comment retry marker before re-listing markers
 #                         to pick the earliest (default: 5), so a concurrent
@@ -109,6 +113,10 @@ source "$SCRIPT_DIR/lib/bot-thread-retry.sh"
 # Per-target payload-field gate (#2086): dcg_init / dcg_payload_allowed / dcg_target_reads.
 # shellcheck source=lib/dispatch-channel-gate.sh
 source "$SCRIPT_DIR/lib/dispatch-channel-gate.sh"
+# Claude usage endpoint transport (#1565): usage_telemetry_fetch, for the
+# usage-window hold (#2139).
+# shellcheck source=lib/usage-telemetry.sh
+source "$SCRIPT_DIR/lib/usage-telemetry.sh"
 
 TARGET_ORG="${TARGET_ORG:-petry-projects}"
 DELEGATION_ORGS="${DELEGATION_ORGS:-}"
@@ -160,6 +168,101 @@ is_reset_in_future() {
   local reset_epoch
   reset_epoch=$(date -u -d "$reset_iso" +%s 2>/dev/null || echo 0)
   [ "$(get_now_epoch)" -lt "$reset_epoch" ]
+}
+
+# ── Claude usage-window hold (#2139) ─────────────────────────────────────────
+# A marker's reset= only knows the 5-hour form; a weekly cap leaves it unknown,
+# which retries every cron run for days. So once per run, ask the usage endpoint
+# (lib/usage-telemetry.sh) whether an account-wide Claude window is exhausted and
+# when it really resets, and hold status=rate-limited retries until then. Fields
+# are read with the public library's arl_token_* helpers, never by re-parsing the
+# body. Every telemetry failure (reader missing, no token, non-200, malformed
+# body, missing window) means no hold: the marker's own reset decides, as before.
+#
+# Only the pause-worthy windows (agent-rate-limits.json): per-model weekly_scoped
+# exhaustion is handled by the engine's model fallback, never a fleet pause.
+USAGE_HOLD_WINDOWS="weekly_all session"
+USAGE_HOLD_LIMIT_PCT=100
+# The public library (petry-projects/.github scripts/lib/agent-rate-limit.sh).
+AGENT_RATE_LIMIT_LIB="${AGENT_RATE_LIMIT_LIB:-$SCRIPT_DIR/lib/agent-rate-limit.sh}"
+# Set by usage_hold_init; empty = no hold.
+USAGE_HOLD_WINDOW=""
+USAGE_HOLD_UNTIL=""
+USAGE_HOLD_EPOCH=""
+
+# usage_hold_window_label <window>: the human name used in log lines.
+usage_hold_window_label() {
+  case "$1" in
+    weekly_all) printf 'weekly' ;;
+    session) printf '5-hour' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# usage_hold_init: fetch the usage envelope ONCE and record the hold, if any.
+# main calls it before the scan, so every scan subshell inherits the result and
+# the endpoint is read once per cron run however many items are retried. When
+# more than one window is exhausted, the latest reset is honoured (both must
+# clear). Logs the outcome once, to stderr. Always returns 0.
+usage_hold_init() {
+  USAGE_HOLD_WINDOW=""; USAGE_HOLD_UNTIL=""; USAGE_HOLD_EPOCH=""
+  if ! declare -F arl_token_extract_percent >/dev/null && [ -r "$AGENT_RATE_LIMIT_LIB" ]; then
+    # shellcheck source=/dev/null
+    source "$AGENT_RATE_LIMIT_LIB" || true
+  fi
+  local fn
+  for fn in arl_token_extract_percent arl_token_extract_resets_at arl_token_window_active; do
+    if ! declare -F "$fn" >/dev/null; then
+      echo "retry-cron: usage telemetry reader unavailable (${AGENT_RATE_LIMIT_LIB}) — no window hold, retries follow marker resets" >&2
+      return 0
+    fi
+  done
+
+  local envelope status body
+  envelope=$(usage_telemetry_fetch) || envelope=""
+  status=$(jq -r '.status // 0' <<< "$envelope" 2>/dev/null || echo 0)
+  if [ "$status" != "200" ]; then
+    echo "retry-cron: usage telemetry unavailable (status ${status:-0}) — no window hold, retries follow marker resets" >&2
+    return 0
+  fi
+  body=$(jq -c '.body | objects' <<< "$envelope" 2>/dev/null || true)
+  if [ -z "$body" ]; then
+    echo "retry-cron: usage telemetry body unreadable — no window hold, retries follow marker resets" >&2
+    return 0
+  fi
+
+  local now w pct reset reset_epoch best_epoch="" best_window=""
+  now=$(get_now_epoch)
+  for w in $USAGE_HOLD_WINDOWS; do
+    [ "$(arl_token_window_active "$body" "$w")" = "false" ] && continue
+    pct=$(arl_token_extract_percent "$body" "$w")
+    [[ "$pct" =~ ^[0-9]+$ ]] || continue
+    [ "$pct" -ge "$USAGE_HOLD_LIMIT_PCT" ] || continue
+    reset=$(arl_token_extract_resets_at "$body" "$w")
+    [ -n "$reset" ] || continue
+    reset_epoch=$(date -u -d "$reset" +%s 2>/dev/null || true)
+    [[ "$reset_epoch" =~ ^[0-9]+$ ]] || continue
+    [ "$now" -lt "$reset_epoch" ] || continue
+    if [ -z "$best_epoch" ] || [ "$reset_epoch" -gt "$best_epoch" ]; then
+      best_epoch="$reset_epoch"; best_window="$w"
+    fi
+  done
+
+  if [ -z "$best_epoch" ]; then
+    echo "retry-cron: no exhausted Claude window — retries follow marker resets" >&2
+    return 0
+  fi
+  USAGE_HOLD_WINDOW="$best_window"
+  USAGE_HOLD_EPOCH="$best_epoch"
+  USAGE_HOLD_UNTIL=$(date -u -d "@${best_epoch}" +%Y-%m-%dT%H:%M:%SZ)
+  echo "retry-cron: $(usage_hold_window_label "$best_window") window exhausted, holding retries until ${USAGE_HOLD_UNTIL}" >&2
+}
+
+# usage_hold_active: 0 while the window usage_hold_init recorded has not reset.
+# Without a recorded hold (not initialised, or telemetry failed) it is 1.
+usage_hold_active() {
+  [[ "$USAGE_HOLD_EPOCH" =~ ^[0-9]+$ ]] || return 1
+  [ "$(get_now_epoch)" -lt "$USAGE_HOLD_EPOCH" ]
 }
 
 # has_dispatch_guard <comments_json> <sha>
@@ -452,6 +555,9 @@ scan_pr_for_rate_limits() {
     if is_reset_in_future "$reset_time"; then
       echo "  [skip] fix-ci rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
       held=1
+    elif usage_hold_active; then
+      echo "  [skip] fix-ci rate-limit for PR ${pr_number} held by the $(usage_hold_window_label "$USAGE_HOLD_WINDOW") window until ${USAGE_HOLD_UNTIL}" >&2
+      held=1
     else
       # Skip if a terminal marker was already posted for this SHA (prior retry succeeded)
       local terminal_pattern="${CI_MARKER_PREFIX}${head_sha} status=(applied|failed|no-changes)"
@@ -496,6 +602,19 @@ scan_pr_for_rate_limits() {
 
       if is_reset_in_future "$reset_time"; then
         echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
+        held=1
+        continue
+      fi
+
+      # Only a quota hold waits for the Claude window (#2139); blocked,
+      # history-unavailable and partial are not quota.
+      local reviews_status
+      reviews_status=$(echo "$comments_json" | jq -r \
+        --arg pat "$reviews_pattern" \
+        '[.[] | select(. | test($pat))] | .[0] | capture("status=(?<s>[a-z-]+)") | .s // ""' \
+        2>/dev/null || true)
+      if [ "$reviews_status" = "rate-limited" ] && usage_hold_active; then
+        echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} held by the $(usage_hold_window_label "$USAGE_HOLD_WINDOW") window until ${USAGE_HOLD_UNTIL}" >&2
         held=1
         continue
       fi
@@ -1192,6 +1311,10 @@ scan_issue_for_retry() {
     echo "  [skip] issue #${issue_number} rate-limit not yet cleared (resets ${reset})" >&2
     echo "0"; return 0
   fi
+  if [ "$status" = "rate-limited" ] && usage_hold_active; then
+    echo "  [skip] issue #${issue_number} rate-limit held by the $(usage_hold_window_label "$USAGE_HOLD_WINDOW") window until ${USAGE_HOLD_UNTIL}" >&2
+    echo "0"; return 0
+  fi
 
   # Enforce the attempt ceiling. attempt>=MAX means fix-issue.sh already escalated
   # to a human on its last failure; do not re-dispatch.
@@ -1298,6 +1421,9 @@ main() {
   else
     echo "[retry] SWEEP_AGENT_REF unset: per-target payload-field gate off (#2086)"
   fi
+
+  # Read the Claude usage windows once for the whole run (#2139).
+  usage_hold_init
 
   local repo_index=0
   for repo in "${all_repos[@]}"; do
