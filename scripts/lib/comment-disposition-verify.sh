@@ -42,7 +42,7 @@ readonly _CDV_VALID_DISPOSITIONS='fixed invalid out-of-scope answered informatio
 # by a relative path (`bash .dev-lead/scripts/...`) and later cds into the PR
 # worktree, so a function resolving BASH_SOURCE at call time gets a path that no
 # longer exists and its registry read fails closed (#2152).
-_CDV_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_CDV_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 readonly _CDV_LIB_DIR
 
 # The post-disposition BOT-reply classification (AC7 loop safety) reuses the
