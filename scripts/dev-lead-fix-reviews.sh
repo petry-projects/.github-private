@@ -3159,6 +3159,21 @@ ${enumerated}"
 # - Falls back to cp_rc == 0 ONLY when a SHA is genuinely unavailable (base snapshot
 #   unset or `git rev-parse HEAD` unresolvable), so a pass that legitimately pushed a
 #   commit is never wrongly gated shut just because the runner cannot report a SHA.
+# post_resolve_failed_marker <intent> <cp_rc>: posts the resolve-failed retry marker
+# keyed to the PR's CURRENT head (#2045). dev-lead-retry.sh scans only markers on
+# the current head, and after a successful push (cp_rc 0) HEAD_SHA still holds the
+# pre-pass head until try_enable_auto_merge refreshes it, so a marker keyed to it
+# would never be retried.
+post_resolve_failed_marker() {
+  local intent="$1" cp_rc="${2:-1}"
+  local HEAD_SHA="${HEAD_SHA:-}" pushed_head
+  if [ "$cp_rc" -eq 0 ]; then
+    pushed_head=$(git rev-parse HEAD 2>/dev/null || true)
+    [ -n "$pushed_head" ] && HEAD_SHA="$pushed_head"
+  fi
+  post_reviews_rate_limited "$intent" "resolve-failed"
+}
+
 resolution_gate_open() {
   local cp_rc="${1:-1}"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
@@ -3233,7 +3248,7 @@ case "$INTENT_TYPE" in
         # dev-lead-retry.sh re-dispatches only on a retry marker; a merely absent
         # terminal is never retried. Guard aborts (3/4) are flagged for a human.
         if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
-          post_reviews_rate_limited "fix-reviews" "resolve-failed"
+          post_resolve_failed_marker "fix-reviews" "$cp_rc"
         fi
       fi
       if [ "$cp_rc" -eq 0 ]; then
@@ -3241,7 +3256,7 @@ case "$INTENT_TYPE" in
         if [ "$deferred_rc" -eq 0 ]; then
           finalize_review_application "fix-reviews" || {
             echo "::warning::fix-reviews: finalize_review_application failed — posting retry marker"
-            post_reviews_rate_limited "fix-reviews" "resolve-failed"
+            post_resolve_failed_marker "fix-reviews" "$cp_rc"
             rc=1
           }
         fi
@@ -3379,7 +3394,7 @@ case "$INTENT_TYPE" in
         # bot-thread retry only unreplied threads, so neither re-runs this resolver.
         # Hand it to a PR-wide fix-reviews retry. Guard aborts (3/4) are flagged for a human.
         if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
-          post_reviews_rate_limited "fix-reviews" "resolve-failed"
+          post_resolve_failed_marker "fix-reviews" "$cp_rc"
         fi
       fi
       case "$_fbc_terminal" in
@@ -3504,14 +3519,14 @@ case "$INTENT_TYPE" in
         echo "::warning::review-changes: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
         # dev-lead-retry.sh re-dispatches only on a retry marker; a merely absent
         # terminal is never retried.
-        post_reviews_rate_limited "review-changes" "resolve-failed"
+        post_resolve_failed_marker "review-changes" "$cp_rc"
       fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         if [ "$deferred_rc" -eq 0 ]; then
           finalize_review_application "review-changes" || {
             echo "::warning::review-changes: finalize_review_application failed — posting retry marker"
-            post_reviews_rate_limited "review-changes" "resolve-failed"
+            post_resolve_failed_marker "review-changes" "$cp_rc"
             rc=1
           }
         fi

@@ -1838,6 +1838,7 @@ GITEOF
   _HARNESS_STATUS="$status"
   _HARNESS_OUTPUT="$output"
   _MUTATIONS_FILE="$mutations_file"
+  _2045_BASE_SHA="$base_sha"
 }
 
 _2045_LINK='https://github.com/petry-projects/.github-private/pull/54#discussion_r2401234567'
@@ -1970,6 +1971,25 @@ _2045_open_issue() {
   # Non-quota: recorded as status=blocked, never as a provider rate limit.
   grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
   run grep -q "status=rate-limited reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): after a pushed commit, the resolve-failed marker is keyed to the pushed head" {
+  # dev-lead-retry.sh scans only markers on the PR's current head; HEAD_SHA is
+  # still the pre-pass head right after commit_and_push.
+  export DEFER_COMMIT=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  # The harness commits in a worktree; take the new commit from its output.
+  local pushed
+  pushed="$(grep -oE '\[detached HEAD [0-9a-f]+\]' <<<"$_HARNESS_OUTPUT" | head -1 | tr -d ']' | awk '{print $3}')"
+  [ -n "$pushed" ]
+  [[ "$_2045_BASE_SHA" != "${pushed}"* ]]
+  grep -qE "sha=${pushed}[0-9a-f]* intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -q "sha=${_2045_BASE_SHA} intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
   [ "$status" -eq 1 ]
 }
 
