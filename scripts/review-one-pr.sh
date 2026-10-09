@@ -497,13 +497,20 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
       # one fix-bot-comment pass (by comment node id), only for registered-bot
       # comments with no covering disposition, and never one already pending.
       # It never minimizes anything — the gate is unchanged. Best-effort.
+      # When it dispatched nothing, the same deduplicated scan for unreplied bot
+      # review threads runs next (#2046). It shares the cron's claim marker, so
+      # the two never both dispatch.
       if [ "${DRY_RUN:-false}" != "true" ] && [ -n "$_OWNER_REPO" ] \
          && [[ "$PR_URL" =~ /pull/([0-9]+) ]]; then
         _bcr_pr="${BASH_REMATCH[1]}"
         _bcr_log=$( (
           # shellcheck source=dev-lead-retry.sh
           source "$SCRIPT_DIR/dev-lead-retry.sh"
-          scan_pr_for_undispositioned_bot_comments "$_OWNER_REPO" "$_bcr_pr"
+          _bcr_n=$(scan_pr_for_undispositioned_bot_comments "$_OWNER_REPO" "$_bcr_pr")
+          echo "$_bcr_n"
+          if [ "${_bcr_n:-0}" = "0" ]; then
+            scan_pr_for_unreplied_bot_threads "$_OWNER_REPO" "$_bcr_pr"
+          fi
         ) 2>&1 ) || true
         printf '%s\n' "$_bcr_log" | sed 's/^/    [bot-comment-retry] /'
       fi
