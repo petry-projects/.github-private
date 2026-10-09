@@ -154,7 +154,9 @@ trg_discover_cmd() {
 # the current working tree (everything but .git, so installed deps come along). With
 # <base_sha>, the tracked files are replaced by that commit's. A fresh `git init` gives
 # git-using tests a repo; it carries none of the real checkout's git config, so the
-# saved checkout credential (http.*.extraheader) does not exist in the copy.
+# saved checkout credential (http.*.extraheader) does not exist in the copy. A
+# snapshot commit (throwaway identity, no remote) gives it a HEAD: without one every
+# test that reads HEAD failed on both copies and the gate was always red (#2055).
 _trg_stage() {
   local scratch="$1" base="${2:-}" f
   mkdir -p "$scratch/tree" "$scratch/home" "$scratch/tmp"
@@ -166,7 +168,32 @@ _trg_stage() {
     done < <(git ls-files -z 2>/dev/null)
     git archive "$base" | tar -xf - -C "$scratch/tree"
   fi
-  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -C "$scratch/tree" init -q 2>/dev/null || true
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
+    git -C "$scratch/tree" init -q &&
+      git -C "$scratch/tree" add -A &&
+      git -C "$scratch/tree" \
+        -c user.name=trg -c user.email=trg@invalid -c commit.gpgsign=false \
+        commit -q --no-verify --allow-empty -m snapshot
+  ) 2>&1 || {
+    echo "Test-regression guard: could not create the scratch snapshot commit (#2055); the suite cannot run" >&2
+    return 1
+  }
+}
+
+# _trg_log_failures <label> <failures_nl> — the run log's list of failing tests for a
+# red verdict: the count, then the first 20 names (#2055). To stderr, never stdout.
+_trg_log_failures() {
+  local label="$1" fail="$2" n
+  n=$(grep -c . <<<"$fail" || true)
+  {
+    echo "Test-regression guard: ${label}: ${n} parsed/named failing test(s)"
+    if (( n > 0 )); then
+      grep . <<<"$fail" | head -20 | sed 's/^/  /' || true
+      if (( n > 20 )); then echo "  … and $(( n - 20 )) more"; fi
+    fi
+  } >&2
+  return 0
 }
 
 # _trg_run <cmd> [base_sha] — run the suite with a time limit in a scratch copy of the
@@ -175,7 +202,7 @@ _trg_stage() {
 _trg_run() {
   local cmd="$1" base="${2:-}" limit="${DEV_LEAD_TEST_TIMEOUT:-1500}" scratch rc=0
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/trg.XXXXXX") || return 1
-  _trg_stage "$scratch" "$base"
+  _trg_stage "$scratch" "$base" || { rm -rf -- "$scratch"; return 1; }
   # PR-controlled code runs here: an ALLOWLIST environment (env -i), not a denylist, so
   # no token — whatever its name — reaches the test process.
   local -a runner=(env -i "PATH=${PATH}" "HOME=${scratch}/home" "TMPDIR=${scratch}/tmp"
@@ -193,24 +220,34 @@ _trg_run() {
 #   The single impure gatherer. Runs the suite on the CURRENT checkout (the pass's
 #   result). Only when it is red, runs it again against <base_sha> in a scratch copy
 #   (the real checkout is never touched). Echoes `<verdict>\t<cmd>` on the first line, then the
-#   offending tests. Returns 1 only for `regression`.
+#   offending tests. Returns 1 only for `regression`. The run log (stderr) gets each
+#   suite run's elapsed time and, for any verdict but green, the failing tests (#2055).
 trg_scan_pass() {
-  local base="${1:-}" cmd out head_rc=0 head_fail base_out base_rc="" base_fail="" base_ran=false
+  local base="${1:-}" cmd out head_rc=0 head_fail base_out base_rc="" base_fail="" base_ran=false t0
   if ! cmd=$(trg_discover_cmd .); then
     printf 'not-run\t\n'
     return 0
   fi
+  t0=$SECONDS
   out=$(_trg_run "$cmd") || head_rc=$?
+  echo "Test-regression guard: result suite run took $(( SECONDS - t0 ))s (exit ${head_rc})" >&2
   head_fail=$(printf '%s\n' "$out" | trg_extract_failures)
   if (( head_rc != 0 && head_rc != 124 )) && [[ -n "$base" ]] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
     base_rc=0
+    t0=$SECONDS
     base_out=$(_trg_run "$cmd" "$base") || base_rc=$?
+    echo "Test-regression guard: baseline suite run took $(( SECONDS - t0 ))s (exit ${base_rc})" >&2
     base_fail=$(printf '%s\n' "$base_out" | trg_extract_failures)
     base_ran=true
   fi
-  local verdict_out rc=0
+  local verdict_out verdict rc=0
   verdict_out=$(trg_classify "$base_ran" "$base_rc" "$base_fail" "$head_rc" "$head_fail") || rc=$?
-  printf '%s\t%s\n' "$(printf '%s\n' "$verdict_out" | head -1)" "$cmd"
+  verdict=$(printf '%s\n' "$verdict_out" | head -1)
+  if [[ "$verdict" != "green" ]]; then
+    _trg_log_failures result "$head_fail"
+    if [[ "$base_ran" == "true" ]]; then _trg_log_failures baseline "$base_fail"; fi
+  fi
+  printf '%s\t%s\n' "$verdict" "$cmd"
   printf '%s\n' "$verdict_out" | sed '1d'
   return "$rc"
 }
