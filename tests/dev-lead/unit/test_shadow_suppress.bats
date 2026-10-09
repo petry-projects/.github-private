@@ -2,9 +2,10 @@
 # Unit tests for scripts/lib/shadow-suppress.sh (#1713 split 1/2).
 #
 # shadow_mode_active() is the fail-closed predicate that decides whether the
-# lane must suppress all PR output. shadow_apply_suppression() turns an active
-# shadow run into the already-proven "post nothing" state by forcing
-# DEV_LEAD_DRY_RUN=true and recording output to a file instead of the PR.
+# lane must suppress all PR output. shadow_apply_suppression() normalizes the
+# shadow_mode flag and records output to a file instead of the PR. It does NOT
+# force DEV_LEAD_DRY_RUN to allow the engine to run; posting sites check
+# shadow_mode_active separately to suppress output.
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 LIB="$SCRIPT_DIR/scripts/lib/shadow-suppress.sh"
@@ -86,11 +87,11 @@ setup() {
   [ ! -f "$SHADOW_OUTPUT_FILE" ]
 }
 
-@test "shadow: apply when active → forces DEV_LEAD_DRY_RUN=true" {
+@test "shadow: apply when active → does NOT force DEV_LEAD_DRY_RUN (allows engine to run)" {
   export DEV_LEAD_SHADOW_MODE="true"
   export DEV_LEAD_DRY_RUN="false"
   shadow_apply_suppression
-  [ "$DEV_LEAD_DRY_RUN" = "true" ]
+  [ "$DEV_LEAD_DRY_RUN" = "false" ]
 }
 
 @test "shadow: apply when active → normalizes DEV_LEAD_SHADOW_MODE to canonical true" {
@@ -114,11 +115,10 @@ setup() {
   [[ "$output" == *"shadow"* ]]
 }
 
-@test "shadow: repeated apply keeps flags true and appends one record per call" {
+@test "shadow: repeated apply keeps SHADOW_MODE true and appends one record per call" {
   export DEV_LEAD_SHADOW_MODE="true"
   shadow_apply_suppression
   shadow_apply_suppression
   [ "$(grep -c '^\[shadow\]' "$SHADOW_OUTPUT_FILE")" -eq 2 ]
-  [ "$DEV_LEAD_DRY_RUN" = "true" ]
   [ "$DEV_LEAD_SHADOW_MODE" = "true" ]
 }

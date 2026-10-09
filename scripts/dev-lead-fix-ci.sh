@@ -234,7 +234,7 @@ main() {
   local prompt_file
   prompt_file=$(build_prompt)
 
-  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ] && ! shadow_mode_active; then
     echo "[dry-run] fix-ci: would run engine with prompt: $prompt_file"
     post_summary "dry-run" "Would apply fix for: $(echo "$CHECKS_JSON" | jq -r '[.[].name] | join(", ")')"
     exit 0
