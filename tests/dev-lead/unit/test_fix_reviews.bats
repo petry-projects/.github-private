@@ -1760,6 +1760,7 @@ echo "\$ARGS" >> "$BATS_TEST_TMPDIR/gh-calls"
 case "\$ARGS" in
   *"resolveReviewThread"*)
     echo "\$*" >> "$mutations_file"
+    if [ -n "\${DEFER_RESOLVE_FAIL:-}" ]; then echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":false}}}}'; exit 0; fi
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"PullRequestReviewThread"*) cat "$fx/node.json" ;;
@@ -1939,11 +1940,13 @@ _2045_open_issue() {
 }
 
 @test "resolve_deferred_bot_threads (#2045): a failed resolution posts a retry marker (resolve-failed)" {
+  # Tracker verification succeeds; the resolveReviewThread mutation itself fails.
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
-  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings (none linked)"}'
-  export DEFER_ISSUE_COMMENTS_FAIL=1
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"failed to resolve deferred bot thread PRRT_2045"* ]]
   # dev-lead-retry.sh re-dispatches only on a retry marker; an absent terminal is never retried.
   grep -q "status=rate-limited reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
 }
@@ -1981,6 +1984,19 @@ _2045_open_issue() {
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
   [[ "$_HARNESS_OUTPUT" == *"edited after our deferral"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): an unreadable edit time -> stays open and counts as failure" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567"},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"could not read the edit time"* ]]
   run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
   [ "$status" -eq 1 ]
 }

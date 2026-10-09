@@ -726,7 +726,10 @@ list_unresolved_bot_thread_ids() {
     if ! printf '%s' "$page_response" | jq -e '
         ((.errors // []) | length) == 0
         and ((.data?.repository?.pullRequest?.reviewThreads?.nodes? | type) == "array")
-        and ((.data.repository.pullRequest.reviewThreads.pageInfo?.hasNextPage? | type) == "boolean")' \
+        and ((.data.repository.pullRequest.reviewThreads.pageInfo?.hasNextPage? | type) == "boolean")
+        and (.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false
+             or ((.data.repository.pullRequest.reviewThreads.pageInfo.endCursor? | type) == "string"
+                 and (.data.repository.pullRequest.reviewThreads.pageInfo.endCursor | length) > 0))' \
         >/dev/null 2>&1; then
       echo "::error::review-thread page for PR #${PR_NUMBER} returned an error or malformed response" >&2
       return 1
@@ -1211,8 +1214,14 @@ resolve_deferred_bot_threads() {
         elif $o.lastEditedAt == null then "no"
         elif ($o.lastEditedAt | type) != "string" then "unknown"
         elif $o.lastEditedAt > $r then "yes" else "no" end' 2>/dev/null || echo "unknown")
-    if [ "$edited_after" != "no" ]; then
-      echo "::notice::skipping thread ${id} — the bot finding was edited after our deferral (or its edit time is unreadable); leaving unresolved (#2045)"
+    if [ "$edited_after" = "yes" ]; then
+      echo "::notice::skipping thread ${id} — the bot finding was edited after our deferral; leaving unresolved (#2045)"
+      continue
+    elif [ "$edited_after" != "no" ]; then
+      # Unreadable is a resolver failure, not a skip: a terminal marker must not
+      # be posted over a thread we could not evaluate.
+      echo "::warning::could not read the edit time of review thread ${id} while checking deferrals"
+      failed_count=$((failed_count + 1))
       continue
     fi
 
