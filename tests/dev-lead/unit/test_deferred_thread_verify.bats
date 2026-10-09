@@ -178,7 +178,7 @@ ${marker}
 
 @test "dtv_verify_tracking_issue: open issue whose body links the thread -> ok" {
   local issue
-  issue=$(jq -cn --arg b "Deferred findings:\n- ${LINK}" '{number:2050,title:"dev-lead: deferred review findings",state:"open",body:$b}')
+  issue=$(jq -cn --arg b "Deferred findings:\n- ${LINK}" '{number:2050,title:"dev-lead: deferred review findings",author_association:"MEMBER",state:"open",body:$b}')
   run dtv_verify_tracking_issue "$issue" "[]" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
@@ -186,8 +186,34 @@ ${marker}
 
 @test "dtv_verify_tracking_issue: open issue whose COMMENT links the thread -> ok" {
   local comments
-  comments=$(jq -cn --arg b "Appended: ${LINK}" '[{body:"unrelated"},{body:$b}]')
-  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred findings"}' \
+  comments=$(jq -cn --arg b "Appended: ${LINK}" '[{author_association:"MEMBER",body:"unrelated"},{author_association:"MEMBER",body:$b}]')
+  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred findings"}' \
+    "$comments" "$THREAD_ID" "$DB_ID"
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+}
+
+@test "dtv_verify_tracking_issue: a link only in an UNTRUSTED author's issue body -> untrusted-mention" {
+  local issue
+  issue=$(jq -cn --arg b "Deferred findings:\n- ${LINK}" '{number:2050,title:"dev-lead: deferred review findings",author_association:"NONE",state:"open",body:$b}')
+  run dtv_verify_tracking_issue "$issue" "[]" "$THREAD_ID" "$DB_ID"
+  [ "$status" -eq 1 ]
+  [ "$output" = "untrusted-mention" ]
+}
+
+@test "dtv_verify_tracking_issue: a link only in an UNTRUSTED comment -> untrusted-mention" {
+  local comments
+  comments=$(jq -cn --arg b "Appended: ${LINK}" '[{author_association:"CONTRIBUTOR",body:$b}]')
+  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred findings"}' \
+    "$comments" "$THREAD_ID" "$DB_ID"
+  [ "$status" -eq 1 ]
+  [ "$output" = "untrusted-mention" ]
+}
+
+@test "dtv_verify_tracking_issue: a TRUSTED comment links the thread on an untrusted author's issue -> ok" {
+  local comments
+  comments=$(jq -cn --arg b "Appended: ${LINK}" '[{author_association:"NONE",body:"spam"},{author_association:"COLLABORATOR",body:$b}]')
+  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","author_association":"NONE","state":"open","body":"Deferred findings"}' \
     "$comments" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
@@ -204,7 +230,7 @@ ${marker}
 
 @test "dtv_verify_tracking_issue: closed issue -> closed" {
   local issue
-  issue=$(jq -cn --arg b "${LINK}" '{number:2050,title:"dev-lead: deferred review findings",state:"closed",body:$b}')
+  issue=$(jq -cn --arg b "${LINK}" '{number:2050,title:"dev-lead: deferred review findings",author_association:"MEMBER",state:"closed",body:$b}')
   run dtv_verify_tracking_issue "$issue" "[]" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
   [ "$output" = "closed" ]
@@ -212,21 +238,21 @@ ${marker}
 
 @test "dtv_verify_tracking_issue: a pull request is not a tracking issue" {
   local issue
-  issue=$(jq -cn --arg b "${LINK}" '{number:2050,title:"dev-lead: deferred review findings",state:"open",body:$b,pull_request:{url:"x"}}')
+  issue=$(jq -cn --arg b "${LINK}" '{number:2050,title:"dev-lead: deferred review findings",author_association:"MEMBER",state:"open",body:$b,pull_request:{url:"x"}}')
   run dtv_verify_tracking_issue "$issue" "[]" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
   [ "$output" = "not-an-issue" ]
 }
 
 @test "dtv_verify_tracking_issue: issue that does not mention the thread -> no-mention" {
-  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred findings"}' \
+  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred findings"}' \
     '[{"body":"some other thread #discussion_r1"}]' "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
   [ "$output" = "no-mention" ]
 }
 
 @test "dtv_verify_tracking_issue: unparseable comments read as none (fail closed)" {
-  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"x"}' "garbage" "$THREAD_ID" "$DB_ID"
+  run dtv_verify_tracking_issue '{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"x"}' "garbage" "$THREAD_ID" "$DB_ID"
   [ "$status" -eq 1 ]
   [ "$output" = "no-mention" ]
 }

@@ -945,13 +945,23 @@ even though every ref looks valid, because the stub is ahead of the channel it p
      pinned channel resolves to a commit that declares the input.
 
   Doing these out of order (forwarding first) is exactly the skew this rule prevents.
-- **Same order for a new `client_payload` field.** The dev-lead retry sweep
-  (`scripts/dev-lead-retry.sh` and its libs) runs from `main`. The events it dispatches are parsed by
-  `scripts/dev-lead-intent.sh` at the channel `dev-lead.yml` pins via `agent_ref` (#2050). Land the
-  parser change and promote that channel first. Merge the sweep change that sends the field second.
+- **Same order for a new `client_payload` field from a dispatching sweep (#2050).** A sweep
+  such as `scripts/dev-lead-retry.sh` sends `repository_dispatch` payloads to the harness at
+  the pinned channel. A new field the sweep sends follows the same order: **(1)** the harness
+  change that reads the field (e.g. `scripts/dev-lead-intent.sh`) merges and **reaches the
+  pinned channel first**; **(2)** only then does the sweep change that sends it merge. Before
+  the backstop below, the sweep ran from `main`, so a sweep change that merged ahead of the
+  channel broke every dispatched run until the channel caught up (#2017: every
+  fix-bot-comment retry failed against `v139-stable`), and the canary gate charged those
+  failures to the next candidate. As a structural backstop, `dev-lead-retry.yml` now checks
+  out `scripts/` at the channel `dev-lead.yml` pins (`agent_ref`), not `main`, so the sweep
+  and the harness it dispatches to in this repo are the same release
+  (`tests/dev-lead/unit/test_dev_lead_retry_channel.bats`). The order still matters for
+  target repos that pin an older channel than this one (#2086).
   [`scripts/check-retry-payload-fields.sh`](./scripts/check-retry-payload-fields.sh) (the
-  `retry-payload-fields` job in `lint.yml`, #2081) fails a PR whose sweep sends a field the pinned
-  parser does not read.
+  `retry-payload-fields` job in `lint.yml`, #2081) enforces step (1) for every channel of the
+  pinned major. It fails a PR whose sweep sends a top-level field that the intent parser at any
+  `dev-lead/v<N>-{next,ring0,ring1,stable}` tag does not read.
 - **Enforcement.** The dev-lead prompt guardrail (part C, #1254) stops the agent from introducing the
   skew at the source; the **Part A CI guard (#1253)** is the belt-and-braces check that fails a PR whose
   caller-stub `with:` forwards an input the pinned channel does not declare.
