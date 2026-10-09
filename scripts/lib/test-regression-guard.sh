@@ -168,21 +168,28 @@ _trg_stage() {
     done < <(git ls-files -z 2>/dev/null)
     git archive "$base" | tar -xf - -C "$scratch/tree"
   fi
-  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -C "$scratch/tree" init -q 2>/dev/null || true
-  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -C "$scratch/tree" add -A 2>/dev/null || true
-  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -C "$scratch/tree" \
-    -c user.name=trg -c user.email=trg@invalid -c commit.gpgsign=false \
-    commit -q --no-verify --allow-empty -m snapshot >/dev/null 2>&1 || true
+  (
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
+    git -C "$scratch/tree" init -q &&
+      git -C "$scratch/tree" add -A &&
+      git -C "$scratch/tree" \
+        -c user.name=trg -c user.email=trg@invalid -c commit.gpgsign=false \
+        commit -q --no-verify --allow-empty -m snapshot
+  ) >/dev/null 2>&1 || {
+    echo "Test-regression guard: could not create the scratch snapshot commit (#2055); the suite cannot run" >&2
+    return 1
+  }
 }
 
 # _trg_log_failures <label> <failures_nl> — the run log's list of failing tests for a
 # red verdict: the count, then the first 20 names (#2055). To stderr, never stdout.
 _trg_log_failures() {
   local label="$1" fail="$2" n
-  n=$(printf '%s\n' "$fail" | grep -c . || true)
+  n=$(grep -c . <<<"$fail" || true)
+  (( n > 0 )) || return 0
   {
-    echo "Test-regression guard: ${label}: ${n} failing test(s)"
-    printf '%s\n' "$fail" | grep . | head -20 | sed 's/^/  /' || true
+    echo "Test-regression guard: ${label}: ${n} named failing test(s) parsed"
+    grep . <<<"$fail" | head -20 | sed 's/^/  /' || true
     if (( n > 20 )); then echo "  … and $(( n - 20 )) more"; fi
   } >&2
   return 0
@@ -194,7 +201,7 @@ _trg_log_failures() {
 _trg_run() {
   local cmd="$1" base="${2:-}" limit="${DEV_LEAD_TEST_TIMEOUT:-1500}" scratch rc=0
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/trg.XXXXXX") || return 1
-  _trg_stage "$scratch" "$base"
+  _trg_stage "$scratch" "$base" || { rm -rf -- "$scratch"; return 1; }
   # PR-controlled code runs here: an ALLOWLIST environment (env -i), not a denylist, so
   # no token — whatever its name — reaches the test process.
   local -a runner=(env -i "PATH=${PATH}" "HOME=${scratch}/home" "TMPDIR=${scratch}/tmp"
