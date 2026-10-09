@@ -477,6 +477,31 @@ _graphql_page() {
   [ "$marker_line" -lt "$dispatch_line" ]
 }
 
+@test "sweep(#2086): a target whose pinned parser drops comment_node_id gets no retry marker and no dispatch" {
+  _setup_sweep
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+  # Gate on; the target pins an older channel whose parser reads every retry
+  # field except comment_node_id (the #2050 skew).
+  DCG_SWEEP_REF=dev-lead/v139-ring0
+  dcg_target_pin() { echo dev-lead/v1-stable; }
+  dcg_fields_read_at() { printf '%s\n' checks head_sha intent_type issue_number pr_number; }
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 0 ]
+  [ "${lines[-1]}" = "0" ]
+  [[ "$output" == *"::warning::"*"comment_node_id"* ]]
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q 'dev-lead-bot-comment-retry' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+
+  # Once that channel reads the field, the same scan dispatches.
+  dcg_fields_read_at() { printf '%s\n' checks comment_node_id head_sha intent_type issue_number pr_number; }
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
+  [ "${lines[-1]}" = "1" ]
+  [ "$(grep -c '/dispatches' "$GH_LOG")" -eq 1 ]
+}
+
 @test "sweep(#2089): a dev-lead:hands-off PR gets no retry marker and no dispatch" {
   export PR_JSON='{"state":"open","head":{"sha":"abc","ref":"dev-lead/issue-2008-x","repo":{"full_name":"petry-projects/.github-private"}},"user":{"login":"don-petry"},"labels":[{"name":"dev-lead:hands-off"}]}'
   _setup_sweep
