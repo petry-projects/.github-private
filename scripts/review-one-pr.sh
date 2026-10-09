@@ -115,6 +115,18 @@ source "$SCRIPT_DIR/lib/carry-forward.sh"
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
 
+# Diagnose mode (#1894): answer "why isn't this PR approved?" by running the REAL
+# gate chain below — the same functions, in the same order, on the same live
+# state — and stopping before any model runs. It is read-only (DRY_RUN) and never
+# forced: a diagnosis must report what a normal run would do, so the human
+# break-glass and the orphan-rescue bypass are both off. The answer is the run's
+# single emit_verdict line (decision, reason, would_change). Used by
+# scripts/pr-approval-diagnostic.sh; never set by the review workflows.
+if [ "${PR_REVIEW_DIAGNOSE:-false}" = "true" ]; then
+  DRY_RUN=true FORCE_REVIEW=false FORCE_RE_REVIEW=false
+  export DRY_RUN FORCE_REVIEW FORCE_RE_REVIEW
+fi
+
 # emit_verdict <decision> <reason> <would_change>
 #   Emit THE single structured verdict line for a run that DECLINES to review this
 #   PR (skip / noop / escalate / error). It carries pr, head sha, decision, a
@@ -133,60 +145,16 @@ emit_verdict() {
     --arg reason "$2" \
     --arg would_change "$3" \
     '{pr:$pr, sha:$sha, decision:$decision, reason:$reason, would_change:$would_change}'
+  # #1894: also record it in the step summary, so "why not approved?" is answered
+  # where an operator looks, not only in the run log. Best-effort.
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    local _sha="${PR_HEAD_SHA:-}"
+    printf -- '- **%s** at `%s`: `%s` (%s). Changes when: %s\n' \
+      "$PR_URL" "${_sha:0:8}" "$1" "$2" "$3" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
 }
 
 echo "==> $PR_URL"
-
-# emit_approval_diagnostic <pr_snapshot_json>
-#   Surface the single "why is this PR not approved?" diagnostic (#1894) where an
-#   operator looks — the step summary — instead of only in a run log. It names the
-#   blocking gate, the specific condition, and what would satisfy it, and reports
-#   the advisory denominator RECONCILED with the registry (AC #2). Purely additive:
-#   sourced/run in an isolated subshell and fully guarded, so a diagnostic failure
-#   never affects the review decision. The subshell inherits PR_URL for the `pr` field.
-emit_approval_diagnostic() {
-  local snap="${1:-}"
-  [ -n "$snap" ] || return 0
-  (
-    # shellcheck source=lib/approval-diagnostic.sh
-    source "$SCRIPT_DIR/lib/approval-diagnostic.sh" || exit 0
-    # Give the diagnostic the same review-thread surface the maintainer-review-thread
-    # gate (#1415) evaluates, so it can never report approval while an unresolved
-    # maintainer thread blocks (the b78 gap). Best-effort: a fetch failure leaves the
-    # args empty and that gate is simply not modelled. Sourced in this isolated
-    # subshell so the gate helpers never leak into the caller.
-    local _threads="" _head_date=""
-    # shellcheck source=lib/maintainer-comment-gate.sh
-    source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh" 2>/dev/null || true
-    # shellcheck source=lib/maintainer-review-thread-gate.sh
-    source "$SCRIPT_DIR/lib/maintainer-review-thread-gate.sh" 2>/dev/null || true
-    if declare -f mrtg_fetch_review_threads >/dev/null 2>&1; then
-      _threads=$(mrtg_fetch_review_threads "$PR_URL" 2>/dev/null) || _threads=""
-      # mrtg_fetch_review_threads echoes empty ONLY on an API failure (a PR with no
-      # threads yields {"reviewThreads":[]}). The real maintainer-review-thread gate
-      # fails closed on that same failure, so pass the fail-closed sentinel — otherwise
-      # diagnose_approval would skip the thread gate and the summary could claim
-      # approval the run withholds (thread F, #1902).
-      [ -z "$_threads" ] && _threads="$_APPROVAL_DIAG_THREADS_FETCH_FAILED"
-    fi
-    if declare -f maintainer_gate_head_committer_date >/dev/null 2>&1; then
-      _head_date=$(maintainer_gate_head_committer_date "$PR_URL" 2>/dev/null) || _head_date=""
-    fi
-    local verdict diag_rc
-    set +e
-    verdict=$(diagnose_approval "$snap" "" "${BOT_USER:-donpetry-bot}" "$_threads" "$_head_date" "${FORCE_REVIEW:-false}")
-    diag_rc=$?
-    set -e
-    if [ "$diag_rc" -ne 0 ] || [ -z "$verdict" ]; then
-      echo "::warning::approval diagnostic could not evaluate the PR snapshot (#1894)"
-      exit 0
-    fi
-    echo "    approval-diagnostic: $verdict"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      render_approval_diagnostic "$verdict" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-    fi
-  ) || true
-}
 
 # ==========================================================================
 # Artifact-contract dispatch (issues #611/#612). The production PR-review path
@@ -431,11 +399,6 @@ if [ -n "$NON_REQUIRED_CI_FAILURES" ]; then
   echo "::notice::proceeding past non-required failing check(s) the branch ruleset does not require: ${NON_REQUIRED_CI_FAILURES} — the merge gate still blocks on any failing REQUIRED check (#1795)"
   export NON_REQUIRED_CI_FAILURES
 fi
-
-# Approval diagnostic (#1894) — record, in the step summary, the single end-to-end
-# reason this PR is (not) approved before the gate chain runs. CI is green here, so
-# any subsequent decline is an approval-gate decision the diagnostic explains.
-emit_approval_diagnostic "$PR_SNAPSHOT"
 
 # Advisory bot review gate — instant check for advisory bot reviews (Gemini, Copilot, SonarCloud, Codex)
 # This ensures valid code reviews are incorporated before pr-review posts approval (issue #457).
@@ -947,6 +910,23 @@ if [ "${DRY_RUN:-false}" != "true" ]; then
     fi
     exit 101
   fi
+elif [ "${PR_REVIEW_DIAGNOSE:-false}" = "true" ]; then
+  # Read-only: report an exhausted budget without escalating (enforce_pr_budget writes).
+  if _diag_events=$(gather_pr_automation_events \
+        "$(echo "$PR_URL" | sed -E 's|.*/pull/([0-9]+).*|\1|')" \
+        "$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')") \
+     && pr_budget_exhausted "$_diag_events"; then
+    emit_verdict escalate automation-budget-exhausted "a human interaction (comment or approval) resets the per-PR automation budget"
+    exit 100
+  fi
+fi
+
+# Diagnose mode stops here: every gate has passed, so a review run would now start
+# the model cascade, whose own verdict (approve / fix-request / escalate) decides.
+if [ "${PR_REVIEW_DIAGNOSE:-false}" = "true" ]; then
+  echo "    diagnose: every gate passes — a review run would start the model cascade now"
+  emit_verdict proceed gates-clear "nothing gates this PR; the next pr-review run reviews it and its verdict decides (a review event, a push, or the pr-review sweep starts that run)"
+  exit 0
 fi
 
 # Detect if the PR's repo org supports AI delegation for automated fix requests.

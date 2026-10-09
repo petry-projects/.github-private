@@ -398,18 +398,6 @@ _has_findings() {
   [ "$from_fallback" = "$from_reg" ]
 }
 
-@test "consistency: approval-diagnostic default advisory fallback == registry advisory-gate projection" {
-  # Force the unreadable-registry path so the literal fallback in
-  # _approval_diag_default_advisory_json is exercised, not the runtime projection.
-  local from_fallback from_reg
-  from_fallback="$(REVIEWER_SOURCES_MANIFEST=/nonexistent/reviewer-sources.tsv bash -c "
-    source '$REPO_ROOT/scripts/lib/approval-diagnostic.sh'
-    _approval_diag_default_advisory_json | jq -r '.[]'
-  " | sort)"
-  from_reg="$(reviewer_sources_advisory_gate_logins | sort)"
-  [ "$from_fallback" = "$from_reg" ]
-}
-
 @test "consistency: advisory gate RATE_LIMIT_NOTICE_BOTS == registry (all sources)" {
   # shellcheck source=scripts/lib/advisory-review-gate.sh
   source "$REPO_ROOT/scripts/lib/advisory-review-gate.sh"

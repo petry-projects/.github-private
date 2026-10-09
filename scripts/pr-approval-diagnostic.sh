@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# pr-approval-diagnostic.sh — "why isn't this PR approved?" (#1894)
+#
+# Answers from the REAL gate chain, not a model of it: runs scripts/review-one-pr.sh
+# in diagnose mode (PR_REVIEW_DIAGNOSE=true — read-only, never forced, stops before
+# any model runs) and reports the single verdict that run reaches — which gate holds
+# the PR, and what would change the decision — together with the PR facts a reader
+# needs (review decision, approvals at the head, hold labels, merge state).
+#
+# The previous attempt (#1902) re-implemented each gate in a separate library and
+# drifted from the real ones (bot-comment handling, the unsupported-file regex,
+# check-run participation, the thread-gate fail-closed path). Running the gate chain
+# itself makes that drift impossible: a gate change is a diagnostic change.
+#
+# Usage: pr-approval-diagnostic.sh <pr-url> [--json]
+#   Needs the same environment a pr-review run needs to READ the PR (GH_TOKEN with
+#   repo read; BOT_USER defaults to donpetry-bot). Writes nothing to GitHub.
+# Exit: 0 diagnosed · 2 the gate chain produced no verdict (its log tail is printed)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PR_URL="${1:-}"
+FORMAT="markdown"
+[ "${2:-}" = "--json" ] && FORMAT="json"
+if [[ ! "$PR_URL" =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]]; then
+  echo "usage: pr-approval-diagnostic.sh https://github.com/<owner>/<repo>/pull/<n> [--json]" >&2
+  exit 2
+fi
+
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+
+set +e
+PR_REVIEW_DIAGNOSE=true GITHUB_STEP_SUMMARY="" bash "$SCRIPT_DIR/review-one-pr.sh" "$PR_URL" >"$LOG" 2>&1
+rc=$?
+set -e
+
+# The run's verdict is its LAST emit_verdict line (a JSON object with .decision).
+verdict=$(grep -E '^\{"pr":' "$LOG" | tail -n 1 || true)
+if [ -z "$verdict" ] || ! jq -e '.decision' <<<"$verdict" >/dev/null 2>&1; then
+  echo "pr-approval-diagnostic: the gate chain produced no verdict (exit $rc); last lines:" >&2
+  tail -n 20 "$LOG" >&2
+  exit 2
+fi
+
+facts=$(gh pr view "$PR_URL" --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,labels,reviews 2>/dev/null \
+  | jq -c --arg holds "needs-human-review dev-lead:needs-human dev-lead:hands-off initiative:hold" '
+      .headRefOid as $head
+      | {state, isDraft, reviewDecision, mergeStateStatus,
+         holds: [(.labels // [])[].name | select(. as $l | ($holds | split(" ") | index($l)))],
+         approvals_at_head: [(.reviews // [])[]
+            | select(.state == "APPROVED" and (.commit.oid // "") == $head)
+            | (.author.login // "?")] | unique}' 2>/dev/null || echo '{}')
+
+report=$(jq -cn --argjson v "$verdict" --argjson f "$facts" --arg log "$(grep -E '^    ' "$LOG" || true)" \
+  '$v + {facts: $f, gate_log: $log}')
+
+if [ "$FORMAT" = "json" ]; then
+  printf '%s\n' "$report"
+  exit 0
+fi
+
+jq -r '
+  def code: "`" + (. // "") + "`";
+  .facts as $f
+  | (if ($f.reviewDecision // "") == "APPROVED"
+     then "**Approved.** Merge state: " + (($f.mergeStateStatus // "unknown") | code) + "."
+     else "**Not approved** (review decision: " + (($f.reviewDecision // "none") | if . == "" then "none" else . end | code) + ")."
+     end) as $status
+  | [ "## pr-review approval diagnostic: " + .pr,
+      "",
+      $status,
+      "",
+      "| | |",
+      "|---|---|",
+      "| Head | " + ((.sha // "")[0:8] | code) + " |",
+      "| What pr-review would do now | " + (.decision | code) + " — " + (.reason | code) + " |",
+      "| What changes that | " + ((.would_change // "") | gsub("\\|"; "\\|")) + " |",
+      "| Hold labels | " + (if (($f.holds // []) | length) > 0 then ($f.holds | map(code) | join(", ")) else "none" end) + " |",
+      "| Approvals at head | " + (if (($f.approvals_at_head // []) | length) > 0 then ($f.approvals_at_head | join(", ")) else "none" end) + " |",
+      "",
+      (if .decision == "proceed"
+       then "No gate holds this PR: the next pr-review run reviews it, and that review decides."
+       else "This is the first gate that holds the PR, in the order a pr-review run checks them. Gates after it were not evaluated."
+       end),
+      "",
+      "<details><summary>Gate log</summary>",
+      "",
+      "```",
+      .gate_log,
+      "```",
+      "</details>"
+    ] | join("\n")' <<<"$report"
