@@ -34,7 +34,9 @@ set -euo pipefail
 #          first parsed by bash (wrapped in a function and printed back with
 #          `declare -f`), which drops shell comments and keeps strings and
 #          heredocs verbatim; `client_payload.<key>` reads are then collected from
-#          that text. A `#` comment INSIDE a jq program string is not shell syntax
+#          that text — only the jq path form `.client_payload.<key>` counts, so
+#          prose such as an error message naming `client_payload.x` does not.
+#          A `#` comment INSIDE a jq program string is not shell syntax
 #          and survives, so a reference with a `#` before it on its line (other than
 #          `$#`) is not counted — that can only under-count reads, which fails the
 #          check loudly rather than certifying an ignored field. A lib the parser
@@ -85,7 +87,13 @@ sent_fields() {
     set +e
     export DRY_RUN=false DISPATCH_DELAY_SEC=0
     # shellcheck source=/dev/null
-    source "$SWEEP_PATH" >/dev/null 2>&1 || { echo "SOURCEFAIL"; exit 0; }
+    # Sourced with errexit ON and outside any `||`/`if` context, so a failure
+    # partway through (a missing lib, a failing init) aborts here and the
+    # SOURCED sentinel never prints; the caller treats its absence as a setup
+    # error rather than certifying an incomplete set of dispatchers.
+    set -e
+    source "$SWEEP_PATH" >/dev/null 2>&1
+    echo "SOURCED"
     set +e +u
     gh() {
       local a prev="" is_dispatch=false input=""
@@ -181,7 +189,7 @@ fields_read_at() {
     mapfile -t -O "${#queue[@]}" queue < <(grep -oE '/lib/[A-Za-z0-9_.-]+\.sh' <<<"$libs" | sort -u)
   done
   sed -E 's/(^|[^$])#.*$/\1/' <<<"$out" \
-    | grep -oE 'client_payload\.[A-Za-z_][A-Za-z0-9_]*' | sed 's/^client_payload\.//' | sort -u || true
+    | grep -oE '\.client_payload\.[A-Za-z_][A-Za-z0-9_]*' | sed 's/^\.client_payload\.//' | sort -u || true
 }
 
 # ── channel tags ─────────────────────────────────────────────────────────────
@@ -221,7 +229,8 @@ done
 
 # ── compare ──────────────────────────────────────────────────────────────────
 sent=$(sent_fields)
-grep -q '^SOURCEFAIL$' <<<"$sent" && die "sourcing ${SWEEP} failed"
+grep -qx 'SOURCED' <<<"$sent" || die "sourcing ${SWEEP} failed (or aborted partway), so its dispatchers cannot be certified"
+sent=$(grep -vx 'SOURCED' <<<"$sent" || true)
 grep -q '^INDIRECT$' <<<"$sent" \
   && die "a variable in ${SWEEP} (or a lib it sources) holds a /dispatches endpoint; write the endpoint literally in each dispatcher so the check can find and run it"
 if nopayload=$(grep '^NOPAYLOAD ' <<<"$sent"); then

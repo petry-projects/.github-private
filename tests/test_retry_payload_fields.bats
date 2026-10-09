@@ -313,6 +313,32 @@ EOF2
   [[ "$output" == *"client_payload.input_eq (sent by dispatch_input_eq)"* ]]
 }
 
+@test "a field named in a plain string (not a jq path) is not a read (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  printf '%s\n' "route5() { diagnostic='client_payload.prose_only is not consumed'; echo \"\$diagnostic\"; }" \
+    >> "$SANDBOX/scripts/dev-lead-intent.sh"
+  write_sweep pr_number prose_only
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.prose_only"* ]]
+}
+
+@test "a sweep that fails partway through sourcing is a setup error (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  # A missing lib sourced BEFORE a later dispatcher is defined: the function set is incomplete.
+  printf '%s\n' 'source "$SCRIPT_DIR/lib/not-there.sh"' \
+    'dispatch_late() { jq -n "{client_payload: {pr_number: 1, late_field: 1}}" | gh api --method POST "repos/$1/dispatches" --input -; }' \
+    >> "$SANDBOX/scripts/dev-lead-retry.sh"
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"sourcing scripts/dev-lead-retry.sh failed"* ]]
+}
+
 @test "runs dispatchers defined in libs the sweep sources" {
   write_stub dev-lead/v7-stable
   write_intent pr_number
@@ -417,7 +443,7 @@ EOF
     _ "$CHECK" "$REPO_ROOT"
   [ "$status" -eq 0 ]
   [[ "$output" != *"NOPAYLOAD"* ]]
-  [[ "$output" != *"SOURCEFAIL"* ]]
+  [[ "$output" == *"SOURCED"* ]]
   [[ "$output" == *"dispatch_bot_comment_retry comment_node_id"* ]]
   [[ "$output" == *"dispatch_reviews_retry intent_type"* ]]
 }
