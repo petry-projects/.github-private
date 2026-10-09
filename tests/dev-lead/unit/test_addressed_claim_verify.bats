@@ -759,3 +759,21 @@ setup() {
   [[ "$(echo "$output" | jq -r .on_head)" == "false" ]]
   [[ "$(echo "$output" | jq -r .in_base)" == "false" ]]
 }
+
+@test "acv_latest_nochange_disposition: em-dash negation 'NOT — in my view — a false positive' -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"This is NOT — in my view — a false positive.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: hedged 'may be a false positive' -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"This may be a false positive.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: 'I decline to call this a false positive' -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"I decline to call this a false positive.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments"
+  [[ "$status" -eq 1 ]]
+}
