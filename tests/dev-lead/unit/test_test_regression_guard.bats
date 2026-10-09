@@ -8,6 +8,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 LIB="$SCRIPT_DIR/scripts/lib/test-regression-guard.sh"
+bats_require_minimum_version 1.5.0
 
 setup() {
   # shellcheck source=scripts/lib/test-regression-guard.sh
@@ -139,7 +140,7 @@ SH
   printf 'broken\n' > state.txt # breaks the existing test without editing it
   git add -A
   git -c user.email=t@t -c user.name=T commit -q -m fix
-  run trg_scan_pass "$BASE"
+  run --separate-stderr trg_scan_pass "$BASE"
   [[ "$status" -eq 1 ]]
   [[ "${lines[0]}" == $'regression\t./suite.sh' ]]
   [[ "${lines[1]}" == "existing behaviour" ]]
@@ -153,7 +154,7 @@ SH
   : > new_test_marker
   git add -A
   git -c user.email=t@t -c user.name=T commit -q -m fix
-  run trg_scan_pass "$BASE"
+  run --separate-stderr trg_scan_pass "$BASE"
   [[ "$status" -eq 0 ]]
   [[ "${lines[0]}" == $'green\t./suite.sh' ]]
 
@@ -165,7 +166,7 @@ SH
   : > new_test_marker
   git add -A
   git -c user.email=t@t -c user.name=T commit -q -m fix2
-  run trg_scan_pass "$RED"
+  run --separate-stderr trg_scan_pass "$RED"
   [[ "$status" -eq 0 ]]
   [[ "${lines[0]}" == $'preexisting\t./suite.sh' ]]
 }
@@ -176,7 +177,7 @@ SH
   cd "$d"
   git init -q
   unset DEV_LEAD_TEST_CMD
-  run trg_scan_pass ""
+  run --separate-stderr trg_scan_pass ""
   [[ "$status" -eq 0 ]]
   [[ "${lines[0]}" == $'not-run\t' ]]
 }
@@ -226,7 +227,7 @@ OUT
 @test "trg_scan_pass: an unbaselinable base (unknown sha) is unbaselined and not blocked" {
   d="$BATS_TEST_TMPDIR/repo"; mkdir -p "$d"; cd "$d"
   git init -q; git -c user.email=t@t -c user.name=T commit -q --allow-empty -m i
-  DEV_LEAD_TEST_CMD="echo 'not ok 1 broken'; exit 1" run trg_scan_pass "0000000000000000000000000000000000000000"
+  DEV_LEAD_TEST_CMD="echo 'not ok 1 broken'; exit 1" run --separate-stderr trg_scan_pass "0000000000000000000000000000000000000000"
   [[ "${lines[0]}" == $'unbaselined\t'* ]]
   [[ "$status" -eq 0 ]]
 }
@@ -239,4 +240,52 @@ OUT
   [[ -n "$inst" && -n "$run" && "$inst" -lt "$run" ]]
   grep -q 'apt-get install -y bats' "$wf"
   grep -qF 'DEV_LEAD_TEST_CMD: ${{ vars.DEV_LEAD_TEST_CMD }}' "$wf"
+}
+
+# --- #2055: the scratch copy has a commit; the run log explains the verdict ----
+
+@test "_trg_run: a suite whose only test reads HEAD passes in the scratch copy (#2055)" {
+  d="$BATS_TEST_TMPDIR/headrepo"; mkdir -p "$d"; cd "$d"
+  git init -q
+  printf 'x\n' > f.txt
+  git add -A; git -c user.email=t@t -c user.name=T commit -q -m i
+  run _trg_run 'git rev-parse --verify HEAD && echo "ok 1 reads HEAD"'
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"ok 1 reads HEAD"* ]]
+  # the snapshot adds no remote and the working tree is clean in the copy
+  run _trg_run 'git remote; git status --porcelain; echo END'
+  [[ "$output" == "END" ]]
+}
+
+@test "_trg_run: the baseline copy has a commit too (#2055)" {
+  _mk_repo
+  cd "$R"
+  run _trg_run 'git rev-parse --verify HEAD >/dev/null && cat state.txt' "$BASE"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "ok" ]]
+}
+
+@test "trg_scan_pass: green logs the run's elapsed seconds and no baseline run (#2055)" {
+  _mk_repo
+  cd "$R"
+  run --separate-stderr trg_scan_pass "$BASE"
+  [[ "${lines[0]}" == $'green\t./suite.sh' ]]
+  [[ "$stderr" =~ result\ suite\ run\ took\ [0-9]+s ]]
+  [[ "$stderr" != *"baseline suite run"* ]]
+  [[ "$stderr" != *"failing test"* ]]
+}
+
+@test "trg_scan_pass: a red verdict logs failing names for result and baseline, capped at 20 (#2055)" {
+  _mk_repo
+  cd "$R"
+  export DEV_LEAD_TEST_CMD='for i in $(seq 1 25); do echo "not ok $i t$i"; done; exit 1'
+  run --separate-stderr trg_scan_pass "$BASE"
+  [[ "${lines[0]}" == $'preexisting\t'* ]]
+  [[ "$stderr" =~ result\ suite\ run\ took\ [0-9]+s ]]
+  [[ "$stderr" =~ baseline\ suite\ run\ took\ [0-9]+s ]]
+  [[ "$stderr" == *"result: 25 parsed/named failing test(s)"* ]]
+  [[ "$stderr" == *"baseline: 25 parsed/named failing test(s)"* ]]
+  [[ "$stderr" == *"  t1"* ]]
+  [[ "$(printf '%s\n' "$stderr" | grep -c '^  t')" -eq 40 ]]
+  [[ "$stderr" == *"and 5 more"* ]]
 }
