@@ -1,21 +1,24 @@
 #!/usr/bin/env bats
 # scripts/check-retry-payload-fields.sh (#2081) — fails when the dev-lead retry
-# sweep on main sends a client_payload field that scripts/dev-lead-intent.sh at
-# the channel pinned by dev-lead.yml's agent_ref does not read.
+# sweep sends a client_payload field that scripts/dev-lead-intent.sh at any
+# channel of the pinned major does not read.
+#
+# The check EXECUTES the sweep's dispatchers with gh stubbed (sent side) and
+# bash-parses the parser before collecting reads (read side), so these tests
+# include the shapes the earlier text-pattern scanner got wrong (#2085 review):
+# comments, punctuation inside quoted values, the gh -f form, sourced libs, and
+# a stale tag when the fetch fails.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 CHECK="$REPO_ROOT/scripts/check-retry-payload-fields.sh"
 
 setup() {
-  SANDBOX="$(mktemp -d)"
+  SANDBOX="$BATS_TEST_TMPDIR/repo"
   mkdir -p "$SANDBOX/.github/workflows" "$SANDBOX/scripts/lib"
   git -C "$SANDBOX" init -q
   git -C "$SANDBOX" config user.email t@example.com
   git -C "$SANDBOX" config user.name t
-}
-
-teardown() {
-  rm -rf "$SANDBOX"
+  unset CI GITHUB_ACTIONS
 }
 
 # write_stub <agent_ref>
@@ -29,172 +32,232 @@ jobs:
 EOF
 }
 
-# write_intent <field>... — an intent parser that reads each named field.
+# write_intent <field>... — an intent parser that reads each named field (and
+# always `checks`, which every write_sweep dispatcher sends).
 write_intent() {
   {
     echo '#!/usr/bin/env bash'
-    for f in "$@"; do
-      echo "x=\$(jq -r '.client_payload.${f} // empty' \"\$EVENT_PATH\")"
+    echo 'route() {'
+    for f in checks "$@"; do
+      echo "  x=\$(jq -r '.client_payload.${f} // empty' \"\$EVENT_PATH\")"
     done
+    echo '}'
   } > "$SANDBOX/scripts/dev-lead-intent.sh"
 }
 
-# write_sweep <field>... — a sweep that sends each named field in one payload.
+# write_sweep <field>... — a sweep with one jq-built dispatcher sending each field
+# (plus a nested checks[] array that must not be compared).
 write_sweep() {
   {
     echo '#!/usr/bin/env bash'
+    echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
     echo 'source "$SCRIPT_DIR/lib/helper.sh"'
-    echo "payload=\$(jq -n '{"
-    echo '  event_type: "dev-lead-reviews-retry",'
-    echo '  client_payload: {'
+    echo 'dispatch_one() {'
+    echo '  local repo="$1" n="$2"'
+    echo '  local payload'
+    echo "  payload=\$(jq -n --argjson n \"\$n\" '{"
+    echo '    event_type: "dev-lead-reviews-retry",'
+    echo '    client_payload: {'
     local f
-    for f in "$@"; do echo "    ${f}: \$${f},"; done
-    echo '    checks: [{name: $name, conclusion: "failure",'
-    echo '              id: $check_run_id}]'
-    echo '  }'
-    echo "}')"
+    for f in "$@"; do echo "      ${f}: \$n,"; done
+    echo '      checks: [{name: "x", nested_only: 1}]'
+    echo '    }'
+    echo "  }')"
+    echo '  echo "$payload" | gh api --method POST "repos/${repo}/dispatches" --input - >/dev/null'
+    echo '}'
   } > "$SANDBOX/scripts/dev-lead-retry.sh"
   [ -f "$SANDBOX/scripts/lib/helper.sh" ] || echo '#!/usr/bin/env bash' > "$SANDBOX/scripts/lib/helper.sh"
 }
 
-# tag_channel <tag> — commit the tree and point the channel tag at it.
-tag_channel() {
+# tag_channels <tag>... — commit the tree and point each channel tag at it.
+tag_channels() {
   git -C "$SANDBOX" add -A
   git -C "$SANDBOX" commit -qm "release" --allow-empty
-  git -C "$SANDBOX" tag -f "$1" >/dev/null
+  local t
+  for t in "$@"; do git -C "$SANDBOX" tag -f "$t" >/dev/null; done
 }
 
-@test "passes when every field the sweep sends is read by the pinned parser" {
+ALL=(dev-lead/v7-next dev-lead/v7-ring0 dev-lead/v7-ring1 dev-lead/v7-stable)
+
+@test "passes when every channel reads every field the sweep sends" {
   write_stub dev-lead/v7-stable
   write_intent pr_number head_sha checks
   write_sweep pr_number head_sha
-  tag_channel dev-lead/v7-stable
+  tag_channels "${ALL[@]}"
   run bash "$CHECK" "$SANDBOX"
   [ "$status" -eq 0 ]
+  [[ "$output" == *"OK:"*"dev-lead/v7-stable"* ]]
 }
 
-# The #2050 defect: main's parser learns the field, the sweep sends it, and the
-# pinned channel still points at the old parser.
-@test "fails when the sweep sends a field only main's parser reads" {
+# The #2050 / #2086 skew: the newer channels learned the field, stable did not.
+@test "fails when an older channel's parser does not read a sent field" {
   write_stub dev-lead/v7-stable
-  write_intent pr_number head_sha checks
+  write_intent pr_number head_sha
   write_sweep pr_number head_sha
-  tag_channel dev-lead/v7-stable
-  write_intent pr_number head_sha checks comment_node_id
+  tag_channels dev-lead/v7-ring1 dev-lead/v7-stable
+  write_intent pr_number head_sha comment_node_id
   write_sweep pr_number head_sha comment_node_id
+  tag_channels dev-lead/v7-next dev-lead/v7-ring0
   run bash "$CHECK" "$SANDBOX"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"client_payload.comment_node_id"* ]]
-  [[ "$output" == *"scripts/dev-lead-retry.sh:"* ]]
-  [[ "$output" == *"dev-lead/v7-stable"* ]]
+  [[ "$output" == *"client_payload.comment_node_id (sent by dispatch_one) is not read by scripts/dev-lead-intent.sh at dev-lead/v7-ring1"* ]]
+  [[ "$output" == *"at dev-lead/v7-stable"* ]]
+  [[ "$output" != *"at dev-lead/v7-next"* ]]
   [[ "$output" != *"client_payload.pr_number"* ]]
 }
 
-@test "checks the libs the sweep sources, not just the sweep itself" {
+@test "a parser COMMENT naming a field is not a read (#2085 review)" {
   write_stub dev-lead/v7-stable
-  write_intent pr_number checks
+  write_intent pr_number
+  printf '%s\n' '# TODO: read .client_payload.comment_node_id here' \
+    'route2() { :; }  # client_payload.comment_node_id is not read yet' >> "$SANDBOX/scripts/dev-lead-intent.sh"
+  write_sweep pr_number comment_node_id
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.comment_node_id"* ]]
+}
+
+@test "punctuation inside quoted payload values does not hide or invent fields (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number note
+  write_sweep pr_number
+  # A dispatcher whose string values contain commas, colons, braces and brackets.
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF'
+dispatch_tricky() {
+  jq -n '{event_type: "x", client_payload: {note: "a, fake: {b: [c]}, d", pr_number: 1, after: "]}"}}' \
+    | gh api --method POST "repos/$1/dispatches" --input -
+}
+EOF
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.after (sent by dispatch_tricky)"* ]]
+  [[ "$output" != *"client_payload.fake"* ]]
+  [[ "$output" != *"client_payload.d "* ]]
+}
+
+@test "captures the gh -f client_payload[field]= form" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF'
+dispatch_fields() {
+  gh api --method POST "repos/$1/dispatches" -f event_type=x -f "client_payload[pr_number]=$2" -F "client_payload[other_field]=1"
+}
+EOF
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.other_field (sent by dispatch_fields)"* ]]
+  [[ "$output" != *"client_payload.pr_number"* ]]
+}
+
+@test "runs dispatchers defined in libs the sweep sources" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
   write_sweep pr_number
   cat > "$SANDBOX/scripts/lib/helper.sh" <<'EOF'
 #!/usr/bin/env bash
-payload=$(jq -n '{event_type: "x", client_payload: {pr_number: $p, new_field: $n}}')
+dispatch_from_lib() {
+  jq -n '{event_type: "x", client_payload: {pr_number: 1, lib_field: 2}}' \
+    | gh api --method POST "repos/$1/dispatches" --input -
+}
 EOF
-  tag_channel dev-lead/v7-stable
+  tag_channels "${ALL[@]}"
   run bash "$CHECK" "$SANDBOX"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"client_payload.new_field"* ]]
-  [[ "$output" == *"scripts/lib/helper.sh:2"* ]]
+  [[ "$output" == *"client_payload.lib_field (sent by dispatch_from_lib)"* ]]
 }
 
-@test "catches the gh -f client_payload[field]= form" {
+@test "a read in a lib the parser sources counts as read" {
   write_stub dev-lead/v7-stable
-  write_intent pr_number checks
-  write_sweep pr_number
-  echo 'gh api x -f "client_payload[other_field]=1"' >> "$SANDBOX/scripts/dev-lead-retry.sh"
-  tag_channel dev-lead/v7-stable
-  run bash "$CHECK" "$SANDBOX"
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"client_payload.other_field"* ]]
-}
-
-# Nested keys (checks[].name, checks[].id) are read by fix-ci, not the intent
-# parser; only top-level client_payload keys are compared.
-@test "ignores keys nested inside a top-level field" {
-  write_stub dev-lead/v7-stable
-  write_intent pr_number checks
-  write_sweep pr_number
-  tag_channel dev-lead/v7-stable
+  write_intent pr_number
+  printf '%s\n' 'source "$(dirname "$0")/lib/intent-extra.sh"' >> "$SANDBOX/scripts/dev-lead-intent.sh"
+  printf '%s\n' '#!/usr/bin/env bash' "extra() { jq -r '.client_payload.extra_field' \"\$EVENT_PATH\"; }" \
+    > "$SANDBOX/scripts/lib/intent-extra.sh"
+  write_sweep pr_number extra_field
+  tag_channels "${ALL[@]}"
   run bash "$CHECK" "$SANDBOX"
   [ "$status" -eq 0 ]
-  [[ "$output" != *"client_payload.name"* ]]
-  [[ "$output" != *"client_payload.id"* ]]
 }
 
-@test "allowlisted informational fields (repo, attempt) do not fail the check" {
+@test "nested keys and informational fields are not compared" {
   write_stub dev-lead/v7-stable
   write_intent pr_number checks
   write_sweep pr_number repo attempt
-  tag_channel dev-lead/v7-stable
+  tag_channels "${ALL[@]}"
   run bash "$CHECK" "$SANDBOX"
   [ "$status" -eq 0 ]
+  [[ "$output" != *"nested_only"* ]]
 }
 
-# AC2: the channel comes from the stub, so a major bump needs no edit here.
-@test "follows the stub's agent_ref to another major and channel" {
-  write_intent pr_number checks
-  write_sweep pr_number
-  tag_channel dev-lead/v7-stable
-  write_intent pr_number checks comment_node_id
-  write_sweep pr_number comment_node_id
-  write_stub dev-lead/v8-next
-  tag_channel dev-lead/v8-next
-  run bash "$CHECK" "$SANDBOX"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"dev-lead/v8-next"* ]]
-}
-
-@test "exits 2 when the stub has no agent_ref" {
-  echo 'jobs: {}' > "$SANDBOX/.github/workflows/dev-lead.yml"
+@test "a dispatcher that sends nothing for the probe call is a setup error, never a pass" {
+  write_stub dev-lead/v7-stable
   write_intent pr_number
   write_sweep pr_number
-  tag_channel dev-lead/v7-stable
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF'
+dispatch_guarded() {
+  [[ "$1" == */* ]] || return 0
+  jq -n '{client_payload: {secret_field: 1}}' | gh api --method POST "repos/$1/dispatches" --input -
+}
+EOF
+  tag_channels "${ALL[@]}"
   run bash "$CHECK" "$SANDBOX"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"agent_ref"* ]]
+  [[ "$output" == *"dispatch_guarded"* ]]
 }
 
-@test "exits 2 when agent_ref is not a dev-lead channel tag" {
+@test "the pinned channel must resolve; a missing other channel is skipped with a warning" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  tag_channels dev-lead/v7-next
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"the pinned channel dev-lead/v7-stable does not resolve"* ]]
+
+  tag_channels dev-lead/v7-stable
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dev-lead/v7-ring0 does not exist; skipping it"* ]]
+}
+
+@test "in CI, an unfetchable channel tag fails closed instead of using a stale local tag (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  tag_channels "${ALL[@]}"
+  git -C "$SANDBOX" remote add origin "$BATS_TEST_TMPDIR/no-such-remote"
+  CI=true run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"could not fetch dev-lead/v7-"* ]]
+}
+
+@test "a malformed agent_ref or an unparseable parser is a setup error" {
   write_stub main
   write_intent pr_number
   write_sweep pr_number
-  tag_channel dev-lead/v7-stable
+  tag_channels "${ALL[@]}"
   run bash "$CHECK" "$SANDBOX"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"main"* ]]
-}
+  [[ "$output" == *"is not a dev-lead channel tag"* ]]
 
-@test "exits 2 when the channel tag cannot be resolved" {
-  write_stub dev-lead/v9-stable
-  write_intent pr_number
-  write_sweep pr_number
-  tag_channel dev-lead/v7-stable
-  run bash "$CHECK" "$SANDBOX"
-  [ "$status" -eq 2 ]
-  [[ "$output" == *"dev-lead/v9-stable"* ]]
-}
-
-@test "exits 2 when the sweep sends no client_payload fields at all" {
   write_stub dev-lead/v7-stable
-  write_intent pr_number
-  echo '#!/usr/bin/env bash' > "$SANDBOX/scripts/dev-lead-retry.sh"
-  tag_channel dev-lead/v7-stable
+  echo 'route3() { if then; }' >> "$SANDBOX/scripts/dev-lead-intent.sh"
+  tag_channels "${ALL[@]}"
   run bash "$CHECK" "$SANDBOX"
   [ "$status" -eq 2 ]
+  [[ "$output" == *"cannot parse scripts/dev-lead-intent.sh"* ]]
 }
 
-@test "lint.yml runs the check" {
-  grep -q 'bash scripts/check-retry-payload-fields.sh' "$REPO_ROOT/.github/workflows/lint.yml"
-}
-
-@test "AGENTS.md ordering rule points at the check" {
-  grep -q 'check-retry-payload-fields.sh' "$REPO_ROOT/AGENTS.md"
+@test "the real sweep's dispatchers all produce a payload the check can read" {
+  # Hermetic: only the sent side of the real repo (no tags, no network).
+  run bash -c 'source <(sed -n "/^sent_fields() {/,/^}/p" "$1"); ROOT="$2"; SWEEP=scripts/dev-lead-retry.sh; sent_fields' \
+    _ "$CHECK" "$REPO_ROOT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"NOPAYLOAD"* ]]
+  [[ "$output" != *"SOURCEFAIL"* ]]
+  [[ "$output" == *"dispatch_bot_comment_retry comment_node_id"* ]]
+  [[ "$output" == *"dispatch_reviews_retry intent_type"* ]]
 }

@@ -1,31 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # scripts/check-retry-payload-fields.sh (#2081) — fail when the dev-lead retry
-# sweep sends a client_payload field that the pinned channel's intent parser
+# sweep sends a client_payload field that the intent parser at a dev-lead channel
 # does not read.
 #
 # The sweep (scripts/dev-lead-retry.sh and the libs it sources) dispatches
 # repository_dispatch events whose client_payload is parsed by
-# scripts/dev-lead-intent.sh at the channel tag dev-lead.yml pins via agent_ref,
-# not at main. A field the sweep on main sends but the pinned parser ignores is
-# dropped, and the dispatched run fails or misroutes (#2050: comment_node_id
-# broke every fix-bot-comment retry). Order: harness support reaches the pinned
-# channel first, the sweep change merges second (AGENTS.md "Caller-stub input
-# forwarding across channel pins").
+# scripts/dev-lead-intent.sh in the TARGET repo, at whatever channel that repo
+# pins. Since #2083 the sweep itself runs at this repo's pinned channel, so here
+# the sweep and the parser ship together — but a target repo pinned to an older
+# channel still parses the sweep's dispatches with an older parser (#2086). A
+# field that parser ignores is dropped, and the dispatched run fails or misroutes
+# (#2050: comment_node_id broke every fix-bot-comment retry). So a field may be
+# sent only once the parser at EVERY channel of the pinned major reads it — the
+# AGENTS.md order "harness support reaches the channel first, the sweep change
+# merges second".
 #
-# The channel is read from the stub's agent_ref, so a major bump needs no edit
-# here. Only top-level client_payload keys are compared; nested keys (e.g.
+# How the two sides are read (#2085 review: text patterns kept missing cases —
+# comments read as fields, brackets inside strings, a stale tag on fetch failure):
+#   sent — not scanned: every function in the sweep whose body POSTs to
+#          `/dispatches` is EXECUTED with `gh` stubbed to capture the request, and
+#          the payload's top-level `client_payload` keys are read with jq. Both the
+#          `--input -` JSON form and the `-f/-F client_payload[key]=` form are
+#          captured. A dispatcher that sends nothing for the probe arguments is a
+#          setup error, never a silent pass.
+#   read — the intent parser (and the libs it sources) at each channel tag is
+#          first parsed by bash (wrapped in a function and printed back with
+#          `declare -f`), which drops shell comments and keeps strings and
+#          heredocs verbatim; `client_payload.<key>` reads are then collected from
+#          that text. A `#` comment INSIDE a jq program string is not shell syntax
+#          and survives — keep field references out of jq comments.
+#
+# Only top-level client_payload keys are compared; nested keys (e.g.
 # checks[].details_url) are consumed downstream of the parser.
 #
 # Usage: check-retry-payload-fields.sh [root]   (root defaults to the repo root)
-# Exit:  0 every sent field is read · 1 one or more unread fields (each printed)
-#        2 setup error (agent_ref missing/malformed, tag unresolvable, nothing
-#          parsed), so the sweep cannot be certified
+# Exit:  0 every sent field is read at every channel · 1 one or more unread fields
+#        (each printed) · 2 setup error (agent_ref missing/malformed, the pinned
+#        tag unresolvable, a channel tag unfetchable in CI, a dispatcher that sent
+#        nothing, nothing parsed), so the sweep cannot be certified
 
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ROOT="$(cd "$ROOT" && pwd)"
 STUB=".github/workflows/dev-lead.yml"
 SWEEP="scripts/dev-lead-retry.sh"
 PARSER="scripts/dev-lead-intent.sh"
+CHANNELS=(next ring0 ring1 stable)
 
 # Fields the sweep sends for logs and audit only; no harness code reads them, at
 # any channel. Adding a field here asserts that nothing downstream needs it.
@@ -34,94 +54,147 @@ PARSER="scripts/dev-lead-intent.sh"
 INFORMATIONAL_FIELDS=(repo attempt)
 
 die() { echo "check-retry-payload-fields: $*" >&2; exit 2; }
+warn() { echo "check-retry-payload-fields: warning: $*" >&2; }
+in_ci() { [ "${CI:-}" = "true" ] || [ "${GITHUB_ACTIONS:-}" = "true" ]; }
 
 [ -f "$ROOT/$STUB" ] || die "$STUB not found under $ROOT"
-channel=$(sed -n 's/^[[:space:]]*agent_ref:[[:space:]]*["'\'']\{0,1\}\([^"'\''[:space:]#]*\).*/\1/p' "$ROOT/$STUB" | head -n1)
-[ -n "$channel" ] || die "no agent_ref in $STUB"
-[[ "$channel" =~ ^dev-lead/v[0-9]+-(next|ring0|ring1|stable)$ ]] \
-  || die "agent_ref '$channel' in $STUB is not a dev-lead channel tag"
+[ -f "$ROOT/$SWEEP" ] || die "$SWEEP not found under $ROOT"
+pinned=$(sed -n 's/^[[:space:]]*agent_ref:[[:space:]]*["'\'']\{0,1\}\([^"'\''[:space:]#]*\).*/\1/p' "$ROOT/$STUB" | head -n1)
+[ -n "$pinned" ] || die "no agent_ref in $STUB"
+[[ "$pinned" =~ ^dev-lead/(v[0-9]+)-(next|ring0|ring1|stable)$ ]] \
+  || die "agent_ref '$pinned' in $STUB is not a dev-lead channel tag"
+major="${BASH_REMATCH[1]}"
 
-# CI checkouts carry no tags, and a local tag may be stale after a promote, so
-# refresh from origin when there is one. A failed fetch falls back to the local
-# tag; a missing tag is a setup error.
-if git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
-  git -C "$ROOT" fetch --quiet --force --depth=1 origin "refs/tags/${channel}:refs/tags/${channel}" 2>/dev/null \
-    || echo "check-retry-payload-fields: warning: could not fetch ${channel} from origin; using the local tag" >&2
-fi
-parser_src=$(git -C "$ROOT" show "refs/tags/${channel}:${PARSER}" 2>/dev/null) \
-  || die "cannot read ${PARSER} at ${channel}"
+# ── sent: execute each dispatcher with gh stubbed ────────────────────────────
+# Prints "<function> <field>" per top-level client_payload key, or
+# "NOPAYLOAD <function>" when a dispatcher sent nothing.
+sent_fields() {
+  local capture
+  capture=$(mktemp)
+  # shellcheck disable=SC2016  # the inner script expands its own variables
+  CAPTURE="$capture" SWEEP_PATH="$ROOT/$SWEEP" bash --noprofile --norc -c '
+    set +e
+    export DRY_RUN=false DISPATCH_DELAY_SEC=0
+    # shellcheck source=/dev/null
+    source "$SWEEP_PATH" >/dev/null 2>&1 || { echo "SOURCEFAIL"; exit 0; }
+    set +e +u
+    gh() {
+      local a prev="" is_dispatch=false from_stdin=false
+      local -a kv=()
+      for a in "$@"; do
+        case "$a" in */dispatches) is_dispatch=true ;; esac
+        if [ "$prev" = "--input" ] && [ "$a" = "-" ]; then from_stdin=true; fi
+        case "$prev" in
+          -f|-F|--field|--raw-field) kv+=("$a") ;;
+        esac
+        prev="$a"
+      done
+      if ! $is_dispatch; then echo "{}"; return 0; fi
+      if $from_stdin; then cat >"$CAPTURE"; return 0; fi
+      local pair keys="[]"
+      for pair in "${kv[@]}"; do
+        case "$pair" in
+          client_payload\[*\]=*)
+            pair="${pair#client_payload[}"
+            keys=$(jq -c --arg k "${pair%%]=*}" ". + [\$k]" <<<"$keys") ;;
+        esac
+      done
+      jq -n --argjson keys "$keys" "{client_payload: (\$keys | map({(.): 1}) | add // {})}" >"$CAPTURE"
+    }
+    for fn in $(declare -F | awk "{print \$3}"); do
+      [ "$fn" = gh ] && continue
+      declare -f "$fn" | grep -q "/dispatches" || continue
+      : >"$CAPTURE"
+      "$fn" 1 1 1 1 1 1 </dev/null >/dev/null 2>&1
+      if [ ! -s "$CAPTURE" ]; then echo "NOPAYLOAD $fn"; continue; fi
+      jq -r --arg fn "$fn" ".client_payload // {} | keys[] | \"\(\$fn) \(.)\"" "$CAPTURE" 2>/dev/null \
+        || echo "NOPAYLOAD $fn"
+    done
+  '
+  rm -f "$capture"
+}
 
-# The sweep plus every lib it sources (transitively), relative to ROOT.
-files=()
-queue=("$SWEEP")
-while [ "${#queue[@]}" -gt 0 ]; do
-  f="${queue[0]}"; queue=("${queue[@]:1}")
-  case " ${files[*]-} " in *" $f "*) continue ;; esac
-  [ -f "$ROOT/$f" ] || die "$f not found under $ROOT"
-  files+=("$f")
+# ── read: bash-parse a script, then collect client_payload.<key> reads ───────
+# parse_script <source-text> — print the script as bash re-emits it inside a
+# function: comments dropped, code and string literals kept. Fails on a syntax
+# error (so an unparseable parser is a setup error, not "reads nothing").
+parse_script() {
+  # shellcheck disable=SC2016
+  bash --noprofile --norc -c 'eval "__check_retry_payload_parsed() {
+$1
+}" && declare -f __check_retry_payload_parsed' _ "$1"
+}
+
+# fields_read_at <tag> — the client_payload keys the parser (and the libs it
+# sources) read at <tag>, one per line.
+fields_read_at() {
+  local tag="$1" src parsed libs lib lib_src out=""
+  src=$(git -C "$ROOT" show "${tag}:${PARSER}" 2>/dev/null) || die "cannot read ${PARSER} at ${tag}"
+  parsed=$(parse_script "$src") || die "cannot parse ${PARSER} at ${tag}"
+  out="$parsed"
+  libs=$(grep -oE '/lib/[A-Za-z0-9_.-]+\.sh' <<<"$parsed" | sort -u || true)
   while IFS= read -r lib; do
-    queue+=("scripts/$lib")
-  done < <(sed -n 's/^[[:space:]]*\(source\|\.\)[[:space:]]\{1,\}"\$SCRIPT_DIR\/\([^"]*\.sh\)".*/\2/p' "$ROOT/$f")
+    [ -n "$lib" ] || continue
+    lib_src=$(git -C "$ROOT" show "${tag}:scripts${lib}" 2>/dev/null) || continue
+    out+=$'\n'$(parse_script "$lib_src") || die "cannot parse scripts${lib} at ${tag}"
+  done <<<"$libs"
+  grep -oE 'client_payload\.[A-Za-z_][A-Za-z0-9_]*' <<<"$out" | sed 's/^client_payload\.//' | sort -u || true
+}
+
+# ── channel tags ─────────────────────────────────────────────────────────────
+# CI checkouts carry no tags and a local tag may be stale after a promote, so each
+# channel tag is refreshed from origin. In CI a failed fetch is a setup error
+# (never a stale pass); locally it falls back to the local tag with a warning.
+have_origin=false
+git -C "$ROOT" remote get-url origin >/dev/null 2>&1 && have_origin=true
+tags=()
+for ch in "${CHANNELS[@]}"; do
+  tag="dev-lead/${major}-${ch}"
+  gone_upstream=false
+  if $have_origin && ! git -C "$ROOT" fetch --quiet --force --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}" 2>/dev/null; then
+    # Tell "origin has no such tag" (ls-remote exit 2) apart from "origin could
+    # not be reached / the fetch broke" — only the latter risks a stale tag.
+    rc=0
+    git -C "$ROOT" ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      gone_upstream=true   # origin has no such tag: never trust a local copy
+    else
+      in_ci && die "could not fetch ${tag} from origin"
+      warn "could not fetch ${tag} from origin; using the local tag"
+    fi
+  fi
+  if ! $gone_upstream && git -C "$ROOT" rev-parse --verify --quiet "refs/tags/${tag}^{commit}" >/dev/null; then
+    tags+=("$tag")
+  elif [ "$tag" = "$pinned" ]; then
+    die "the pinned channel ${tag} does not resolve"
+  else
+    warn "${tag} does not exist; skipping it"
+  fi
 done
 
-# Emit "<file>:<line> <field>" for every top-level key the sweep sends, from jq
-# object literals (`client_payload: { key: …, … }`, keys at depth 1 only) and
-# the gh -f form (`client_payload[key]=`).
-sent=$(
-  for f in "${files[@]}"; do
-    awk -v file="$f" '
-      {
-        line = $0
-        while (match(line, /client_payload\[[A-Za-z_][A-Za-z0-9_]*\]/)) {
-          k = substr(line, RSTART + 15, RLENGTH - 16)
-          print file ":" NR " " k
-          line = substr(line, RSTART + RLENGTH)
-        }
-        i = 1
-        if (!inblk) {
-          if (!match($0, /client_payload[[:space:]]*:[[:space:]]*\{/)) next
-          inblk = 1; depth = 1; expect = 1; tok = ""
-          i = RSTART + RLENGTH
-        }
-        n = length($0)
-        for (; i <= n && inblk; i++) {
-          c = substr($0, i, 1)
-          if (c == "{" || c == "[" || c == "(") { depth++; tok = ""; expect = 0; continue }
-          if (c == "}" || c == "]" || c == ")") {
-            if (depth == 1 && expect && tok != "") print file ":" NR " " tok
-            depth--; tok = ""
-            if (depth == 0) inblk = 0
-            continue
-          }
-          if (depth != 1) continue
-          if (c == ",") {
-            if (expect && tok != "") print file ":" NR " " tok
-            expect = 1; tok = ""; continue
-          }
-          if (!expect) continue
-          if (c == ":") { if (tok != "") print file ":" NR " " tok; expect = 0; tok = ""; continue }
-          if (c ~ /[A-Za-z0-9_]/) { tok = tok c; continue }
-          if (c == "$" || c == "\"" || c ~ /[[:space:]]/) continue
-          expect = 0; tok = ""
-        }
-      }' "$ROOT/$f"
-  done
-)
-[ -n "$sent" ] || die "no client_payload fields found in ${files[*]}; the parser may need updating"
-
-read_fields=$(grep -oE 'client_payload\.[A-Za-z_][A-Za-z0-9_]*' <<<"$parser_src" | sed 's/^client_payload\.//' | sort -u || true)
+# ── compare ──────────────────────────────────────────────────────────────────
+sent=$(sent_fields)
+grep -q '^SOURCEFAIL$' <<<"$sent" && die "sourcing ${SWEEP} failed"
+if nopayload=$(grep '^NOPAYLOAD ' <<<"$sent"); then
+  die "dispatcher(s) sent no client_payload for the probe call, so their fields cannot be certified: $(cut -d' ' -f2 <<<"$nopayload" | tr '\n' ' ')"
+fi
+[ -n "$sent" ] || die "no dispatcher in ${SWEEP} sent a client_payload; the check may need updating"
 
 missing=0
-while read -r loc field; do
-  case " ${INFORMATIONAL_FIELDS[*]} " in *" $field "*) continue ;; esac
-  if ! grep -qxF "$field" <<<"$read_fields"; then
-    echo "client_payload.${field} (sent at ${loc}) is not read by ${PARSER} at ${channel}"
-    missing=1
-  fi
-done <<<"$sent"
+for tag in "${tags[@]}"; do
+  read_fields=$(fields_read_at "$tag")
+  [ -n "$read_fields" ] || die "${PARSER} at ${tag} reads no client_payload fields; the check may need updating"
+  while read -r fn field; do
+    case " ${INFORMATIONAL_FIELDS[*]} " in *" $field "*) continue ;; esac
+    if ! grep -qxF "$field" <<<"$read_fields"; then
+      echo "client_payload.${field} (sent by ${fn}) is not read by ${PARSER} at ${tag}"
+      missing=1
+    fi
+  done <<<"$sent"
+done
 
 if [ "$missing" -ne 0 ]; then
-  echo "Land the parser change and promote ${channel} before the sweep sends these fields (AGENTS.md \"Caller-stub input forwarding across channel pins\")."
+  echo "Land the parser change and promote it to every channel above before the sweep sends these fields (AGENTS.md \"Caller-stub input forwarding across channel pins\")."
   exit 1
 fi
-echo "OK: every client_payload field the sweep sends is read by ${PARSER} at ${channel}"
+echo "OK: every client_payload field the sweep sends is read by ${PARSER} at ${tags[*]}"

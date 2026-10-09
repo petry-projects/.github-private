@@ -60,10 +60,12 @@ jobs:
       - name: check model pins
         run: bash scripts/check-model-pins.sh
 
-  # The dev-lead retry sweep runs from main but its dispatches are parsed by
-  # scripts/dev-lead-intent.sh at the channel dev-lead.yml pins via agent_ref.
-  # Fail when the sweep sends a client_payload field that parser does not read
-  # (#2081, the #2050 skew). The script fetches the channel tag itself.
+  # The dev-lead retry sweep's dispatches are parsed by scripts/dev-lead-intent.sh
+  # in each TARGET repo, at whatever channel that repo pins (#2086). Fail when
+  # the sweep sends a client_payload field the parser at any channel of the
+  # pinned major (next/ring0/ring1/stable) does not read (#2081, the #2050
+  # skew). The script fetches the channel tags itself and fails closed if it
+  # cannot.
   retry-payload-fields:
     runs-on: ubuntu-latest
     timeout-minutes: 5
