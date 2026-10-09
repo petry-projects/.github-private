@@ -237,6 +237,7 @@ jobs:
           args=(--candidate "$CANDIDATE_MODEL_INPUT" --incumbent "$INCUMBENT_MODEL_INPUT")
           [ -n "$CANARY_SINCE_INPUT" ] && args+=(--since "$CANARY_SINCE_INPUT")
           [ -n "$BASELINE_DAYS_INPUT" ] && args+=(--baseline-days "$BASELINE_DAYS_INPUT")
+          set -f
           for kv in $CANARY_THRESHOLDS_INPUT; do
             case "$kv" in
               cost-bar=*|cache-bar=*|latency-bar=*|min-prs=*|min-invocations=*)
@@ -244,6 +245,7 @@ jobs:
               *) echo "canary_thresholds: unsupported entry '${kv}'." >&2; exit 64 ;;
             esac
           done
+          set +f
           # Exit 1 (FAIL) / 2 (INSUFFICIENT) are valid go/no-go verdicts, not step
           # failures — the rendered table already carries the signal. Any OTHER
           # non-zero exit (bad args, missing tool, failed artifact collection) is a
