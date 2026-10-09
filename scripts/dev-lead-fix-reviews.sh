@@ -890,22 +890,22 @@ resolve_addressed_bot_threads() {
         continue
       fi
       # Reject if a newer required disposition exists (a REQUIRED overrides NO-CHANGE).
-      local req_rc
-      acv_latest_maintainer_disposition "$fresh_comments" "__no-such-account__" >/dev/null && req_rc=0 || req_rc=$?
-      if [ "${req_rc:-0}" -ne 1 ]; then
+      # Only a REQUIRED disposition at/after the no-change verdict blocks; affirmative
+      # no-change comments ("no change required") are excluded from the scan.
+      local req_rc req_ts
+      req_ts=$(acv_latest_maintainer_disposition "$fresh_comments" "__no-such-account__" "skip-nochange") && req_rc=0 || req_rc=$?
+      if [ "${req_rc:-0}" -eq 2 ] || { [ "${req_rc:-0}" -eq 0 ] && [[ ! "$req_ts" < "$nochange_disposition" ]]; }; then
         echo "::notice::skipping thread ${id} — a required maintainer disposition blocks the no-change verdict; leaving unresolved (#2079)"
         continue
       fi
-      # Reject if a bot finding exists (the no-change verdict doesn't override open bot findings).
-      # Check the first comment (the originating bot finding) to ensure it exists and is from a bot.
-      local origin_is_bot
-      origin_is_bot=$(printf '%s' "$fresh_comments" | jq -r \
-        '.[0].author as $a | if (($a.__typename // "") == "Bot") or (($a.login // "") | endswith("[bot]"))
-         then "yes" else "no" end' 2>/dev/null || echo "no")
-      # If the origin is still a bot finding, we cannot resolve on a no-change disposition alone.
-      # The maintainer said "no changes needed" but the bot is still reporting a finding.
-      if [ "$origin_is_bot" = "yes" ]; then
-        echo "::notice::skipping thread ${id} — the originating bot finding is still present; a no-change disposition alone cannot resolve; leaving unresolved"
+      # Reject if any bot comment postdates the no-change verdict (a newer bot finding
+      # overrides it). A bot comment with no createdAt cannot be ordered -> fail closed.
+      local newer_bot
+      newer_bot=$(printf '%s' "$fresh_comments" | jq -r --arg t "$nochange_disposition" \
+        'map(select(((.author.__typename // "") == "Bot" or ((.author.login // "") | endswith("[bot]")))
+                    and (((.createdAt // "") == "") or (.createdAt > $t)))) | length' 2>/dev/null || echo "1")
+      if [ "$newer_bot" != "0" ]; then
+        echo "::notice::skipping thread ${id} — a bot comment postdates the no-change disposition; leaving unresolved (#2079)"
         continue
       fi
       if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \

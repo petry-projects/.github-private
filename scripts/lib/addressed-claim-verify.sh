@@ -356,7 +356,7 @@ _acv_intersects() {
 #                                                           fail closed, leave open)
 #   Pure — no gh/git/network.
 acv_latest_maintainer_disposition() {
-  local comments_json="${1:-}" bot_user="${2:-}"
+  local comments_json="${1:-}" bot_user="${2:-}" skip_nochange="${3:-}"
   local bot_user_stripped="${bot_user%\[bot\]}"
 
   # Nothing to scan -> no disposition. An empty/invalid array is treated as "none"
@@ -386,6 +386,14 @@ acv_latest_maintainer_disposition() {
     review_thread_is_agent_authored "$body" && continue
     # Does the marker-less human comment assert a required disposition?
     [[ "${body^^}" =~ $_ACV_DISPOSITION_RE_UPPER ]] || continue
+    # Optional (#2079): "no change required" contains REQUIRED; when the caller is
+    # evaluating a no-change verdict, an affirmative no-change comment is not itself a
+    # required disposition.
+    if [[ "$skip_nochange" == "skip-nochange" ]] \
+       && [[ "${body^^}" =~ $_ACV_NOCHANGE_RE_UPPER ]] \
+       && ! [[ "${body^^}" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]]; then
+      continue
+    fi
     # A disposition with no parseable timestamp cannot be ordered against the fix ->
     # fail closed.
     if [[ -z "$created" ]] || ! _acv_is_iso8601 "$created"; then

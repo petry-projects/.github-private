@@ -195,6 +195,21 @@ setup() {
   [[ "$output" == "unparseable" ]]
 }
 
+@test "acv_latest_maintainer_disposition: skip-nochange ignores an affirmative 'no change required' (#2079)" {
+  local comments='[{"author":{"login":"m","__typename":"User"},"body":"This is a false positive, no change required.","createdAt":"2026-09-01T00:00:00Z"}]'
+  run acv_latest_maintainer_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  run acv_latest_maintainer_disposition "$comments" "donpetry-bot" "skip-nochange"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_maintainer_disposition: skip-nochange still counts a real REQUIRED comment" {
+  local comments='[{"author":{"login":"m","__typename":"User"},"body":"Required before merge.","createdAt":"2026-09-03T00:00:00Z"}]'
+  run acv_latest_maintainer_disposition "$comments" "donpetry-bot" "skip-nochange"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-03T00:00:00Z" ]]
+}
+
 # ---------------------------------------------------------------------------
 # acv_latest_nochange_disposition — the "no change needed" counterpart (#1743, #2079)
 # The mirror of acv_latest_maintainer_disposition: a marker-less human maintainer
