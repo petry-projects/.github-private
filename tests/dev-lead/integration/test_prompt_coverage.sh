@@ -113,7 +113,7 @@ done
 # so the prompts identify bots by author.__typename == "Bot". Every reviewThreads
 # query that feeds OPEN_THREADS_JSON must therefore select __typename — both the
 # fix-reviews build AND the review-changes build (the latter was missed). Both
-# builds now share the paginated helper lib/open-review-threads.sh (#2046), so the
+# builds now share the paginated helper lib/open-review-threads.sh (#2056), so the
 # query lives there; the driver is still scanned in case a build is inlined again.
 
 echo ""
