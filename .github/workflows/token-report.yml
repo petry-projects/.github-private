@@ -66,12 +66,16 @@ permissions:
   contents: read
   issues: write
 
+# A canary dispatch gets its own group so it can neither cancel nor be cancelled
+# by the scheduled org-wide report.
 concurrency:
-  group: token-report-${{ inputs.org || 'petry-projects' }}
+  group: token-report-${{ inputs.org || 'petry-projects' }}${{ inputs.run_canary && '-canary' || '' }}
   cancel-in-progress: true
 
 jobs:
   report:
+    # A canary dispatch runs only the canary job, not the org-wide report.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_canary) }}
     runs-on: ubuntu-latest
     # 60m (was 30m, #954) is a safety margin; the real fix is the bounded-parallel,
     # per-download-timeout collection in scripts/token_report.sh.
@@ -198,6 +202,11 @@ jobs:
   # live in scripts/canary_report.sh (unit-tested in tests/canary_report.bats).
   canary:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_canary }}
+    # Least privilege: this job only reads this repo's own token-usage artifacts, so
+    # the job token with actions: read is enough. No personal PAT, no issues: write.
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -206,11 +215,11 @@ jobs:
         with:
           repository: petry-projects/.github-private
           ref: main
-          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+          persist-credentials: false
 
       - name: Generate canary go/no-go report
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ github.token }}
           CANARY_SINCE_INPUT: ${{ inputs.canary_since }}
           CANDIDATE_MODEL_INPUT: ${{ inputs.candidate_model }}
           INCUMBENT_MODEL_INPUT: ${{ inputs.incumbent_model }}
