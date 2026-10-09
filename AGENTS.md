@@ -945,6 +945,13 @@ even though every ref looks valid, because the stub is ahead of the channel it p
      pinned channel resolves to a commit that declares the input.
 
   Doing these out of order (forwarding first) is exactly the skew this rule prevents.
+- **Same order for a new `client_payload` field.** The dev-lead retry sweep
+  (`scripts/dev-lead-retry.sh` and its libs) runs from `main`. The events it dispatches are parsed by
+  `scripts/dev-lead-intent.sh` at the channel `dev-lead.yml` pins via `agent_ref` (#2050). Land the
+  parser change and promote that channel first. Merge the sweep change that sends the field second.
+  [`scripts/check-retry-payload-fields.sh`](./scripts/check-retry-payload-fields.sh) (the
+  `retry-payload-fields` job in `lint.yml`, #2081) fails a PR whose sweep sends a field the pinned
+  parser does not read.
 - **Enforcement.** The dev-lead prompt guardrail (part C, #1254) stops the agent from introducing the
   skew at the source; the **Part A CI guard (#1253)** is the belt-and-braces check that fails a PR whose
   caller-stub `with:` forwards an input the pinned channel does not declare.
