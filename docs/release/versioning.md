@@ -71,25 +71,28 @@ partitioned by which one is the host:
 
 Concretely for **`dev-lead`** (hosted in `.github-private`): `next` = `.github-private`,
 `ring0` = `.github`, `ring1` = `{TalkTerm, bmad-bgreat-suite}`, `stable` = the rest.
-**Production self-review/dev duty stays pinned to `stable` even within ring 0** — the agent validating
-fixes is never the unvalidated candidate (the circular-dependency fix #500 targets). The intended
+**Production self-review/dev duty stays pinned to a promoted channel (never `next`) even within ring 0**
+— the agent validating fixes is never the unvalidated candidate (the circular-dependency fix #500
+targets). `.github-private`'s own `dev-lead.yml` pins `ring0` (since #2091; `stable` before), so it runs
+dev-lead fixes once they clear the `next` dwell while a bad `ring0` is still rolled back by a tag move. The intended
 machine-readable source of truth is `standards/canary-rings.json`, now hosted in
 `petry-projects/.github` and consumed by the promotion automation (#501, relocated there under #613).
 
 > **Deliberate SC2 exception — `.github-private`'s own `dev-lead.yml` (#1624).** This repo sits in ring
-> `next`, yet its self-review/dev duty stub `dev-lead.yml` pins `@dev-lead/v1-stable`. This is **not**
+> `next`, yet its self-review/dev duty stub `dev-lead.yml` pins a promoted channel, `@dev-lead/v1-ring0`
+> (it pinned `stable` until #2091). This is **not**
 > drift to fix: it is the structural half of Safe Release **SC2** (epic #495 / story #503) — a broken
 > in-development (`next`) version cannot block the PR that fixes its own breakage, because the dev/merge
-> gate runs the last known-good `stable`. The `pinned-version-report` audit (`scripts/pinned-version-report.sh`
+> gate runs promoted code, and a bad ring0 is rolled back by moving the tag, with no PR to block. The `pinned-version-report` audit (`scripts/pinned-version-report.sh`
 > in `petry-projects/.github`) flags this pin as a ⚠️ **ring mismatch** (a ring-`next` repo is expected to
 > pin `next`). Both surfaces are correct and reconciled here: the report is right from the ring-rollout
-> perspective, and the stable pin is right from the SC2 perspective. **Do not "fix the ring drift" by
+> perspective, and the promoted pin is right from the SC2 perspective. **Do not "fix the ring drift" by
 > repinning `dev-lead.yml` to `next`** — that silently re-arms the self-hosting circular dependency. The
 > property is enforced continuously by `tests/test_sc2_self_review_channel.bats`, which parses the stub's
-> channel pin and fails with an SC2-naming message on any non-`stable` tier. (This repo's
+> channel pin and fails with an SC2-naming message on any unpromoted pin (`next`, `@main`, a SHA). (This repo's
 > `pr-review-trigger.yml` deliberately pins `@pr-review/v1-next` as the ring-0 pr-review canary — a
 > different duty whose SC2 net is the break-glass, see [`sc2-game-day.md`](./sc2-game-day.md) — so it is
-> **not** part of this stable-pin assertion.)
+> **not** part of this promoted-pin assertion.)
 
 A staged rollout advances the channels in order — `next` → `ring0` → `ring1` → `stable` — validating
 at each step (see [`runbook.md` §2c](./runbook.md#2c-staged-canary--ring-rollout)). All four channels

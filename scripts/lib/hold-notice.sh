@@ -106,14 +106,20 @@ body_has_active_hold_notice() {
   esac
 }
 
-# hold_notice_supersede_body <comment-body>
+# hold_notice_supersede_body <comment-body> [replacing-label]
 #   Rewrite a live notice IN PLACE to collapse it (AC4): drop the active marker,
 #   stamp the superseded marker, and wrap the remaining prose in a collapsed
 #   <details> block — reusing the supersede convention in post-pr-review.sh
 #   (mark_prior_agent_items_obsolete). Idempotent: an already-collapsed body is
 #   returned unchanged, so re-running never nests wrappers.
+#
+#   With no [replacing-label] the hold was lifted (dev-lead picked the item up).
+#   With one, a notice for a DIFFERENT hold label is replacing this one — the old
+#   label may well still be on the item, so the summary must not claim it was
+#   lifted (#2089: a `dev-lead:hands-off` notice read "lifted" on a PR that still
+#   carried the label, because `needs-human-review` sorts first in the hold set).
 hold_notice_supersede_body() {
-  local body="${1:-}"
+  local body="${1:-}" replacing="${2:-}"
   case "$body" in
     *"<!-- dev-lead-hold-notice superseded"*) printf '%s' "$body"; return 0 ;;
   esac
@@ -124,7 +130,11 @@ hold_notice_supersede_body() {
   # longer reads as still-held and no longer suppresses a future notice.
   stripped="${body//"$active"/}"
   printf '%s\n' "$(hold_notice_superseded_marker "$label")"
-  printf '<details><summary><em>Resolved — the `%s` hold was lifted; dev-lead has picked this item up. Click to expand the prior hold notice.</em></summary>\n\n' "$label"
+  if [ -n "$replacing" ] && [ "$replacing" != "$label" ]; then
+    printf '<details><summary><em>Superseded — dev-lead is now withholding action under the `%s` label. Click to expand the prior `%s` hold notice.</em></summary>\n\n' "$replacing" "$label"
+  else
+    printf '<details><summary><em>Resolved — the `%s` hold was lifted; dev-lead has picked this item up. Click to expand the prior hold notice.</em></summary>\n\n' "$label"
+  fi
   printf '%s\n\n' "$stripped"
   printf '</details>'
 }
