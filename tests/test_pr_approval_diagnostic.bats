@@ -173,10 +173,11 @@ _verdict() { grep -E '^\{"pr":' <<<"$output" | tail -n 1; }
   [[ "$output" == *"usage:"* ]]
 }
 
-@test "skill: every reason in the why-not-approved table is one review-one-pr.sh actually emits" {
-  local skill="$REPO_ROOT/.claude/skills/why-not-approved/SKILL.md" r
-  head -4 "$skill" | grep -q '^name: why-not-approved$'
-  head -4 "$skill" | grep -q '^description: '
+@test "agent profile: every reason in the why-not-approved table is one review-one-pr.sh actually emits" {
+  local skill="$REPO_ROOT/agents/why-not-approved.md" r
+  head -10 "$skill" | grep -q '^name: why-not-approved$'
+  head -10 "$skill" | grep -q '^description: '
+  head -10 "$skill" | grep -q '^tools: '
   while IFS= read -r r; do
     grep -qE "emit_verdict [a-z-]+ ${r} " "$REPO_ROOT/scripts/review-one-pr.sh" \
       || { echo "reason '$r' in SKILL.md is not emitted by review-one-pr.sh"; return 1; }
