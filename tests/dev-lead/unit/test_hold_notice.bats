@@ -112,6 +112,26 @@ setup() {
   [ "$once" = "$twice" ]
 }
 
+@test "supersede_body(#2089): replaced by another hold label never claims the hold was lifted" {
+  original="$(hold_notice_body "dev-lead:hands-off")"
+  collapsed="$(hold_notice_supersede_body "$original" "needs-human-review")"
+  [[ "$collapsed" == *"<!-- dev-lead-hold-notice superseded label=dev-lead:hands-off -->"* ]]
+  [[ "$collapsed" == *"now withholding action under the \`needs-human-review\` label"* ]]
+  [[ "$collapsed" != *"was lifted"* ]]
+  [[ "$collapsed" != *"picked this item up"* ]]
+}
+
+@test "supersede_body(#2089): no replacing label (pickup) keeps the lifted wording" {
+  original="$(hold_notice_body "dev-lead:hands-off")"
+  collapsed="$(hold_notice_supersede_body "$original")"
+  [[ "$collapsed" == *"hold was lifted; dev-lead has picked this item up"* ]]
+}
+
+@test "hold-notice wrapper(#2089): notice mode passes the new label to the supersede rewrite" {
+  grep -q 'hold_notice_supersede_body "$old_body" "$keep_label"' \
+    "$SCRIPT_DIR/scripts/dev-lead-hold-notice.sh"
+}
+
 @test "body_has_active_hold_notice: true for a live notice, false once collapsed" {
   original="$(hold_notice_body "needs-human-review")"
   run body_has_active_hold_notice "$original"

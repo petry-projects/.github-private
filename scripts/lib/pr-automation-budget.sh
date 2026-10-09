@@ -100,6 +100,25 @@ pr_has_escalation_label() {
     <<<"$labels_json" >/dev/null 2>&1
 }
 
+# The fleet's human-hold label set (needs-human-review, dev-lead:needs-human,
+# dev-lead:hands-off) lives in hold-gate.sh (#1595). Sourced here so the resume
+# gate below honours every hold, not just NEEDS_HUMAN_REVIEW_LABEL (#2089).
+# shellcheck source=scripts/lib/hold-gate.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hold-gate.sh"
+
+# pr_hold_gate_label <labels_json>
+#   Print the first hold-gate label (hold_gate_labels) present in the JSON array
+#   of label NAMES and exit 0; print nothing and exit 1 when none is present.
+#   Malformed/empty/missing input degrades to "not held" (exit 1), like
+#   pr_has_escalation_label.
+pr_hold_gate_label() {
+  local labels_json="${1:-[]}" names
+  names=$(jq -r 'if type == "array" then .[] | strings else empty end' \
+    <<<"$labels_json" 2>/dev/null) || return 1
+  [ -n "$names" ] || return 1
+  hold_gate_first_match "$names"
+}
+
 # pr_hold_kind <items_json> <head_sha>
 #   Classify WHY a PR carrying NEEDS_HUMAN_REVIEW_LABEL is held, so a re-trigger
 #   timer can log the exact hold it honors (#1550 AC#5) and exempt the ONE hold
@@ -156,8 +175,8 @@ _pr_items_have_marker() {
 
 # pr_resume_suppressed <pr> <repo> [labels_json] [events_json]
 #   Exit 0 (SUPPRESS — do NOT resume / re-dispatch) when the PR is human-gated
-#   (carries NEEDS_HUMAN_REVIEW_LABEL) OR its per-PR automation budget is
-#   exhausted; exit 1 (proceed) otherwise.
+#   (carries NEEDS_HUMAN_REVIEW_LABEL or any other hold-gate label, #2089) OR its
+#   per-PR automation budget is exhausted; exit 1 (proceed) otherwise.
 #
 #   This is the SINGLE stop-condition consulted before any automated resume of a
 #   blocked/rate-limited dev-lead state — by the event-first resume bridge
@@ -180,6 +199,15 @@ pr_resume_suppressed() {
   fi
   if pr_has_escalation_label "$labels_json"; then
     echo "  [suppress] PR #${pr} in ${repo} carries ${NEEDS_HUMAN_REVIEW_LABEL} — human-gated; not resuming (#946)" >&2
+    return 0
+  fi
+  # Every other human hold (dev-lead:hands-off, dev-lead:needs-human) stops the
+  # resume/retry paths too. Before #2089 only the escalation label did, so a held
+  # PR still got retry markers, dispatch guards and a dispatched run that then
+  # skipped at intent time — clutter plus spent retry attempts.
+  local hold
+  if hold=$(pr_hold_gate_label "$labels_json"); then
+    echo "  [suppress] PR #${pr} in ${repo} carries ${hold} — human hold; not resuming (#2089)" >&2
     return 0
   fi
 

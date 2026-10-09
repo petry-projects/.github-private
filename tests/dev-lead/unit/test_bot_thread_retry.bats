@@ -352,6 +352,23 @@ _comments_page() {
   [ "$marker_line" -lt "$dispatch_line" ]
 }
 
+@test "sweep(#2089): a dev-lead:hands-off PR gets no retry marker and no dispatch" {
+  export PR_JSON='{"state":"open","head":{"sha":"abc","ref":"dev-lead/issue-1900-x","repo":{"full_name":"petry-projects/.github-private"}},"user":{"login":"don-petry"},"labels":[{"name":"dev-lead:hands-off"}]}'
+  export THREADS_RESPONSE
+  THREADS_RESPONSE="$(_threads_page "$(_thread PRRT_cubic cubic-dev-ai 2026-10-01T11:35:00Z)")"
+  _setup_sweep
+  # Use the REAL resume gate (the default harness stubs it to "proceed").
+  # shellcheck source=/dev/null
+  source "$(dirname "$RETRY_SCRIPT")/lib/pr-automation-budget.sh"
+
+  run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1902
+  [ "$status" -eq 0 ]
+  [ "${lines[-1]}" = "0" ]
+  ! grep -q '/dispatches' "$GH_LOG"
+  ! grep -q 'dev-lead-bot-thread-retry' "$GH_LOG"
+  ! grep -q 'dev-lead-dispatch-guard' "$GH_LOG"
+}
+
 @test "sweep: a pending retry (from the cron or pr-review's hook) dedups the next scan" {
   export THREADS_RESPONSE COMMENTS_RESPONSE
   THREADS_RESPONSE="$(_threads_page "$(_thread PRRT_cubic cubic-dev-ai)")"

@@ -477,6 +477,24 @@ _graphql_page() {
   [ "$marker_line" -lt "$dispatch_line" ]
 }
 
+@test "sweep(#2089): a dev-lead:hands-off PR gets no retry marker and no dispatch" {
+  export PR_JSON='{"state":"open","head":{"sha":"abc","ref":"dev-lead/issue-2008-x","repo":{"full_name":"petry-projects/.github-private"}},"user":{"login":"don-petry"},"labels":[{"name":"dev-lead:hands-off"}]}'
+  _setup_sweep
+  # Use the REAL resume gate (the default harness stubs it to "proceed").
+  # shellcheck source=/dev/null
+  source "$(dirname "$RETRY_SCRIPT")/lib/pr-automation-budget.sh"
+  export TRUSTED_BOTS="$TRUSTED"
+  export GRAPHQL_RESPONSE
+  GRAPHQL_RESPONSE="$(_graphql_page "$(_bot IC_cr coderabbitai 'Walkthrough')")"
+
+  run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2085
+  [ "$status" -eq 0 ]
+  [ "${lines[-1]}" = "0" ]
+  ! grep -q '/dispatches' "$GH_LOG"
+  ! grep -q 'dev-lead-bot-comment-retry' "$GH_LOG"
+  ! grep -q 'dev-lead-dispatch-guard' "$GH_LOG"
+}
+
 @test "sweep: a dispositioned comment dispatches nothing" {
   _setup_sweep
   export TRUSTED_BOTS="$TRUSTED"

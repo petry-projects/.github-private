@@ -243,6 +243,41 @@ mk_bot_events() {  # mk_bot_events <count>
   [ "$status" -eq 0 ]
 }
 
+@test "pr_resume_suppressed(#2089): dev-lead:hands-off → suppress without reading budget events" {
+  # events_json is deliberately unreadable: a hold must short-circuit before the
+  # budget read, so the result cannot depend on (or wait for) the events API.
+  run pr_resume_suppressed 2085 petry-projects/demo '["bug","dev-lead:hands-off"]' 'not json'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"carries dev-lead:hands-off"* ]]
+}
+
+@test "pr_resume_suppressed(#2089): dev-lead:needs-human → suppress" {
+  run pr_resume_suppressed 2085 petry-projects/demo '["dev-lead:needs-human"]' "$(mk_bot_events 1)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"carries dev-lead:needs-human"* ]]
+}
+
+@test "pr_resume_suppressed(#2089): needs-human-review keeps its #946 message" {
+  run pr_resume_suppressed 2085 petry-projects/demo '["dev-lead:hands-off","needs-human-review"]' '[]'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"carries needs-human-review — human-gated; not resuming (#946)"* ]]
+}
+
+@test "pr_resume_suppressed(#2089): a label merely containing a hold name does not suppress" {
+  run pr_resume_suppressed 2085 petry-projects/demo '["dev-lead:hands-off-later","x-dev-lead:needs-human"]' "$(mk_bot_events 1)"
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_hold_gate_label(#2089): prints the held label; malformed input is not held" {
+  run pr_hold_gate_label '["bug","dev-lead:hands-off"]'
+  [ "$status" -eq 0 ]
+  [ "$output" = "dev-lead:hands-off" ]
+  run pr_hold_gate_label 'not json'
+  [ "$status" -ne 0 ]
+  run pr_hold_gate_label '[]'
+  [ "$status" -ne 0 ]
+}
+
 @test "pr_resume_suppressed: FORCE_REVIEW must not bypass the budget" {
   FORCE_REVIEW=true run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 10)"
   [ "$status" -eq 0 ]
