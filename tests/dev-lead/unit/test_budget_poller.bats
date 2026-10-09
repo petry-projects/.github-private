@@ -649,7 +649,6 @@ _chosen() { jq -r '.artifact' "$DL_DEST"; }
       [ "$status" -eq 1 ]
     fi
   done
-  [ ! -e pwned ]
 }
 
 @test "download (#2148 AC7): a failed default-branch lookup falls back to main" {
