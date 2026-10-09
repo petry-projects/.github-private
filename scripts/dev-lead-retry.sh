@@ -395,7 +395,7 @@ scan_pr_for_rate_limits() {
   # (#926) — re-dispatching either would re-ignite the #860 "amplifier". We reuse
   # the already-fetched labels to avoid a redundant PR fetch.
   local labels_json
-  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
+  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo 'null')
   if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
     echo "0"
     return 0
@@ -697,7 +697,7 @@ scan_pr_for_undispositioned_bot_comments() {
     echo "0"; return 0
   fi
   local labels_json
-  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
+  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo 'null')
   if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
     echo "0"; return 0
   fi
@@ -923,7 +923,7 @@ scan_pr_for_unreplied_bot_threads() {
     echo "0"; return 0
   fi
   local labels_json
-  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
+  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo 'null')
   if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
     echo "0"; return 0
   fi
