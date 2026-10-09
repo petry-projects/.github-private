@@ -304,10 +304,13 @@ pr_automation_escalate() {
   if pr_automation_already_escalated "$pr" "$repo"; then
     echo "::notice::PR #${pr} already has a pr-automation-budget escalation — not re-posting"
     # An earlier label failure leaves the comment without the hold: repair it
-    # (idempotent) and post the not-held note once if it still fails.
+    # (idempotent) and post the not-held note once if it still fails. Also
+    # retry the auto-merge disable in case a prior label success was followed
+    # by an auto-merge disable failure (#2151).
     if ! apply_hold_label "$repo" "$pr" "$NEEDS_HUMAN_REVIEW_LABEL"; then
       post_hold_failure_note "$repo" "$pr"
     fi
+    disable_auto_merge_for_hold "$repo" "$pr" || true
     return 0
   fi
   # Label first so the comment can say when the PR could not be held (#2142).

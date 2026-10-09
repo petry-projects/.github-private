@@ -117,6 +117,11 @@ disable_auto_merge_for_hold() {
     HOLD_LABEL_FAILED=1
     return 1
   fi
+  if [ "$active" = "unknown" ]; then
+    echo "::error::could not verify auto-merge status on PR #${number}: $(_hold_label_api_message "$out") — unable to confirm hold (#2142)"
+    HOLD_LABEL_FAILED=1
+    return 1
+  fi
   echo "::notice::auto-merge not disabled on PR #${number} (not enabled, or refused): $(_hold_label_api_message "$out")"
   return 0
 }
