@@ -22,7 +22,8 @@ set -euo pipefail
 #          `/dispatches` is EXECUTED with `gh` stubbed to capture the request, and
 #          the payload's top-level `client_payload` keys are read with jq. Every
 #          dispatch a function makes is kept, in all three request forms: `--input -`,
-#          `--input <file>`, and `-f/-F client_payload[key]=`. A dispatcher that sends
+#          `--input <file>`, and `-f/-F/--field/--raw-field client_payload[key]=`
+#          (separate or attached, e.g. `--field=client_payload[key]=v`). A dispatcher that sends
 #          nothing (or an unreadable body) for the probe arguments is a setup error,
 #          never a silent pass. Two conventions keep that complete: each dispatcher
 #          spells the word `dispatches` in its own body (an endpoint held in a
@@ -92,8 +93,14 @@ sent_fields() {
       for a in "$@"; do
         case "$a" in */dispatches) is_dispatch=true ;; esac
         [ "$prev" = "--input" ] && input="$a"
+        case "$a" in --input=*) input="${a#--input=}" ;; esac
         case "$prev" in
           -f|-F|--field|--raw-field) kv+=("$a") ;;
+        esac
+        # The attached forms gh also accepts: --field=k=v, --raw-field=k=v, -fk=v, -Fk=v.
+        case "$a" in
+          --field=*|--raw-field=*) kv+=("${a#*=}") ;;
+          -f?*|-F?*) kv+=("${a:2}") ;;
         esac
         prev="$a"
       done

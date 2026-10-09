@@ -285,6 +285,24 @@ EOF2
   [ "$status" -eq 0 ]
 }
 
+@test "captures the attached --field= / --raw-field= / -fk=v forms (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF2'
+dispatch_attached() {
+  gh api --method POST "repos/$1/dispatches" -f "client_payload[pr_number]=1" \
+    --field='client_payload[eq_field]=1' --raw-field='client_payload[raw_eq]=1' -F'client_payload[short_eq]=1'
+}
+EOF2
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.eq_field (sent by dispatch_attached)"* ]]
+  [[ "$output" == *"client_payload.raw_eq (sent by dispatch_attached)"* ]]
+  [[ "$output" == *"client_payload.short_eq (sent by dispatch_attached)"* ]]
+}
+
 @test "runs dispatchers defined in libs the sweep sources" {
   write_stub dev-lead/v7-stable
   write_intent pr_number
