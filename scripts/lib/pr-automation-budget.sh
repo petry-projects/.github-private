@@ -95,9 +95,12 @@ compute_pr_automation_cycles() {
 #   Malformed/empty/missing input degrades to "not escalated" (exit 1).
 pr_has_escalation_label() {
   local labels_json="${1:-[]}"
-  jq -e --arg l "${NEEDS_HUMAN_REVIEW_LABEL}" \
-    'if type == "array" then any(.[]; . == $l) else false end' \
-    <<<"$labels_json" >/dev/null 2>&1
+  if jq -e --arg l "${NEEDS_HUMAN_REVIEW_LABEL}" \
+      'if type == "array" then any(.[]; . == $l) else false end' \
+      <<<"$labels_json" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 # The fleet's human-hold label set (needs-human-review, dev-lead:needs-human,
@@ -172,9 +175,12 @@ pr_hold_kind() {
 _pr_items_have_marker() {
   local items_json="${1:-[]}" needle="${2:-}"
   [ -n "$needle" ] || return 1
-  jq -e --arg needle "$needle" '
+  if jq -e --arg needle "$needle" '
     if type == "array" then any(.[]; (.body? // "" | tostring) | contains($needle)) else false end
-  ' <<<"$items_json" >/dev/null 2>&1
+  ' <<<"$items_json" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 # pr_resume_suppressed <pr> <repo> [labels_json] [events_json]
@@ -243,7 +249,10 @@ pr_budget_exhausted() {
   local events_json="${1:-[]}"
   local n
   n=$(compute_pr_automation_cycles "$events_json")
-  [ "${n:-0}" -ge "${MAX_PR_AUTOMATION_CYCLES:-10}" ]
+  if [ "${n:-0}" -ge "${MAX_PR_AUTOMATION_CYCLES:-10}" ]; then
+    return 0
+  fi
+  return 1
 }
 
 # gather_pr_automation_events <pr> <repo>
@@ -286,9 +295,12 @@ gather_pr_automation_events() {
 #   Exit 0 if the exhaustion escalation comment is already present (dedupe).
 pr_automation_already_escalated() {
   local pr="$1" repo="$2"
-  gh api --paginate "repos/${repo}/issues/${pr}/comments?per_page=100" 2>/dev/null \
-    | jq -r '.[].body // ""' 2>/dev/null \
-    | grep -qF "$PR_AUTOMATION_EXHAUSTION_MARKER"
+  if gh api --paginate "repos/${repo}/issues/${pr}/comments?per_page=100" 2>/dev/null \
+      | jq -r '.[].body // ""' 2>/dev/null \
+      | grep -qF "$PR_AUTOMATION_EXHAUSTION_MARKER"; then
+    return 0
+  fi
+  return 1
 }
 
 # pr_automation_escalate <pr> <repo>
