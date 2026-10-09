@@ -190,6 +190,16 @@ EOF2
   [[ "$(jq -r '.gate_log' <<<"$output")" != *$'\033'* ]]
 }
 
+@test "wrapper: an approved PR held by the human escalation (noop human-escalated) is reported as held (#1902 review)" {
+  write_snap "$ROLLUP_PASS" '["needs-human-review"]' \
+    '[{"author":{"login":"donpetry-bot"},"createdAt":"2026-10-09T04:44:00Z","body":"<!-- pr-review-agent human-escalation v1 -->\nescalated"}]' \
+    '[{"author":{"login":"donpetry-bot"},"state":"APPROVED","commit":{"oid":"'"$SHA"'"},"body":"ok"}]' APPROVED
+  run timeout 30 bash "$DIAG_SCRIPT" "$PR_URL"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'pr-review would now hold it** at the `human-escalated` gate.'* ]]
+  [[ "$output" != *'**Approved.**'* ]]
+}
+
 @test "wrapper: --json emits the verdict plus facts as one JSON object" {
   write_snap "$ROLLUP_PASS"
   run timeout 30 bash "$DIAG_SCRIPT" "$PR_URL" --json

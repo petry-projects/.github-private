@@ -81,9 +81,10 @@ fi
 jq -r '
   def code: "`" + (. // "") + "`";
   .facts as $f
-  # GitHub can still show an approval while a gate would now hold the PR (a
-  # gate that skips, escalates or errors): lead with the gate, not "Approved".
-  | (if ($f.reviewDecision // "") == "APPROVED" and (.decision | IN("skip", "escalate", "error"))
+  # GitHub can still show an approval while a gate would now hold the PR: lead
+  # with the gate, not "Approved". Every verdict holds except `proceed` and the
+  # one true no-op, `already-reviewed-at-head` (e.g. `noop human-escalated` holds).
+  | (if ($f.reviewDecision // "") == "APPROVED" and .decision != "proceed" and .reason != "already-reviewed-at-head"
      then "**GitHub shows the PR approved, but pr-review would now hold it** at the " + (.reason | code) + " gate."
      elif ($f.reviewDecision // "") == "APPROVED"
      then "**Approved.** Merge state: " + (($f.mergeStateStatus // "unknown") | code) + "."
