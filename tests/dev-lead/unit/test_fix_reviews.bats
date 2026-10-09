@@ -6902,7 +6902,7 @@ exec /usr/bin/git "$@"
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
-  local epoch_export=""
+  local epoch_export="unset DEV_LEAD_NOCHANGE_EPOCH"
   [ "$epoch" = "set" ] && epoch_export="export DEV_LEAD_NOCHANGE_EPOCH=2026-10-10T00:00:00Z"
   run bash -c "
     cd '$tmpdir'
