@@ -31,17 +31,55 @@ on:
         required: false
         default: "7"
         type: string
+      run_canary:
+        description: "Also run the canary go/no-go report (candidate vs incumbent)"
+        required: false
+        default: false
+        type: boolean
+      canary_since:
+        description: "Canary window start (ISO 8601 UTC, e.g. YYYY-MM-DDTHH:MMZ) — latency scored from here"
+        required: false
+        default: ""
+        type: string
+      candidate_model:
+        description: "Candidate model ID (required when run_canary is true)"
+        required: false
+        default: ""
+        type: string
+      incumbent_model:
+        description: "Incumbent model ID (required when run_canary is true)"
+        required: false
+        default: ""
+        type: string
+      baseline_days:
+        description: "Baseline window length in days, ending at canary_since (blank = script default)"
+        required: false
+        default: ""
+        type: string
+      canary_thresholds:
+        description: "Optional canary overrides as space-separated key=value (keys: cost-bar, cache-bar, latency-bar, min-prs, min-invocations); blank = script defaults"
+        required: false
+        default: ""
+        type: string
 
+# Workflow-level token is read-only; the report job that posts the tracking issue
+# declares its own issues: write, and the canary job reads artifacts only.
 permissions:
   contents: read
-  issues: write
 
+# A canary dispatch gets its own group so it can neither cancel nor be cancelled
+# by the scheduled org-wide report.
 concurrency:
-  group: token-report-${{ inputs.org || 'petry-projects' }}
+  group: token-report-${{ inputs.org || 'petry-projects' }}${{ inputs.run_canary && '-canary' || '' }}
   cancel-in-progress: true
 
 jobs:
   report:
+    # A canary dispatch runs only the canary job, not the org-wide report.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_canary) }}
+    permissions:
+      contents: read
+      issues: write
     runs-on: ubuntu-latest
     # 60m (was 30m, #954) is a safety margin; the real fix is the bounded-parallel,
     # per-download-timeout collection in scripts/token_report.sh.
@@ -161,3 +199,60 @@ jobs:
               issue_number: issue.number, body,
             });
             core.notice(`Posted token report failure alert: ${comment.data.html_url}`);
+
+  # Canary go/no-go — only on an explicit workflow_dispatch that opts in. Scores
+  # the candidate model against the incumbent over the canary window and writes a
+  # mechanical PASS/FAIL/INSUFFICIENT table to the run summary. Logic + defaults
+  # live in scripts/canary_report.sh (unit-tested in tests/canary_report.bats).
+  canary:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_canary }}
+    # Least privilege: this job only reads this repo's own token-usage artifacts, so
+    # the job token with actions: read is enough. No personal PAT, no issues: write.
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: petry-projects/.github-private
+          ref: main
+          persist-credentials: false
+
+      - name: Generate canary go/no-go report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANARY_SINCE_INPUT: ${{ inputs.canary_since }}
+          CANDIDATE_MODEL_INPUT: ${{ inputs.candidate_model }}
+          INCUMBENT_MODEL_INPUT: ${{ inputs.incumbent_model }}
+          BASELINE_DAYS_INPUT: ${{ inputs.baseline_days }}
+          CANARY_THRESHOLDS_INPUT: ${{ inputs.canary_thresholds }}
+        run: |
+          if [ -z "$CANDIDATE_MODEL_INPUT" ] || [ -z "$INCUMBENT_MODEL_INPUT" ]; then
+            echo "run_canary requires both candidate_model and incumbent_model inputs." >&2
+            exit 64
+          fi
+          args=(--candidate "$CANDIDATE_MODEL_INPUT" --incumbent "$INCUMBENT_MODEL_INPUT")
+          [ -n "$CANARY_SINCE_INPUT" ] && args+=(--since "$CANARY_SINCE_INPUT")
+          [ -n "$BASELINE_DAYS_INPUT" ] && args+=(--baseline-days "$BASELINE_DAYS_INPUT")
+          set -f
+          for kv in $CANARY_THRESHOLDS_INPUT; do
+            case "$kv" in
+              cost-bar=*|cache-bar=*|latency-bar=*|min-prs=*|min-invocations=*)
+                args+=("--${kv%%=*}" "${kv#*=}") ;;
+              *) echo "canary_thresholds: unsupported entry '${kv}'." >&2; exit 64 ;;
+            esac
+          done
+          set +f
+          # Exit 1 (FAIL) / 2 (INSUFFICIENT) are valid go/no-go verdicts, not step
+          # failures — the rendered table already carries the signal. Any OTHER
+          # non-zero exit (bad args, missing tool, failed artifact collection) is a
+          # real error and must fail the step rather than be masked by `|| true`.
+          rc=0
+          bash scripts/canary_report.sh "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || rc=$?
+          if [ "$rc" -gt 2 ]; then
+            echo "canary_report.sh failed with exit ${rc}." >&2
+            exit "$rc"
+          fi
