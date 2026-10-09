@@ -601,7 +601,7 @@ main() {
     envsubst < "$template_path" > "$prompt_file"
   fi
 
-  if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
+  if [ "$DEV_LEAD_DRY_RUN" = "true" ] && ! shadow_mode_active; then
     echo "[dry-run] fix-issue: would implement issue #${ISSUE_NUMBER} using prompt: $prompt_file"
     rm -f "${prompt_file:-}"
     exit 0
