@@ -2671,6 +2671,20 @@ readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.l
   [[ "$output" != *'Looks almost there.'* ]]
 }
 
+@test "has_reviews_rate_limited_marker: a blocked marker does not dedup a resolve-failed hold (reason-aware, #2045)" {
+  export PR_NUMBER=54 REPO="petry-projects/.github-private" HEAD_SHA="ddd444eee555"
+  export REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo '[{"id":1,"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=review-changes status=blocked reason=blocked reset=2099-01-01T00:00:00Z -->"}]'
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  run bash -c "export PATH='$STUB_BIN_DIR:$PATH'; source <(sed -n '/^has_reviews_rate_limited_marker()/,/^}/p' '$FIX_REVIEWS_SCRIPT'); has_reviews_rate_limited_marker review-changes resolve-failed"
+  [ "$status" -eq 1 ]
+  run bash -c "export PATH='$STUB_BIN_DIR:$PATH'; source <(sed -n '/^has_reviews_rate_limited_marker()/,/^}/p' '$FIX_REVIEWS_SCRIPT'); has_reviews_rate_limited_marker review-changes blocked"
+  [ "$status" -eq 0 ]
+}
+
 @test "fix-reviews: rate-limited: review-changes does not repost ack when prior rate-limited marker exists" {
   # When a persistent hard blocker causes a second rate-limit cycle, the visible
   # user-facing ack must NOT be reposted — the old ack is still visible.

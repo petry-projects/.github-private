@@ -2371,7 +2371,10 @@ has_reviews_rate_limited_marker() {
   [ -z "$sha" ] && return 1  # no SHA means no dedup possible
   local status_token="rate-limited"
   { [ "$reason" = "blocked" ] || [ "$reason" = "resolve-failed" ]; } && status_token="blocked"
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=${status_token}"
+  # Match the reason too: blocked and resolve-failed share status=blocked, and a
+  # change of hold reason must still notify the requester. A legacy marker with no
+  # reason= field (pre-#1568) still dedups on its status alone.
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=${status_token}( reason=${reason}( |$)| reset=| -->|$)"
   local count
   count=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -c --arg pat "$pattern" '[.[] | select(.body | test($pat))] | length' 2>/dev/null \
@@ -2532,7 +2535,12 @@ ${retry_msg}"
         [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
         local reset_display="${reset_time:-unknown}"
         local ack_body
-        if [ "$reason" = "blocked" ]; then
+        if [ "$reason" = "resolve-failed" ]; then
+          ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
+> ${actor_mention}I worked through this PR, but a review-thread or comment resolution step failed, so I can't mark it done yet. I'll retry automatically.
+> Next attempt after: \`${reset_display}\`"
+        elif [ "$reason" = "blocked" ]; then
           ack_body="<!-- dev-lead rate-limit-ack -->
 > [!NOTE]
 > ${actor_mention}I reviewed this PR and no code changes were needed, but I can't mark it done yet: $(blocking_reason_phrase). I'll re-check automatically.
