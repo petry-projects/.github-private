@@ -92,7 +92,7 @@ collapse_stale_notices() {
     if [ -n "$keep_label" ] && [ "$cur_label" = "$keep_label" ]; then
       continue
     fi
-    new_body=$(hold_notice_supersede_body "$old_body")
+    new_body=$(hold_notice_supersede_body "$old_body" "$keep_label")
     if [ "$DRY_RUN" = "true" ]; then
       echo "[dry-run] would collapse stale hold notice $cid (label=$cur_label) on $REPO#$SUBJECT_NUMBER"
       continue

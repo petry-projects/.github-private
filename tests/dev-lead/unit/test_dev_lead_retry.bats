@@ -289,6 +289,29 @@ _scan_with_markers() {
   run scan_pr_for_rate_limits "petry-projects/.github-private" 2000
 }
 
+@test "retry(#2089): a dev-lead:hands-off PR with a reset hold neither guards nor dispatches" {
+  gh() {
+    case "$*" in
+      *"/pulls/2000"*) echo '{"state":"open","head":{"sha":"abc"},"labels":[{"name":"dev-lead:hands-off"}]}' ;;
+      *"/comments"*) echo '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=rate-limited reason=rate-limited reset=2026-06-18T23:00:00Z -->"]' ;;
+      *) echo '[]' ;;
+    esac
+  }
+  # The REAL resume gate (from lib/pr-automation-budget.sh) — not the stub the
+  # other scans use — so the hold-label suppression itself is under test.
+  # shellcheck source=/dev/null
+  source "$(dirname "$RETRY_SCRIPT")/lib/pr-automation-budget.sh"
+  post_dispatch_guard() { echo "GUARD" >&2; }
+  fetch_pr_comment_nodes() { echo '[{"id":"IC_cr"}]'; }
+  stale_disposition_needs_dispatch() { return 0; }
+  dispatch_reviews_retry() { echo "DISPATCH intent=$4" >&2; }
+  run scan_pr_for_rate_limits "petry-projects/.github-private" 2000
+  [ "${lines[-1]}" = "0" ]
+  [[ "$output" != *"DISPATCH"* ]]
+  [[ "$output" != *"GUARD"* ]]
+  [[ "$output" == *"carries dev-lead:hands-off"* ]]
+}
+
 @test "retry: history-unavailable marker AFTER an older terminal failed marker still dispatches" {
   _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=failed -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->"]'
   [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
