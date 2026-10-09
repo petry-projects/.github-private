@@ -25,6 +25,14 @@ setup() {
   export GITHUB_OUTPUT="$BATS_TEST_TMPDIR/github_output"
   : >"$GITHUB_OUTPUT"
   RESOLVE_SCRIPT="$BATS_TEST_TMPDIR/resolve.sh"
+  # yq extracts the resolve step: skip locally without it, but never silently in CI.
+  if ! command -v yq >/dev/null 2>&1; then
+    if [ -n "${CI:-}" ]; then
+      echo "yq is required in CI" >&2
+      return 1
+    fi
+    skip "yq not installed"
+  fi
   yq -r '.jobs.retry.steps[] | select(.id == "channel") | .run' "$WF" >"$RESOLVE_SCRIPT"
 }
 
@@ -75,7 +83,7 @@ EOF
 
 @test "workflow does not hard-code a dev-lead major version" {
   run grep -nE 'dev-lead/v[0-9]+' "$WF"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "resolve step returns the live stub's agent_ref" {
@@ -101,7 +109,7 @@ EOF
   local f="$BATS_TEST_TMPDIR/dev-lead.yml"
   printf 'jobs:\n  dev-lead:\n    uses: x\n' >"$f"
   STUB_FILE="$f" run bash "$RESOLVE_SCRIPT"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ ! -s "$GITHUB_OUTPUT" ]
 }
 
@@ -110,7 +118,7 @@ EOF
   for bad in main dev-lead/v139 dev-lead/vX-stable dev-lead/v139-canary pr-review/v1-stable 'dev-lead/v139-stable;x'; do
     : >"$GITHUB_OUTPUT"
     STUB_FILE="$(_stub_fixture "$bad")" run bash "$RESOLVE_SCRIPT"
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 1 ]
     [ ! -s "$GITHUB_OUTPUT" ]
   done
 }
