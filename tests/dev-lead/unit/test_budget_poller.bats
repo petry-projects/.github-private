@@ -417,3 +417,247 @@ _seed_degraded() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"indeterminate"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# #2148 — bp_download_latest_log: the artifact trust filter
+#
+# `gh` and `unzip` are replaced by a PATH shim (no live network). The `gh` shim
+# evaluates the function's OWN `--jq` filter against per-page fixture listings,
+# so dropping the head_branch filter, --paginate, or the branch allow-list is
+# observable. Fixture "zips" hold the JSONL directly; the `unzip` shim copies one
+# into the -d directory (content starting CORRUPT makes it fail).
+# ---------------------------------------------------------------------------
+
+_dl_setup() {
+  MOCK_GH_DIR="$BATS_TEST_TMPDIR/gh"
+  mkdir -p "$MOCK_GH_DIR/zip" "$BATS_TEST_TMPDIR/shim"
+  export MOCK_GH_DIR MOCK_DEFAULT_BRANCH="${1-main}"
+  cat > "$BATS_TEST_TMPDIR/shim/gh" << 'MOCK'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >> "$MOCK_GH_DIR/calls.log"
+[ "${1:-}" = "api" ] || exit 1
+shift
+paginate=0; filter="."; path=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --paginate) paginate=1 ;;
+    --jq) filter="$2"; shift ;;
+    *) path="$1" ;;
+  esac
+  shift
+done
+case "$path" in
+  repos/*/*/actions/artifacts\?*)
+    n=1
+    while [ -f "$MOCK_GH_DIR/page$n.json" ] || [ -f "$MOCK_GH_DIR/page$n.fail" ]; do
+      [ -f "$MOCK_GH_DIR/page$n.fail" ] && exit 1
+      jq -r "$filter" "$MOCK_GH_DIR/page$n.json" || exit 1
+      [ "$paginate" -eq 1 ] || break
+      n=$((n + 1))
+    done ;;
+  repos/*/*/actions/artifacts/*/zip)
+    id="${path%/zip}"; id="${id##*/}"
+    printf '%s\n' "$id" >> "$MOCK_GH_DIR/downloads.log"
+    [ -f "$MOCK_GH_DIR/zip/$id" ] || exit 1
+    cat "$MOCK_GH_DIR/zip/$id" ;;
+  repos/*/*)
+    [ -f "$MOCK_GH_DIR/repo.fail" ] && exit 1
+    jq -n --arg b "$MOCK_DEFAULT_BRANCH" '{default_branch: $b}' | jq -r "$filter" ;;
+  *) exit 1 ;;
+esac
+MOCK
+  cat > "$BATS_TEST_TMPDIR/shim/unzip" << 'MOCK'
+#!/usr/bin/env bash
+zip=""; dir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d) dir="$2"; shift ;;
+    -*) ;;
+    *) zip="$1" ;;
+  esac
+  shift
+done
+[ -n "$zip" ] && [ -n "$dir" ] || exit 10
+head -n 1 "$zip" | grep -q '^CORRUPT' && exit 9
+mkdir -p "$dir" && cp "$zip" "$dir/budget-poller-log.jsonl"
+MOCK
+  chmod +x "$BATS_TEST_TMPDIR/shim/gh" "$BATS_TEST_TMPDIR/shim/unzip"
+  DL_DEST="$BATS_TEST_TMPDIR/dest.jsonl"
+}
+
+# _art <id> <head_branch> <created_at> [expired=false] — one listing entry.
+_art() {
+  jq -nc --argjson id "$1" --arg b "$2" --arg c "$3" --argjson e "${4:-false}" \
+    '{id: $id, name: "budget-poller-log", expired: $e, created_at: $c, workflow_run: {head_branch: $b}}'
+}
+
+# _page <n> <artifact-json>... — write listing page n (API order: newest first).
+_page() {
+  local n="$1"; shift
+  printf '%s\n' "$@" | jq -s '{total_count: length, artifacts: .}' > "$MOCK_GH_DIR/page$n.json"
+}
+
+# _zip <id> [content] — a downloadable artifact whose log is one valid record.
+_zip() {
+  printf '%s\n' "${2:-{\"poll\":\"ok\",\"artifact\":$1\}}" > "$MOCK_GH_DIR/zip/$1"
+}
+
+_download() {
+  PATH="$BATS_TEST_TMPDIR/shim:$PATH" run bash -c \
+    'source "$1"; bp_download_latest_log petry-projects/.github-private "$2"' _ "$POLLER_LIB" "$DL_DEST"
+}
+
+_chosen() { jq -r '.artifact' "$DL_DEST"; }
+
+@test "download (#2148 AC1): a newer PR-branch artifact is ignored for an older default-branch one" {
+  _dl_setup main
+  _page 1 "$(_art 900 attacker/pr-branch 2026-09-15T15:00:00Z)" \
+          "$(_art 100 main 2026-09-15T14:00:00Z)"
+  _zip 900 '{"poll":"ok","artifact":900,"session_pct":0}'
+  _zip 100
+  _download
+  [ "$status" -eq 0 ]
+  [ "$(_chosen)" = "100" ]
+  # The PR-branch artifact is never even fetched.
+  run grep -qx 900 "$MOCK_GH_DIR/downloads.log"
+  [ "$status" -eq 1 ]
+}
+
+@test "download (#2148 AC2): a single page with one matching artifact is selected" {
+  _dl_setup main
+  _page 1 "$(_art 42 main 2026-09-15T14:00:00Z)"
+  _zip 42
+  _download
+  [ "$status" -eq 0 ]
+  [ "$(_chosen)" = "42" ]
+  # The listing is scoped to the artifact name and paginated.
+  grep -q -- '--paginate repos/petry-projects/.github-private/actions/artifacts?name=budget-poller-log&per_page=100' \
+    "$MOCK_GH_DIR/calls.log"
+}
+
+@test "download (#2148 AC2): the repo's actual default branch is the trusted one, not a hard-coded main" {
+  _dl_setup develop
+  _page 1 "$(_art 200 main 2026-09-15T15:00:00Z)" \
+          "$(_art 100 develop 2026-09-15T14:00:00Z)"
+  _zip 200
+  _zip 100
+  _download
+  [ "$status" -eq 0 ]
+  [ "$(_chosen)" = "100" ]
+}
+
+@test "download (#2148 AC3): the newest trusted artifact on page 2 is found when page 1 is all other branches" {
+  _dl_setup main
+  _page 1 "$(_art 905 pr-a 2026-09-15T15:05:00Z)" \
+          "$(_art 904 pr-b 2026-09-15T15:04:00Z)" \
+          "$(_art 903 pr-c 2026-09-15T15:03:00Z)"
+  _page 2 "$(_art 300 main 2026-09-15T13:00:00Z)" \
+          "$(_art 200 main 2026-09-15T12:00:00Z)"
+  _zip 905; _zip 904; _zip 903; _zip 300; _zip 200
+  _download
+  [ "$status" -eq 0 ]
+  [ "$(_chosen)" = "300" ]
+}
+
+@test "download (#2148 AC4): a listing failure on a later page returns 2 and does not abort the caller" {
+  _dl_setup main
+  _page 1 "$(_art 100 main 2026-09-15T14:00:00Z)"
+  touch "$MOCK_GH_DIR/page2.fail"
+  _zip 100
+  printf 'durable\n' > "$DL_DEST"
+  PATH="$BATS_TEST_TMPDIR/shim:$PATH" run bash -c '
+    set -euo pipefail
+    source "$1"
+    rc=0
+    bp_download_latest_log petry-projects/.github-private "$2" || rc=$?
+    echo "rc=$rc"
+    echo "caller continued"' _ "$POLLER_LIB" "$DL_DEST"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rc=2"* ]]
+  [[ "$output" == *"caller continued"* ]]
+  # A partial listing is not trusted: nothing is downloaded, dest is untouched.
+  [ ! -e "$MOCK_GH_DIR/downloads.log" ]
+  [ "$(cat "$DL_DEST")" = "durable" ]
+}
+
+@test "download (#2148 AC5): no usable artifact returns 1 (empty listing, other branches only, all expired)" {
+  _dl_setup main
+  _page 1
+  _download
+  [ "$status" -eq 1 ]
+
+  _page 1 "$(_art 900 pr-branch 2026-09-15T15:00:00Z)"
+  _zip 900
+  _download
+  [ "$status" -eq 1 ]
+
+  _page 1 "$(_art 100 main 2026-09-15T14:00:00Z true)"
+  _zip 100
+  _download
+  [ "$status" -eq 1 ]
+  [ ! -e "$DL_DEST" ]
+}
+
+@test "download (#2148 AC5): an expired newer default-branch artifact is skipped" {
+  _dl_setup main
+  _page 1 "$(_art 200 main 2026-09-15T15:00:00Z true)" \
+          "$(_art 100 main 2026-09-15T14:00:00Z)"
+  _zip 200
+  _zip 100
+  _download
+  [ "$status" -eq 0 ]
+  [ "$(_chosen)" = "100" ]
+  run grep -qx 200 "$MOCK_GH_DIR/downloads.log"
+  [ "$status" -eq 1 ]
+}
+
+@test "download (#2148 AC6): unreadable or non-JSON newer artifacts fall through to the next older valid one" {
+  _dl_setup main
+  _page 1 "$(_art 50 main 2026-09-15T15:00:00Z)" \
+          "$(_art 40 main 2026-09-15T14:50:00Z)" \
+          "$(_art 30 main 2026-09-15T14:40:00Z)" \
+          "$(_art 20 main 2026-09-15T14:30:00Z)" \
+          "$(_art 10 main 2026-09-15T14:20:00Z)"
+  # 50: download fails; 40: unzip fails; 30: empty log; 20: not JSON; 10: valid.
+  _zip 40 'CORRUPT'
+  : > "$MOCK_GH_DIR/zip/30"
+  _zip 20 'not json {'
+  _zip 10
+  _download
+  [ "$status" -eq 0 ]
+  [ "$(_chosen)" = "10" ]
+  [ "$(tr '\n' ' ' < "$MOCK_GH_DIR/downloads.log")" = "50 40 30 20 10 " ]
+}
+
+@test "download (#2148 AC7): an unsafe default-branch name falls back to main and is never interpolated raw" {
+  local unsafe
+  for unsafe in 'main" or true or "' 'x"] | .[] | ["' 'main$(touch pwned)' 'main branch' ''; do
+    _dl_setup "$unsafe"
+    rm -f "$MOCK_GH_DIR/calls.log" "$DL_DEST"
+    # Newer artifacts from the unsafe-named branch and a PR branch; older on main.
+    _page 1 "$(_art 901 "$unsafe" 2026-09-15T15:01:00Z)" \
+            "$(_art 900 pr-branch 2026-09-15T15:00:00Z)" \
+            "$(_art 100 main 2026-09-15T14:00:00Z)"
+    _zip 901; _zip 900; _zip 100
+    _download
+    [ "$status" -eq 0 ]
+    [ "$(_chosen)" = "100" ]
+    grep -qF '.workflow_run.head_branch == "main")' "$MOCK_GH_DIR/calls.log"
+    if [ -n "$unsafe" ]; then
+      run grep -qF -- "$unsafe" "$MOCK_GH_DIR/calls.log"
+      [ "$status" -eq 1 ]
+    fi
+  done
+}
+
+@test "download (#2148 AC7): a failed default-branch lookup falls back to main" {
+  _dl_setup develop
+  touch "$MOCK_GH_DIR/repo.fail"
+  _page 1 "$(_art 200 develop 2026-09-15T15:00:00Z)" \
+          "$(_art 100 main 2026-09-15T14:00:00Z)"
+  _zip 200; _zip 100
+  _download
+  [ "$status" -eq 0 ]
+  [ "$(_chosen)" = "100" ]
+}
