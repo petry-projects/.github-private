@@ -708,7 +708,7 @@ deleting the variable or setting it to anything other than `true`. If the
 secret is genuinely missing while unpaused, the reusable's "Engine token
 preflight" step fails with a single actionable error naming the secret.
 
-**Planned automatic budget pause (companion, #1565; poller not yet implemented — only the telemetry adapter ships today).** The same `AGENTS_PAUSED` switch can
+**Planned automatic budget pause (companion, #1565; not yet armed. The telemetry adapter and a dry-run poller ship today, and the poller writes nothing; see below).** The same `AGENTS_PAUSED` switch can
 be flipped automatically from the Claude subscription usage budget. The transport
 half — `scripts/lib/usage-telemetry.sh` — reads the OAuth usage endpoint and emits
 the envelope the org token-budget breaker consumes; the scheduled poller that acts
@@ -775,6 +775,47 @@ is to keep degrading from moving the outage onto an unmetered provider.
   renders a **Gemini quota (per key index)** section next to the per-model usage.
   It shows the peak requests/min, tokens/min, and requests/day against each cap,
   plus the cooldowns recorded.
+
+**Dry-run budget poller (shipped, #2029: slice 2 of #1565). It is dry-run only and has no
+write path.** `.github/workflows/budget-poller.yml` runs hourly (`:17`) with read-only `permissions:` (`contents: read`, `actions: read`).
+It authenticates with the existing `CLAUDE_CODE_OAUTH_TOKEN` secret. It does **not**
+set, clear, or write any Actions variable (org or repo) under any input, and there
+is no flag to make it do so. `tests/dev-lead/unit/test_budget_poller.bats` asserts
+that statically. Arming (the write, auto-resume, the trip notification) stays under #1565
+pending the pause-vs-degrade decision.
+- **What it does** (`scripts/budget_poller.sh` + `scripts/lib/budget-poller.sh`):
+  reads the envelope via `scripts/lib/usage-telemetry.sh`, publishes it on the
+  existing `AGENT_TOKEN_BUDGET_TELEMETRY_FILE` seam, and evaluates the shipped public
+  `arl_token_budget_gate session` and `arl_token_weekly_glide_gate`. It checks the
+  public library and config out of `petry-projects/.github@main`. The public config
+  ships the glide breaker inert (`weekly_all.enabled=false`), so the glide gate is
+  evaluated against a **temp armed copy** of that config. The decision therefore
+  says what the breaker *would* do. The real arm state is recorded as
+  `weekly_glide_config_enabled`.
+- **Where the log lives:** each run appends one JSON line to `budget-poller-log.jsonl`
+  and uploads it as the **`budget-poller-log`** artifact (14-day retention). Each run
+  downloads the previous artifact first, so the newest artifact holds the rolling
+  history (bounded to 720 records ≈ 30 days). The run's **job summary** shows the same
+  record as a table.
+- **How to read it:** each record carries `ts`, `http_status`, `retry_after`,
+  `session_pct`, `weekly_all_pct`, both windows' `*_resets_at`, `session_decision`,
+  `weekly_glide_decision` (`allow`/`defer`/`unavailable`), `would_pause`,
+  `decision_window` (`session` / `weekly_all` / `session,weekly_all` / `transport-429` / `none`),
+  `decision_pct`, and `burn_session_pph` / `burn_weekly_all_pph`. The burn fields
+  are percentage points per hour against the previous OK record and are logged only.
+  They are `null` on the first-ever poll or when the window reset in between, and
+  no gate uses them. Liveness is greppable:
+  `telemetry read OK, session=N% weekly_all=M%` on success, and
+  `telemetry read DEGRADED, status=S reason=R` on any failure (`transport-error`,
+  `http-<status>`, `malformed-body`, `public-library-unavailable`). A degraded
+  poll is a `::warning::`, never a red run (fail-open), and never reads as OK.
+  Example: `jq -c 'select(.poll=="ok") | [.ts,.session_pct,.weekly_all_pct,.decision_window]' budget-poller-log.jsonl`.
+- **Fleet monitor:** `scripts/fleet_monitor.sh` reads the newest `budget-poller-log`
+  artifact and adds a **Budget poller (dry-run)** section to its report. The section shows
+  the age of the last OK record, the latest record, the dry-run decision (window and
+  percent), and the burn rate. When the last OK record is older than
+  `BUDGET_POLLER_STALE_HOURS` (default **3**), or there is none, it raises a
+  `::warning::`.
 
 ### Initiative Planner — blocking open-questions gate
 
