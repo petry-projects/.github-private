@@ -890,8 +890,8 @@ resolve_addressed_bot_threads() {
         continue
       fi
       # Reject if a newer required disposition exists (a REQUIRED overrides NO-CHANGE).
-      local req_disposition req_rc
-      req_disposition=$(acv_latest_maintainer_disposition "$fresh_comments" "__no-such-account__") && req_rc=0 || req_rc=$?
+      local req_rc
+      acv_latest_maintainer_disposition "$fresh_comments" "__no-such-account__" >/dev/null && req_rc=0 || req_rc=$?
       if [ "${req_rc:-0}" -ne 1 ]; then
         echo "::notice::skipping thread ${id} — a required maintainer disposition blocks the no-change verdict; leaving unresolved (#2079)"
         continue
