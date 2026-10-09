@@ -6038,6 +6038,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*".base.ref"*) echo main ;;
   *"pulls/"*) echo '{"head":{"sha":"${T2013_BASE}"},"auto_merge":null}' ;;
   *"issues/"*"comments"*) echo '[]' ;;
   *"pr checkout"*) exit 0 ;;
