@@ -55,9 +55,11 @@ qa_lead_pr_gather_and_decide() {
   local comment_bodies existing_advisory budget_exhausted events_json decision
 
   # Changed files as a JSON array of filenames — validated BEFORE it is flattened
-  # to the newline text qa_lead_test_surface consumes.
+  # to the newline text qa_lead_test_surface consumes. gh rejects --slurp together
+  # with --jq, so the filter runs in external jq; `pipefail` (set above) makes a
+  # failure of EITHER side of the pipe reach the fail-closed branch.
   if ! files_json="$(gh api --paginate --slurp \
-      "repos/${repo}/pulls/${pr}/files" --jq '[.[][].filename]')"; then
+      "repos/${repo}/pulls/${pr}/files" | jq -c '[.[][].filename]')"; then
     _qa_lead_pr_gate_fail_closed "$repo" "$pr" "changed-file list unavailable"
     return 1
   fi

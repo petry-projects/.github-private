@@ -34,20 +34,29 @@ setup() {
   cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 # Find the --jq filter (if any) and the repos/... url.
-jqf=""; url=""; prev=""
+jqf=""; url=""; prev=""; slurp=0; tmpl=0
 for a in "$@"; do
   [ "$prev" = "--jq" ] && jqf="$a"
+  [ "$a" = "--slurp" ] && slurp=1
+  case "$a" in --jq|--template) tmpl=1 ;; esac
   case "$a" in repos/*) [ -z "$url" ] && url="$a" ;; esac
   prev="$a"
 done
+# Behave like real gh: --slurp is rejected together with --jq/--template.
+if [ "$slurp" = 1 ] && [ "$tmpl" = 1 ]; then
+  echo "the \`--slurp\` option is not supported with \`--jq\` or \`--template\`" >&2
+  exit 1
+fi
 case "$jqf" in
-  '[.[][].filename]')  printf '%s\n' "${STUB_FILES:-[]}";  exit "${STUB_FILES_RC:-0}"  ;;
   '.changed_files')    printf '%s\n' "${STUB_CHANGED:-0}"; exit "${STUB_CHANGED_RC:-0}" ;;
   '[.labels[]?.name]') printf '%s\n' "${STUB_LABELS:-[]}"; exit "${STUB_LABELS_RC:-0}" ;;
   'if type == "array" then .[].body else error("expected comments array") end') printf '%s' "${STUB_COMMENT_BODIES:-}"; exit "${STUB_COMMENTS_RC:-0}" ;;
   '')
     # gather_pr_automation_events raw calls (no --jq, piped to jq -s downstream)
     case "$url" in
+      *"/pulls/"*"/files")      # slurped: one array per page, wrapped in an outer array
+                                printf '%s\n' "${STUB_FILES:-[]}" | jq -c '[map({filename: .})]' 
+                                exit "${STUB_FILES_RC:-0}" ;;
       *"/issues/"*"/comments"*) printf '%s\n' "${STUB_RAW_COMMENTS:-[]}" ;;
       *"/commits"*)             printf '%s\n' "${STUB_RAW_COMMITS:-[]}" ;;
       *"/reviews"*)             printf '%s\n' "${STUB_RAW_REVIEWS:-[]}" ;;
