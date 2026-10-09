@@ -913,7 +913,9 @@ resolve_addressed_bot_threads() {
         continue
       fi
       local fresh_comments
-      fresh_comments=$(printf '%s' "$fresh_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+      fresh_comments=$(printf '%s' "$fresh_json" | jq -c \
+        'if .data.node.comments.pageInfo.hasNextPage == false then (.data.node.comments.nodes // []) else "changed" end' \
+        2>/dev/null || echo '"changed"')
       if [ "$fresh_comments" != "$comments_json" ]; then
         echo "::notice::skipping thread ${id} — thread changed during no-change disposition check; leaving unresolved"
         continue
@@ -1372,7 +1374,9 @@ resolve_deferred_bot_threads() {
         echo "::notice::skipping thread ${id} — already resolved during no-change check"
         continue
       fi
-      fresh_comments=$(printf '%s' "$fresh_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+      fresh_comments=$(printf '%s' "$fresh_json" | jq -c \
+        'if .data.node.comments.pageInfo.hasNextPage == false then (.data.node.comments.nodes // []) else "changed" end' \
+        2>/dev/null || echo '"changed"')
       if [ "$fresh_comments" != "$comments_json" ]; then
         echo "::notice::skipping thread ${id} — thread changed during no-change disposition check; leaving unresolved"
         continue
