@@ -8,7 +8,8 @@
 # back; a payload of fields every release reads must still reach older-pinned
 # repos (the fleet sits on stable). These tests pin:
 #   • agent_ref parsing (any plain ref; the reusable's default `main` when absent);
-#   • pin reads: found / no stub (404) / read error / unresolvable, cached;
+#   • pin reads: found / no stub (404 on a readable repo) / unreadable repo /
+#     read error / unresolvable, cached;
 #   • the fields a ref's parser reads: parser + libs it names, comments ignored,
 #     an unreadable file fails closed, cached, ref URL-encoded;
 #   • the decision: gate off without SWEEP_AGENT_REF, same pin skips the lookup,
@@ -28,7 +29,7 @@ setup() {
   MOCK_BIN="$(mktemp -d)"
   export MOCK_BIN
   export PATH="$MOCK_BIN:$PATH"
-  mkdir -p "$MOCK_BIN/stubs" "$MOCK_BIN/src"
+  mkdir -p "$MOCK_BIN/stubs" "$MOCK_BIN/src" "$MOCK_BIN/unreadable"
   : >"$MOCK_BIN/calls"
   export DRY_RUN="false"
   export DISPATCH_DELAY_SEC="0"
@@ -43,6 +44,8 @@ setup() {
   #   repos/<owner>/<name>/contents/.github/workflows/dev-lead.yml
   #       -> $MOCK_BIN/stubs/<owner>__<name>; missing -> HTTP 404;
   #          a file containing exactly ERROR -> HTTP 502
+  #   repos/<owner>/<name> --jq .full_name -> readable, unless
+  #       $MOCK_BIN/unreadable/<owner>__<name> exists (HTTP 404)
   #   repos/<repo>/dispatches -> body appended to $MOCK_BIN/dispatched
   #   repo list -> $REPO_LIST_JSON
   cat >"$MOCK_BIN/gh" <<'GHEOF'
@@ -71,6 +74,10 @@ case "$args" in
       exit 1
     fi
     cat "$f"; exit 0 ;;
+  "api repos/"*" --jq .full_name")
+    repo="${args#api repos/}"; repo="${repo%% *}"
+    if [ -f "$MOCK_BIN/unreadable/${repo//\//__}" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    echo "$repo"; exit 0 ;;
   *) echo "mock gh: unexpected call: $args" >&2; exit 97 ;;
 esac
 GHEOF
@@ -167,6 +174,16 @@ _calls() { grep -c -- "$1" "$MOCK_BIN/calls" || true; }
   dcg_target_pin petry-projects/markets >/dev/null
   dcg_target_pin petry-projects/markets >/dev/null
   [ "$(_calls 'repos/petry-projects/markets/contents')" -eq 2 ]  # run's subshell + the cached one
+}
+
+@test "pin: a 404 from a repo the token cannot read is unreadable (1), not absent" {
+  touch "$MOCK_BIN/unreadable/petry-projects__private"
+  run dcg_target_pin petry-projects/private
+  [ "$status" -eq 1 ]
+  DCG_SWEEP_REF=dev-lead/v139-ring0
+  run dcg_target_reads petry-projects/private pr_number
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::warning::"* ]]
 }
 
 @test "pin: no dev-lead.yml → 2; read error or unresolvable pin → 1" {

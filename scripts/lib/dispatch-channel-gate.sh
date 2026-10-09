@@ -25,6 +25,7 @@
 #   (INFORMATIONAL ones aside). Pin == the sweep's channel needs no lookup: the
 #   sweep and that parser ship together, and CI checks them against each other.
 #     no dev-lead.yml            nothing in that repo receives it → hold, no warning
+#                                (a 404 counts only when the repo itself is readable)
 #     pin or parser unreadable   compatibility unproven → hold, warn (fail closed)
 #     a field not read           hold, warn once per repo and field set
 #   A held payload leaves its markers in place, so the retry resumes once the
@@ -77,7 +78,8 @@ dcg_parse_agent_ref() {
 }
 
 # dcg_target_pin <repo>: prints the ref <repo>'s dev-lead harness runs at.
-# Returns 2 when the repo has no dev-lead.yml, 1 when the pin is unreadable.
+# Returns 2 when the (readable) repo has no dev-lead.yml, 1 when the pin is
+# unreadable — the repo itself included.
 # Cached per sweep.
 dcg_target_pin() {
   local repo="$1" out rc=0
@@ -89,7 +91,13 @@ dcg_target_pin() {
   out="$(gh api "repos/${repo}/contents/.github/workflows/dev-lead.yml" \
       -H "Accept: application/vnd.github.raw" 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    if [[ "$out" == *"HTTP 404"* ]]; then rc=2; else rc=1; fi
+    rc=1
+    # GitHub also answers 404 for a repo the token cannot read; only a readable
+    # repo's 404 means the stub is absent.
+    if [[ "$out" == *"HTTP 404"* ]] \
+       && gh api "repos/${repo}" --jq '.full_name' >/dev/null 2>&1; then
+      rc=2
+    fi
   elif ! out="$(dcg_parse_agent_ref <<<"$out")"; then
     rc=1
   fi
