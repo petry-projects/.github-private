@@ -67,7 +67,10 @@ facts=$(jq -c --arg holds "$(hold_gate_labels | tr '\n' ' ')" '
             | select(.state == "APPROVED" and (.commit.oid // "") == $head)
             | (.author.login // "?")] | unique}' <<<"$pr_json")
 
-report=$(jq -cn --argjson v "$verdict" --argjson f "$facts" --arg log "$(grep -E '^    ' "$LOG" || true)" \
+# The gate log keeps the gates' own lines (indented) and the advisory gate's
+# `[advisory-gate]` lines — e.g. which unavailable bots reduced the required set.
+gate_log=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" | grep -E '^    |\[advisory-gate\]' || true)
+report=$(jq -cn --argjson v "$verdict" --argjson f "$facts" --arg log "$gate_log" \
   '$v + {facts: $f, gate_log: $log}')
 
 if [ "$FORMAT" = "json" ]; then
@@ -78,7 +81,11 @@ fi
 jq -r '
   def code: "`" + (. // "") + "`";
   .facts as $f
-  | (if ($f.reviewDecision // "") == "APPROVED"
+  # GitHub can still show an approval while a gate would now hold the PR (a
+  # gate that skips, escalates or errors): lead with the gate, not "Approved".
+  | (if ($f.reviewDecision // "") == "APPROVED" and (.decision | IN("skip", "escalate", "error"))
+     then "**GitHub shows the PR approved, but pr-review would now hold it** at the " + (.reason | code) + " gate."
+     elif ($f.reviewDecision // "") == "APPROVED"
      then "**Approved.** Merge state: " + (($f.mergeStateStatus // "unknown") | code) + "."
      else "**Not approved** (review decision: " + (($f.reviewDecision // "none") | if . == "" then "none" else . end | code) + ")."
      end) as $status

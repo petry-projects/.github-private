@@ -164,6 +164,32 @@ _verdict() { grep -E '^\{"pr":' <<<"$output" | tail -n 1; }
   _assert_read_only
 }
 
+@test "wrapper: an approved PR that a gate would now hold leads with the gate, not 'Approved' (#1902 review)" {
+  write_snap "$ROLLUP_FAIL" '[]' '[]' \
+    '[{"author":{"login":"donpetry-bot"},"state":"APPROVED","commit":{"oid":"'"$SHA"'"},"body":"ok"}]' APPROVED
+  run timeout 30 bash "$DIAG_SCRIPT" "$PR_URL"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'**GitHub shows the PR approved, but pr-review would now hold it** at the `ci-failing` gate.'* ]]
+  [[ "$output" != *'**Approved.**'* ]]
+}
+
+@test "wrapper: the gate log keeps the advisory gate's lines, without colour codes (#1902 review)" {
+  write_snap "$ROLLUP_PASS"
+  # Inject an advisory-gate warning line (as log_warn prints it) into the gate run's output.
+  cat > "$TEST_DIR/bin/review-wrap" <<'EOF2'
+#!/bin/bash
+printf '\033[1;33m[advisory-gate] WARNING: required set reduced: dropped coderabbitai[bot] (RATE_LIMITED)\033[0m\n' >&2
+exec bash "$REAL_REVIEW" "$@"
+EOF2
+  chmod +x "$TEST_DIR/bin/review-wrap"
+  mkdir -p "$TEST_DIR/s"; cp "$DIAG_SCRIPT" "$TEST_DIR/s/pr-approval-diagnostic.sh"; cp -r "$REPO_ROOT/scripts/lib" "$TEST_DIR/s/lib"
+  printf '#!/bin/bash\nexec "%s" "$@"\n' "$TEST_DIR/bin/review-wrap" > "$TEST_DIR/s/review-one-pr.sh"
+  REAL_REVIEW="$REVIEW_SCRIPT" run timeout 30 bash "$TEST_DIR/s/pr-approval-diagnostic.sh" "$PR_URL" --json
+  [ "$status" -eq 0 ]
+  [[ "$(jq -r '.gate_log' <<<"$output")" == *"[advisory-gate] WARNING: required set reduced: dropped coderabbitai[bot] (RATE_LIMITED)"* ]]
+  [[ "$(jq -r '.gate_log' <<<"$output")" != *$'\033'* ]]
+}
+
 @test "wrapper: --json emits the verdict plus facts as one JSON object" {
   write_snap "$ROLLUP_PASS"
   run timeout 30 bash "$DIAG_SCRIPT" "$PR_URL" --json
