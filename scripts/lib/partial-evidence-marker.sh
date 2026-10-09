@@ -28,6 +28,7 @@ advisory_partial_evidence_marker() {
 #   PR snapshot (.comments[]) used for the dedup check, so no extra API call is
 #   needed to decide whether to post. Guarded: without pr_url + head_sha it is a
 #   silent no-op (so unit tests that never set a head SHA make no network call).
+#   With DRY_RUN=true nothing is posted; the would-be post is logged instead.
 maybe_post_partial_evidence_marker() {
   local pr_url="${1:-}" head_sha="${2:-}" submitted="${3:-0}" required="${4:-0}" reason="${5:-timeout}" comments_json="${6:-}"
   if [[ -z "$pr_url" || -z "$head_sha" ]]; then
@@ -49,6 +50,12 @@ maybe_post_partial_evidence_marker() {
     | length' <<< "$cj" 2>/dev/null || echo 0)
   if [[ "${already:-0}" -gt 0 ]]; then
     log_info "Partial-evidence marker already present at head ${head_sha:0:8} — not re-posting"
+    return 0
+  fi
+
+  # A DRY_RUN makes no GitHub writes: report the marker instead of posting it.
+  if [[ "${DRY_RUN:-false}" == "true" ]]; then
+    log_info "DRY_RUN: would post partial-evidence marker on $pr_url (head ${head_sha:0:8}, ${submitted}/${required}, ${reason})"
     return 0
   fi
 
