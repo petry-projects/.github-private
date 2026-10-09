@@ -109,7 +109,7 @@ _assert_held() {
   [[ "$output" == *'"reason":"human-escalated"'* ]]
   [[ "$output" != *"re-engaging cascade"* ]]
   [[ "$output" != *"re-running cascade"* ]]
-  ! grep -q -- '--remove-label' "$GH_LOG"
+  if grep -q -- '--remove-label' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "#2090: auto-rebase moved the head — an automated dispatch (FORCE_RE_REVIEW only) stays paused on the hold" {
@@ -127,7 +127,7 @@ _assert_held() {
   [ "$status" -eq 100 ]
   [[ "$output" != *"re-engaging cascade"* ]]
   [[ "$output" != *"re-running cascade"* ]]
-  ! grep -q -- '--remove-label' "$GH_LOG"
+  if grep -q -- '--remove-label' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "#2090: an unforced event run also stays paused on the hold" {

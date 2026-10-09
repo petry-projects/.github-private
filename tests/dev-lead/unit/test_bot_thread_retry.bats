@@ -346,7 +346,7 @@ _comments_page() {
   [ "$(jq -r '.client_payload.intent_type' <<< "$payload")" = "fix-reviews" ]
   [ "$(jq -r '.client_payload.pr_number' <<< "$payload")" = "1953" ]
   grep -q 'dev-lead-bot-thread-retry threads=PRRT_cubic,PRRT_codex attempt=1 at=2026-10-02T01:00:00Z' "$GH_LOG"
-  ! grep -q 'PRRT_done' "$GH_LOG"
+  if grep -q 'PRRT_done' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
   marker_line=$(grep -n 'dev-lead-bot-thread-retry' "$GH_LOG" | head -1 | cut -d: -f1)
   dispatch_line=$(grep -n '/dispatches' "$GH_LOG" | head -1 | cut -d: -f1)
   [ "$marker_line" -lt "$dispatch_line" ]
@@ -364,9 +364,9 @@ _comments_page() {
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1902
   [ "$status" -eq 0 ]
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
-  ! grep -q 'dev-lead-bot-thread-retry' "$GH_LOG"
-  ! grep -q 'dev-lead-dispatch-guard' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q 'dev-lead-bot-thread-retry' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q 'dev-lead-dispatch-guard' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a pending retry (from the cron or pr-review's hook) dedups the next scan" {
@@ -379,8 +379,8 @@ _comments_page() {
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
   [ "$status" -eq 0 ]
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
-  ! grep -q -- '--method POST' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q -- '--method POST' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a recent dispatch guard for the head SHA defers to the run already queued" {
@@ -394,8 +394,8 @@ _comments_page() {
   [ "$status" -eq 0 ]
   [ "${lines[-1]}" = "0" ]
   [[ "$stderr" == *"recent dispatch guard"* ]]
-  ! grep -q '/dispatches' "$GH_LOG"
-  ! grep -q -- '--method POST' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q -- '--method POST' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a dispatch guard posted by a non-automation commenter is ignored" {
@@ -430,7 +430,7 @@ _comments_page() {
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
   [ "$status" -eq 0 ]
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
   grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/888' "$GH_LOG"
 }
 
@@ -470,7 +470,7 @@ _comments_page() {
 
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
   [ "$(grep -c 'dev-lead-bot-thread-retry-exhausted threads=PRRT_cubic' "$GH_LOG")" -eq 1 ]
   grep -q 'scripts/canary_report.sh:121' "$GH_LOG"
 
@@ -481,7 +481,7 @@ _comments_page() {
     "$(_ours '<!-- dev-lead-bot-thread-retry-exhausted threads=PRRT_cubic -->' 2026-10-01T20:00:00Z MEMBER donpetry-bot)")"
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
   [ "${lines[-1]}" = "0" ]
-  ! grep -q -- '--method POST' "$GH_LOG"
+  if grep -q -- '--method POST' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: no exhaustion notice while another thread is dispatched (the pass covers every thread)" {
@@ -497,7 +497,7 @@ _comments_page() {
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
   [ "${lines[-1]}" = "1" ]
   [ "$(grep -c '/dispatches' "$GH_LOG")" -eq 1 ]
-  ! grep -q 'dev-lead-bot-thread-retry-exhausted' "$GH_LOG"
+  if grep -q 'dev-lead-bot-thread-retry-exhausted' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a PR dev-lead did not author is never scanned" {
@@ -508,7 +508,7 @@ _comments_page() {
 
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
   [ "${lines[-1]}" = "0" ]
-  ! grep -q 'graphql' "$GH_LOG"
+  if grep -q 'graphql' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: an unreadable thread list fails closed" {
@@ -517,7 +517,7 @@ _comments_page() {
 
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
   [ "${lines[-1]}" = "0" ]
-  ! grep -q -- '--method POST' "$GH_LOG"
+  if grep -q -- '--method POST' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: scan_repo runs the thread retry only when no other retry was dispatched for the PR" {
@@ -545,8 +545,8 @@ _comments_page() {
   run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
   [ "${lines[-1]}" = "1" ]
   [[ "$output" == *"would dispatch dev-lead-reviews-retry"*"intent=fix-reviews"* ]]
-  ! grep -q '/dispatches' "$GH_LOG"
-  ! grep -q -- '--method POST' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q -- '--method POST' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "review-one-pr: the gate hook runs the thread scan only after the bot-comment scan dispatched nothing" {

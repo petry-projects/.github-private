@@ -490,9 +490,9 @@ _graphql_page() {
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2085
   [ "$status" -eq 0 ]
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
-  ! grep -q 'dev-lead-bot-comment-retry' "$GH_LOG"
-  ! grep -q 'dev-lead-dispatch-guard' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q 'dev-lead-bot-comment-retry' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q 'dev-lead-dispatch-guard' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a dispositioned comment dispatches nothing" {
@@ -507,7 +507,7 @@ ok')")"
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "$status" -eq 0 ]
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a pending retry is not duplicated" {
@@ -521,7 +521,7 @@ ok')")"
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "$status" -eq 0 ]
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a lost run's expired attempt-1 marker does not block the attempt-2 retry" {
@@ -553,7 +553,7 @@ GHEOF
   [ "${lines[-1]}" = "1" ]
   [ "$(grep -c '/dispatches' "$GH_LOG")" -eq 1 ]
   grep -q 'dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z attempt=2' "$GH_LOG"
-  ! grep -q -- '-X DELETE' "$GH_LOG"
+  if grep -q -- '-X DELETE' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a dev-lead/issue-* branch name alone is not ownership (author is someone else)" {
@@ -565,8 +565,8 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
-  ! grep -q 'api graphql' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q 'api graphql' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a fork head is never swept, even when dev-lead is the PR author" {
@@ -578,7 +578,7 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: the post-claim marker check only counts markers our own automation posted" {
@@ -625,7 +625,7 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
   grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/777' "$GH_LOG"
   [[ "$output" == *"does not trust"* ]]
   # The listing requires a trusted association as well as an automation login.
@@ -641,7 +641,7 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
   grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/777' "$GH_LOG"
 }
 
@@ -654,8 +654,8 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
-  ! grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/$' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q -- '-X DELETE repos/petry-projects/.github-private/issues/comments/$' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "dispatch helpers report a failed dispatch, and only accepted ones are counted" {
@@ -683,7 +683,7 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a human-authored PR (not dev-lead's) is never swept" {
@@ -695,7 +695,7 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: DRY_RUN posts no marker and sends no dispatch" {
@@ -708,8 +708,8 @@ GHEOF
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "1" ]
   [[ "$output" == *"would dispatch dev-lead-reviews-retry"*"fix-bot-comment"* ]]
-  ! grep -q '/dispatches' "$GH_LOG"
-  ! grep -q 'dev-lead-bot-comment-retry' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q 'dev-lead-bot-comment-retry' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "sweep: a comment-fetch failure fails closed (no dispatch)" {
@@ -719,7 +719,7 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "retry header: the 'cannot be reconstructed' rationale names on-mention only" {
@@ -843,8 +843,8 @@ GHEOF
 
   run scan_pr_for_undispositioned_bot_comments "petry-projects/.github-private" 2009
   [ "${lines[-1]}" = "0" ]
-  ! grep -q -- '--method POST' "$GH_LOG"
-  ! grep -q '/dispatches' "$GH_LOG"
+  if grep -q -- '--method POST' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
+  if grep -q '/dispatches' "$GH_LOG"; then cat "$GH_LOG"; return 1; fi
 }
 
 @test "dev-lead-retry.sh can be sourced after the maintainer gate is already loaded (pr-review backstop path)" {

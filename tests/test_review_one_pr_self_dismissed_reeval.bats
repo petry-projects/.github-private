@@ -143,6 +143,39 @@ _sda() {
   [ "$status" -ne 0 ]
 }
 
+@test "lib: the NEWEST approval at head decides — a later human dismissal is not revived (#1933 review)" {
+  # 101 gate-dismissed → re-evaluation approved again as 102 → a maintainer
+  # dismissed 102. The older gate dismissal must not re-open the cascade.
+  write_state DISMISSED
+  local body; body="$(APPROVAL_BODY)"
+  jq -n --arg sha "$SHA" --arg body "$body" \
+    '[{id:101, user:{login:"donpetry-bot"}, state:"DISMISSED", commit_id:$sha, body:$body},
+      {id:102, user:{login:"donpetry-bot"}, state:"DISMISSED", commit_id:$sha, body:$body}]' > "$REST_REVIEWS"
+  jq -n --arg m "$GATE_MSG_1813" \
+    '[{event:"review_dismissed", actor:{login:"donpetry-bot"}, dismissed_review:{state:"approved", review_id:101, dismissal_message:$m}},
+      {event:"review_dismissed", actor:{login:"don-petry"}, dismissed_review:{state:"approved", review_id:102, dismissal_message:"no"}}]' > "$REST_EVENTS"
+  run _sda
+  [ "$status" -ne 0 ]
+  # …and the mirror image: a human-dismissed 101 then a gate-dismissed 102 IS pending.
+  jq -n --arg m "$GATE_MSG_1813" \
+    '[{event:"review_dismissed", actor:{login:"don-petry"}, dismissed_review:{state:"approved", review_id:101, dismissal_message:"no"}},
+      {event:"review_dismissed", actor:{login:"donpetry-bot"}, dismissed_review:{state:"approved", review_id:102, dismissal_message:$m}}]' > "$REST_EVENTS"
+  run _sda
+  [ "$status" -eq 0 ]
+}
+
+@test "lib: review ids match across number/string encodings; a missing id never matches (#1933 review)" {
+  write_state DISMISSED
+  jq '.[0].dismissed_review.review_id |= tostring' "$REST_EVENTS" > "$REST_EVENTS.tmp" && mv "$REST_EVENTS.tmp" "$REST_EVENTS"
+  run _sda
+  [ "$status" -eq 0 ]
+  # null on both sides must not pair a review with a dismissal event.
+  jq 'map(del(.id))' "$REST_REVIEWS" > "$REST_REVIEWS.tmp" && mv "$REST_REVIEWS.tmp" "$REST_REVIEWS"
+  jq 'map(del(.dismissed_review.review_id))' "$REST_EVENTS" > "$REST_EVENTS.tmp" && mv "$REST_EVENTS.tmp" "$REST_EVENTS"
+  run _sda
+  [ "$status" -ne 0 ]
+}
+
 @test "lib: the recognised messages match the gate dismissals in review-one-pr.sh" {
   # shellcheck source=/dev/null
   source "$REPO_ROOT/scripts/lib/self-dismissed-approval.sh"

@@ -14,8 +14,8 @@
 # re-run the FULL cascade (every gate armed — never a re-posted approval).
 #
 # Deliberately narrow. Pending re-evaluation only when ALL hold:
-#   • a review by the pr-review identity at <head> carries the approval marker for
-#     <head> and is now DISMISSED;
+#   • the NEWEST review by the pr-review identity at <head> that carries the
+#     approval marker for <head> is now DISMISSED;
 #   • its latest `review_dismissed` event was made by automation (a `[bot]` App,
 #     the pr-review identity, or an AUTOMATION_BOT_LOGINS account) with one of
 #     the gate-dismissal messages below;
@@ -36,7 +36,9 @@ SDA_GATE_DISMISSAL_PREFIXES=(
 # sda_pending_reevaluation <reviews_json> <events_json> <head_sha> <bot_login> [automation_logins]
 #   <reviews_json>: REST `pulls/{n}/reviews` array ({id, user.login, state, commit_id, body}).
 #   <events_json>:  REST `issues/{n}/events` array (review_dismissed events carry
-#                   actor.login and dismissed_review.{review_id, dismissal_message}).
+#                   actor.login and dismissed_review.{review_id, dismissal_message}
+#                   — the live API's shape; review_id is matched as a string, and a
+#                   missing id never matches).
 #   Exit 0 when the approval at <head> is pending re-evaluation; 1 otherwise
 #   (including malformed input).
 sda_pending_reevaluation() {
@@ -57,25 +59,30 @@ sda_pending_reevaluation() {
              or (($automation | split(" ") | map(select(. != "") | lc)) | index($l | lc)) != null);
     def at_head_by_bot:
       select(((.user.login // "") | lc) == ($bot | lc) and (.commit_id // "") == $head);
+    def id_str: if type == "number" or (type == "string" and . != "") then tostring else null end;
     if ($reviews | type) != "array" or ($events | type) != "array" then false
     else
       ($reviews | map(at_head_by_bot)) as $mine
+      # The NEWEST approval verdict at <head> decides (#1933 review): an older
+      # gate-dismissed approval must not revive a newer one a human dismissed.
+      | ([ $mine[]
+           | select(.state == "APPROVED" or .state == "DISMISSED")
+           | select((.body // "") | contains("<!-- pr-review-agent v1 sha=" + $head))
+           | select((.body // "") | test("decision=approved([^[:alnum:]_]|$)")) ]
+         | last) as $newest
       | ([$mine[] | select(.state == "APPROVED")] | length) == 0
-        and (
-          [ $mine[]
-            | select(.state == "DISMISSED")
-            | select((.body // "") | contains("<!-- pr-review-agent v1 sha=" + $head))
-            | select((.body // "") | test("decision=approved([^[:alnum:]_]|$)"))
-            | .id ] as $ids
-          | any($ids[];
-              . as $id
-              | ([ $events[]
-                   | select(.event == "review_dismissed" and (.dismissed_review.review_id // null) == $id) ]
-                 | last) as $ev
-              | $ev != null
-                and is_automation($ev.actor.login)
-                and (($ev.dismissed_review.dismissal_message // "") as $m
-                     | any($prefixes[]; . as $p | $m | startswith($p)))))
+        and $newest != null
+        and $newest.state == "DISMISSED"
+        and (($newest.id | id_str) as $id
+             | $id != null
+               and (([ $events[]
+                       | select(.event == "review_dismissed"
+                                and ((.dismissed_review.review_id // null) | id_str) == $id) ]
+                     | last) as $ev
+                    | $ev != null
+                      and is_automation($ev.actor.login)
+                      and (($ev.dismissed_review.dismissal_message // $ev.dismissal_message // "") as $m
+                           | any($prefixes[]; . as $p | $m | startswith($p)))))
     end' >/dev/null 2>&1
 }
 

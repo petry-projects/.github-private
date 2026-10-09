@@ -127,9 +127,36 @@ setup() {
   [[ "$collapsed" == *"hold was lifted; dev-lead has picked this item up"* ]]
 }
 
-@test "hold-notice wrapper(#2089): notice mode passes the new label to the supersede rewrite" {
-  grep -q 'hold_notice_supersede_body "$old_body" "$keep_label"' \
-    "$SCRIPT_DIR/scripts/dev-lead-hold-notice.sh"
+@test "hold-notice wrapper(#2089): a hold that changes label rewrites the stale notice as superseded, not lifted" {
+  # Drive the real wrapper with gh stubbed: the item has a live dev-lead:hands-off
+  # notice and is now held under needs-human-review. Capture the PATCH body.
+  local stub="$BATS_TEST_TMPDIR/bin" old
+  mkdir -p "$stub"
+  old="$(hold_notice_body "dev-lead:hands-off")"
+  jq -n --arg b "$old" '[{id: 7, user: {login: "dl-bot"}, body: $b}]' > "$BATS_TEST_TMPDIR/comments.json"
+  jq -n --arg b "$old" '$b' > "$BATS_TEST_TMPDIR/old.json"
+  cat > "$stub/gh" <<'GHEOF'
+#!/bin/bash
+case "$*" in
+  *"--paginate repos/o/r/issues/5/comments"*) cat "$T/comments.json" ;;
+  *"-X PATCH repos/o/r/issues/comments/7"*) cat > "$T/patch.json" ;;
+  *"repos/o/r/issues/comments/7"*) jq -r . "$T/old.json" ;;
+  *"issue comment 5"*) cat > "$T/posted.txt" ;;
+  *) exit 1 ;;
+esac
+GHEOF
+  chmod +x "$stub/gh"
+  T="$BATS_TEST_TMPDIR" PATH="$stub:$PATH" REPO=o/r SUBJECT_NUMBER=5 HOLD_LABEL=needs-human-review \
+    NOTICE_AUTHOR=dl-bot DEV_LEAD_DRY_RUN=false DRY_RUN=false \
+    run bash "$SCRIPT_DIR/scripts/dev-lead-hold-notice.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"collapsed stale hold notice 7"* ]]
+  local patched; patched="$(jq -r .body "$BATS_TEST_TMPDIR/patch.json")"
+  [[ "$patched" == *"<!-- dev-lead-hold-notice superseded label=dev-lead:hands-off -->"* ]]
+  [[ "$patched" == *"withholding action under the \`needs-human-review\` label"* ]]
+  [[ "$patched" != *"was lifted"* ]]
+  [[ "$patched" != *"picked this item up"* ]]
+  grep -q 'dev-lead-hold-notice label=needs-human-review' "$BATS_TEST_TMPDIR/posted.txt"
 }
 
 @test "body_has_active_hold_notice: true for a live notice, false once collapsed" {

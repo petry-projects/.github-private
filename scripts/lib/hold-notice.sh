@@ -131,7 +131,7 @@ hold_notice_supersede_body() {
   stripped="${body//"$active"/}"
   printf '%s\n' "$(hold_notice_superseded_marker "$label")"
   if [ -n "$replacing" ] && [ "$replacing" != "$label" ]; then
-    printf '<details><summary><em>Superseded — dev-lead is now withholding action under the `%s` label (see the newer notice). Click to expand the prior `%s` hold notice.</em></summary>\n\n' "$replacing" "$label"
+    printf '<details><summary><em>Superseded — dev-lead is now withholding action under the `%s` label. Click to expand the prior `%s` hold notice.</em></summary>\n\n' "$replacing" "$label"
   else
     printf '<details><summary><em>Resolved — the `%s` hold was lifted; dev-lead has picked this item up. Click to expand the prior hold notice.</em></summary>\n\n' "$label"
   fi

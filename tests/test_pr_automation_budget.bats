@@ -244,11 +244,32 @@ mk_bot_events() {  # mk_bot_events <count>
 }
 
 @test "pr_resume_suppressed(#2089): dev-lead:hands-off → suppress without reading budget events" {
-  # events_json is deliberately unreadable: a hold must short-circuit before the
-  # budget read, so the result cannot depend on (or wait for) the events API.
-  run pr_resume_suppressed 2085 petry-projects/demo '["bug","dev-lead:hands-off"]' 'not json'
+  # The budget gate is stubbed to "not exhausted" and the events are unreadable,
+  # so only the hold itself can suppress: it must short-circuit before the budget.
+  pr_budget_exhausted() { return 1; }
+  gather_pr_automation_events() { echo "events read" >&2; return 1; }
+  run pr_resume_suppressed 2085 petry-projects/demo '["bug","dev-lead:hands-off"]'
   [ "$status" -eq 0 ]
   [[ "$output" == *"carries dev-lead:hands-off"* ]]
+  [[ "$output" != *"events read"* ]]
+}
+
+@test "pr_resume_suppressed(#2089 review): an unreadable label set suppresses (fail closed)" {
+  pr_budget_exhausted() { return 1; }
+  local bad
+  for bad in 'not json' 'null' '{"labels":[]}'; do
+    run pr_resume_suppressed 2085 petry-projects/demo "$bad" '[]'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"labels unavailable"* ]]
+  done
+  # A failed label fetch (labels not passed in) suppresses too — never read as `[]`.
+  gh() { return 1; }
+  run pr_resume_suppressed 2085 petry-projects/demo '' '[]'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"labels unavailable"* ]]
+  # …while a label set that was read and is empty still proceeds.
+  run pr_resume_suppressed 2085 petry-projects/demo '[]' '[]'
+  [ "$status" -ne 0 ]
 }
 
 @test "pr_resume_suppressed(#2089): dev-lead:needs-human → suppress" {

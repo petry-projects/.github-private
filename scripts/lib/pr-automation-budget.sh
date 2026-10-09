@@ -189,13 +189,20 @@ _pr_items_have_marker() {
 #
 #   labels_json / events_json may be passed in by a caller that already fetched
 #   them (avoids a redundant API round-trip); when omitted they are fetched here.
+#   A labels_json that is not a JSON array (a failed fetch or parse) suppresses.
 pr_resume_suppressed() {
   local pr="$1" repo="$2" labels_json="${3:-}" events_json="${4:-}"
   [ -n "$pr" ] && [ -n "$repo" ] || return 1
 
   if [ -z "$labels_json" ]; then
     labels_json=$(gh api "repos/${repo}/pulls/${pr}" \
-      --jq '[.labels[]?.name]' 2>/dev/null || echo '[]')
+      --jq '[.labels[]?.name]' 2>/dev/null) || labels_json=''
+  fi
+  # An unreadable label set may be hiding a hold, so it suppresses (fail closed,
+  # #2089 review); `[]` is reserved for a label set that was read and is empty.
+  if ! jq -e 'type == "array"' <<<"$labels_json" >/dev/null 2>&1; then
+    echo "  [suppress] PR #${pr} in ${repo} — labels unavailable (API error or unreadable); suppressing fail-closed" >&2
+    return 0
   fi
   if pr_has_escalation_label "$labels_json"; then
     echo "  [suppress] PR #${pr} in ${repo} carries ${NEEDS_HUMAN_REVIEW_LABEL} — human-gated; not resuming (#946)" >&2
@@ -205,8 +212,9 @@ pr_resume_suppressed() {
   # resume/retry paths too. Before #2089 only the escalation label did, so a held
   # PR still got retry markers, dispatch guards and a dispatched run that then
   # skipped at intent time — clutter plus spent retry attempts.
-  local hold
-  if hold=$(pr_hold_gate_label "$labels_json"); then
+  local hold hold_rc=0
+  hold=$(pr_hold_gate_label "$labels_json") || hold_rc=$?
+  if [ "$hold_rc" -eq 0 ]; then
     echo "  [suppress] PR #${pr} in ${repo} carries ${hold} — human hold; not resuming (#2089)" >&2
     return 0
   fi
