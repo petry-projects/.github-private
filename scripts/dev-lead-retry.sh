@@ -109,6 +109,9 @@ source "$SCRIPT_DIR/lib/bot-thread-retry.sh"
 # Per-target payload-field gate (#2086): dcg_init / dcg_payload_allowed / dcg_target_reads.
 # shellcheck source=lib/dispatch-channel-gate.sh
 source "$SCRIPT_DIR/lib/dispatch-channel-gate.sh"
+# Budget poller log reader (#2139): bp_download_latest_log / bp_last_ok / bp_staleness.
+# shellcheck source=lib/budget-poller.sh
+source "$SCRIPT_DIR/lib/budget-poller.sh"
 
 TARGET_ORG="${TARGET_ORG:-petry-projects}"
 DELEGATION_ORGS="${DELEGATION_ORGS:-}"
@@ -160,6 +163,128 @@ is_reset_in_future() {
   local reset_epoch
   reset_epoch=$(date -u -d "$reset_iso" +%s 2>/dev/null || echo 0)
   [ "$(get_now_epoch)" -lt "$reset_epoch" ]
+}
+
+# ── Budget hold (#2139) ─────────────────────────────────────────────────────
+# The dry-run budget poller (#2029) is the one workflow holding the Claude
+# token; it publishes each usage read as a `budget-poller-log` artifact. This
+# cron reads that artifact once per run (budget_hold_init, from main) and holds
+# status=rate-limited retries while the `session` or `weekly_all` window is at or
+# above 100% with a future reset, until the later such reset. The rate-limit
+# text is never parsed, and weekly_scoped (per-model, handled by model fallback)
+# is never read. Every failure fails open: no hold, retry exactly as before.
+
+# budget_hold_reset_epoch <iso>: epoch for an ISO-8601 reset with a date, a time
+# and an optional Z/offset, or empty. date -d alone would also accept free text.
+budget_hold_reset_epoch() {
+  local iso="${1:-}"
+  [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:?[0-9]{2})?$ ]] || return 0
+  date -u -d "$iso" +%s 2>/dev/null || true
+}
+
+# budget_hold_from_record <record_json> <now_epoch>: PURE apart from date. Echo
+#   `hold <session|weekly|session+weekly> <reset ISO, UTC>` — exhausted window(s)
+#       with a future reset; when both, the later reset;
+#   `missing <window>` — no hold, and a window's percent, or an exhausted
+#       window's reset, is absent or unparseable (fail open);
+#   `none` — no window is exhausted with a future reset.
+budget_hold_from_record() {
+  local record="$1" now="$2" fields s_pct s_reset w_pct w_reset w pct reset epoch label="" until=0 missing=""
+  fields=$(jq -r '[ (.session_pct | numbers | tostring) // "", (.session_resets_at | strings) // "",
+                    (.weekly_all_pct | numbers | tostring) // "", (.weekly_all_resets_at | strings) // "" ]
+                  | map(gsub("[|\n]"; " ")) | join("|")' <<< "$record" 2>/dev/null || true)
+  IFS='|' read -r s_pct s_reset w_pct w_reset <<< "$fields"
+  for w in session weekly_all; do
+    if [ "$w" = "session" ]; then pct="$s_pct" reset="$s_reset"; else pct="$w_pct" reset="$w_reset"; fi
+    if [ -z "$pct" ]; then
+      missing="${missing:-$w}"
+      continue
+    fi
+    [ "$pct" -ge 100 ] 2>/dev/null || continue
+    epoch=$(budget_hold_reset_epoch "$reset")
+    if ! [[ "$epoch" =~ ^[0-9]+$ ]]; then
+      missing="${missing:-$w}"
+      continue
+    fi
+    [ "$epoch" -gt "$now" ] || continue
+    label="${label:+${label}+}${w%_all}"
+    [ "$epoch" -gt "$until" ] && until="$epoch"
+  done
+  if [ -n "$label" ]; then
+    printf 'hold %s %s\n' "$label" "$(date -u -d "@$until" +%Y-%m-%dT%H:%M:%SZ)"
+  elif [ -n "$missing" ]; then
+    printf 'missing %s\n' "$missing"
+  else
+    printf 'none\n'
+  fi
+}
+
+# budget_hold_init: once per cron run, read the poller's latest log and set
+# BUDGET_HOLD_UNTIL (empty = no hold) and BUDGET_HOLD_WINDOW. Logs exactly one
+# greppable `retry-cron:` line. Never fails.
+budget_hold_init() {
+  BUDGET_HOLD_UNTIL=""
+  BUDGET_HOLD_WINDOW=""
+  local log rc=0 record state now verdict age_text reason=""
+  now=$(get_now_epoch)
+  log=$(mktemp) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "retry-cron: budget hold fail-open (temp file unavailable), retrying as usual"
+    return 0
+  fi
+  bp_download_latest_log "${BUDGET_POLLER_REPO:-petry-projects/.github-private}" "$log" || rc=$?
+  if [ "$rc" -eq 1 ]; then
+    reason="no readable ${BUDGET_POLLER_ARTIFACT} artifact"
+  elif [ "$rc" -ne 0 ]; then
+    reason="artifact download error"
+  else
+    record=$(bp_last_ok "$log")
+    state=$(bp_staleness "$log" "$now")
+    if [ -z "$record" ]; then
+      reason="no poll==ok record"
+    elif [ "$state" = "never" ]; then
+      reason="unparseable record"
+    else
+      age_text=$(bp_age_text "${state#* }")
+      if [ "${state%% *}" = "stale" ]; then
+        reason="stale record, poll ${age_text} old > $(bp_stale_hours)h"
+      fi
+    fi
+  fi
+  rm -f "$log"
+  if [ -n "$reason" ]; then
+    echo "retry-cron: budget hold fail-open (${reason}), retrying as usual"
+    return 0
+  fi
+
+  verdict=$(budget_hold_from_record "$record" "$now")
+  case "$verdict" in
+    hold\ session+weekly\ *)
+      BUDGET_HOLD_WINDOW="session+weekly"
+      BUDGET_HOLD_UNTIL="${verdict##* }"
+      echo "retry-cron: session and weekly windows exhausted, holding retries until ${BUDGET_HOLD_UNTIL} (poll ${age_text} old)"
+      ;;
+    hold\ *)
+      BUDGET_HOLD_WINDOW="${verdict#* }"
+      BUDGET_HOLD_WINDOW="${BUDGET_HOLD_WINDOW%% *}"
+      BUDGET_HOLD_UNTIL="${verdict##* }"
+      echo "retry-cron: ${BUDGET_HOLD_WINDOW} window exhausted, holding retries until ${BUDGET_HOLD_UNTIL} (poll ${age_text} old)"
+      ;;
+    missing\ *)
+      echo "retry-cron: budget hold fail-open (${verdict#missing } window missing or unparseable, poll ${age_text} old), retrying as usual"
+      ;;
+    *)
+      echo "retry-cron: no Claude window exhausted with a future reset (poll ${age_text} old), retrying as usual"
+      ;;
+  esac
+  return 0
+}
+
+# budget_hold_active: 0 while the hold budget_hold_init found has not reset.
+# No hold (or none read) is "not active", as an unknown reset is in
+# is_reset_in_future.
+budget_hold_active() {
+  is_reset_in_future "${BUDGET_HOLD_UNTIL:-}"
 }
 
 # has_dispatch_guard <comments_json> <sha>
@@ -452,6 +577,9 @@ scan_pr_for_rate_limits() {
     if is_reset_in_future "$reset_time"; then
       echo "  [skip] fix-ci rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
       held=1
+    elif budget_hold_active; then
+      echo "  [skip] fix-ci rate-limit for PR ${pr_number} held by the budget poller until ${BUDGET_HOLD_UNTIL}" >&2
+      held=1
     else
       # Skip if a terminal marker was already posted for this SHA (prior retry succeeded)
       local terminal_pattern="${CI_MARKER_PREFIX}${head_sha} status=(applied|failed|no-changes)"
@@ -496,6 +624,17 @@ scan_pr_for_rate_limits() {
 
       if is_reset_in_future "$reset_time"; then
         echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
+        held=1
+        continue
+      fi
+
+      # Budget hold (#2139): only when the newest hold marker is a quota one.
+      local hold_status
+      hold_status=$(jq -r --arg pat "$reviews_pattern" \
+        '[.[] | select(test($pat))] | last | capture("status=(?<s>[a-z-]+)") | .s // ""' \
+        <<< "$comments_json" 2>/dev/null || true)
+      if [ "$hold_status" = "rate-limited" ] && budget_hold_active; then
+        echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} held by the budget poller until ${BUDGET_HOLD_UNTIL}" >&2
         held=1
         continue
       fi
@@ -1192,6 +1331,10 @@ scan_issue_for_retry() {
     echo "  [skip] issue #${issue_number} rate-limit not yet cleared (resets ${reset})" >&2
     echo "0"; return 0
   fi
+  if [ "$status" = "rate-limited" ] && budget_hold_active; then
+    echo "  [skip] issue #${issue_number} rate-limit held by the budget poller until ${BUDGET_HOLD_UNTIL}" >&2
+    echo "0"; return 0
+  fi
 
   # Enforce the attempt ceiling. attempt>=MAX means fix-issue.sh already escalated
   # to a human on its last failure; do not re-dispatch.
@@ -1298,6 +1441,10 @@ main() {
   else
     echo "[retry] SWEEP_AGENT_REF unset: per-target payload-field gate off (#2086)"
   fi
+
+  # Read the budget poller's published result ONCE per run, here in the parent
+  # shell: every scan below runs in a $(...) subshell and inherits the hold.
+  budget_hold_init
 
   local repo_index=0
   for repo in "${all_repos[@]}"; do

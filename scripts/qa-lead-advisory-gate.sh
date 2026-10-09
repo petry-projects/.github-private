@@ -38,9 +38,12 @@ source "${_QA_LEAD_GATE_DIR}/lib/pr-automation-budget.sh"
 #   dev-lead:needs-human). Malformed/empty input degrades to "not present".
 qa_lead_labels_contain() {
   local labels_json="${1:-[]}" needle="$2"
-  jq -e --arg l "$needle" \
-    'if type == "array" then any(.[]; . == $l) else false end' \
-    <<< "$labels_json" >/dev/null 2>&1
+  if jq -e --arg l "$needle" \
+      'if type == "array" then any(.[]; . == $l) else false end' \
+      <<< "$labels_json" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 # qa_lead_gate_decision <changed_paths> <labels_json> <existing_advisory 0|1> <budget_exhausted 0|1>
