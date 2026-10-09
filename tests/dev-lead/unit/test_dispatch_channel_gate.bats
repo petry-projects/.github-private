@@ -36,6 +36,9 @@ setup() {
   export TARGET_ORG="petry-projects"
   export DCG_HOST_REPO="petry-projects/.github-private"
   unset SWEEP_AGENT_REF DELEGATION_ORGS GITHUB_REPOSITORY
+  # The per-sweep cache dcg_init would make.
+  export DCG_CACHE_DIR="$BATS_TEST_TMPDIR/dcg"
+  mkdir -p "$DCG_CACHE_DIR"
 
   # gh stub. Every call is logged to $MOCK_BIN/calls; an unexpected call fails
   # loudly (exit 97) so a test never passes on a silent default.
@@ -172,8 +175,8 @@ _calls() { grep -c -- "$1" "$MOCK_BIN/calls" || true; }
   [ "$status" -eq 0 ]
   [ "$output" = "dev-lead/v139-ring1" ]
   dcg_target_pin petry-projects/markets >/dev/null
-  dcg_target_pin petry-projects/markets >/dev/null
-  [ "$(_calls 'repos/petry-projects/markets/contents')" -eq 2 ]  # run's subshell + the cached one
+  [ "$(dcg_target_pin petry-projects/markets)" = "dev-lead/v139-ring1" ]
+  [ "$(_calls 'repos/petry-projects/markets/contents')" -eq 1 ]
 }
 
 @test "pin: a 404 from a repo the token cannot read is unreadable (1), not absent" {
@@ -224,11 +227,14 @@ _calls() { grep -c -- "$1" "$MOCK_BIN/calls" || true; }
 
 # ── dcg_init / dcg_target_reads ──────────────────────────────────────────────
 
-@test "init: unset → gate off; a channel tag → on; anything else is an error" {
+@test "init: unset → gate off; a channel tag → on with a cache dir; anything else is an error" {
   dcg_init
   [ -z "$DCG_SWEEP_REF" ]
-  SWEEP_AGENT_REF=dev-lead/v139-ring0 dcg_init
+  DCG_CACHE_DIR=""
+  SWEEP_AGENT_REF=dev-lead/v139-ring0 RUNNER_TEMP="$BATS_TEST_TMPDIR" dcg_init
   [ "$DCG_SWEEP_REF" = "dev-lead/v139-ring0" ]
+  [ -d "$DCG_CACHE_DIR" ]
+  [[ "$DCG_CACHE_DIR" == "$BATS_TEST_TMPDIR"/dcg.* ]]
   SWEEP_AGENT_REF=main run dcg_init
   [ "$status" -eq 1 ]
   [[ "$output" == *"::error::"* ]]
@@ -275,6 +281,22 @@ _calls() { grep -c -- "$1" "$MOCK_BIN/calls" || true; }
   dcg_target_reads petry-projects/broodly pr_number comment_node_id 2>>"$err" || rc=$?
   [ "$(grep -c '::warning::' "$err")" -eq 1 ]
   grep -q '::warning::.*petry-projects/broodly.*dev-lead/v1-stable.*comment_node_id' "$err"
+}
+
+@test "reads: the cache survives the subshells the sweep calls it in" {
+  DCG_SWEEP_REF=dev-lead/v139-ring0
+  _pin petry-projects/broodly dev-lead/v1-stable
+  _parser dev-lead/v1-stable "${V1_FIELDS[@]}"
+  local i out
+  for i in 1 2 3; do
+    out="$(dcg_target_reads petry-projects/broodly pr_number comment_node_id 2>&1 || true)"
+  done
+  [ "$(_calls 'repos/petry-projects/broodly/contents')" -eq 1 ]
+  [ "$(_calls 'dev-lead-intent.sh?ref=')" -eq 1 ]
+  [ "$(_calls 'helper.sh?ref=')" -eq 1 ]
+  # ...and so does warn-once: the later calls only log the hold.
+  [[ "$out" != *"::warning::"* ]]
+  [[ "$out" == *"[hold] petry-projects/broodly"* ]]
 }
 
 @test "reads: no dev-lead.yml → held without a warning" {

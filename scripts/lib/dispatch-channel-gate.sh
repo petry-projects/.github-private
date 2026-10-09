@@ -48,8 +48,28 @@ DCG_PARSER="scripts/dev-lead-intent.sh"
 # INFORMATIONAL_FIELDS in scripts/check-retry-payload-fields.sh.
 DCG_INFORMATIONAL_FIELDS=(repo attempt)
 DCG_SWEEP_REF=""
-# repo -> pin | "!<rc>" (2 = no stub, 1 = unreadable); ref -> fields | "!"
-declare -gA _DCG_PIN_CACHE=() _DCG_FIELDS_CACHE=() _DCG_WARNED=()
+# Per-sweep cache. The sweep runs its scans and these lookups inside command
+# substitutions (subshells), where a shell variable written is lost on return, so
+# the cache lives in files: pin.<repo> = ref | "!<rc>", fields.<ref> = keys | "!",
+# warned.<key>. dcg_init makes it; without it nothing is cached.
+DCG_CACHE_DIR="${DCG_CACHE_DIR:-}"
+
+_dcg_cache_file() {
+  printf '%s/%s.%s' "$DCG_CACHE_DIR" "$1" "$(printf '%s' "$2" | sha256sum | cut -c1-32)"
+}
+# _dcg_cache_get <kind> <key>: prints the cached value; returns 1 on a miss.
+_dcg_cache_get() {
+  [ -n "$DCG_CACHE_DIR" ] || return 1
+  local f
+  f="$(_dcg_cache_file "$1" "$2")"
+  [ -f "$f" ] || return 1
+  cat -- "$f"
+}
+# _dcg_cache_put <kind> <key> <value>
+_dcg_cache_put() {
+  [ -n "$DCG_CACHE_DIR" ] || return 0
+  printf '%s' "$3" >"$(_dcg_cache_file "$1" "$2")" 2>/dev/null || true
+}
 
 # dcg_init: turn the gate on for the sweep's channel. Returns 1 when
 # SWEEP_AGENT_REF is set but is not a channel tag (a configuration error).
@@ -61,6 +81,9 @@ dcg_init() {
     return 1
   fi
   DCG_SWEEP_REF="$SWEEP_AGENT_REF"
+  if [ -z "$DCG_CACHE_DIR" ]; then
+    DCG_CACHE_DIR="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dcg.XXXXXX")" || return 1
+  fi
 }
 
 # dcg_parse_agent_ref: stdin = dev-lead.yml text; prints the ref its harness
@@ -83,8 +106,7 @@ dcg_parse_agent_ref() {
 # Cached per sweep.
 dcg_target_pin() {
   local repo="$1" out rc=0
-  if [ -n "${_DCG_PIN_CACHE[$repo]+set}" ]; then
-    out="${_DCG_PIN_CACHE[$repo]}"
+  if out="$(_dcg_cache_get pin "$repo")"; then
     if [[ "$out" == "!"* ]]; then return "${out#!}"; fi
     printf '%s\n' "$out"; return 0
   fi
@@ -102,10 +124,10 @@ dcg_target_pin() {
     rc=1
   fi
   if [ "$rc" -ne 0 ]; then
-    _DCG_PIN_CACHE[$repo]="!${rc}"
+    _dcg_cache_put pin "$repo" "!${rc}"
     return "$rc"
   fi
-  _DCG_PIN_CACHE[$repo]="$out"
+  _dcg_cache_put pin "$repo" "$out"
   printf '%s\n' "$out"
 }
 
@@ -122,17 +144,19 @@ _dcg_fetch_at() {
 # Returns 1 when any of those files cannot be read. Cached per sweep.
 dcg_fields_read_at() {
   local ref="$1" src all="" lib
-  if [ -n "${_DCG_FIELDS_CACHE[$ref]+set}" ]; then
-    [ "${_DCG_FIELDS_CACHE[$ref]}" != "!" ] || return 1
-    printf '%s' "${_DCG_FIELDS_CACHE[$ref]}"; return 0
+  if all="$(_dcg_cache_get fields "$ref")"; then
+    [ "$all" != "!" ] || return 1
+    [ -z "$all" ] || printf '%s\n' "$all"
+    return 0
   fi
+  all=""
   local -a queue=("$DCG_PARSER") seen=()
   while [ "${#queue[@]}" -gt 0 ]; do
     lib="${queue[0]}"; queue=("${queue[@]:1}")
     case " ${seen[*]} " in *" $lib "*) continue ;; esac
     seen+=("$lib")
     if ! src="$(_dcg_fetch_at "$lib" "$ref")" || [ -z "$src" ]; then
-      _DCG_FIELDS_CACHE[$ref]="!"
+      _dcg_cache_put fields "$ref" "!"
       return 1
     fi
     # Drop shell comments (not `$#`), so prose naming a field is not a read.
@@ -143,15 +167,15 @@ dcg_fields_read_at() {
   all="$(grep -oE '\.client_payload\.[A-Za-z_][A-Za-z0-9_]*' <<<"$all" \
            | sed 's/^\.client_payload\.//' | sort -u || true)"
   [ -z "$all" ] || all+=$'\n'
-  _DCG_FIELDS_CACHE[$ref]="$all"
+  _dcg_cache_put fields "$ref" "$all"
   printf '%s' "$all"
 }
 
 # _dcg_warn_once <key> <message>: a ::warning:: per key per sweep, so a repo with
 # many held PRs logs its reason once.
 _dcg_warn_once() {
-  [ -z "${_DCG_WARNED[$1]+set}" ] || return 0
-  _DCG_WARNED[$1]=1
+  ! _dcg_cache_get warned "$1" >/dev/null || return 0
+  _dcg_cache_put warned "$1" 1
   echo "::warning::$2" >&2
 }
 
