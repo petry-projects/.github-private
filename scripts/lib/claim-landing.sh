@@ -112,32 +112,58 @@ cl_select_pass_claims() {
   done <<<"$rows"
 }
 
-# cl_select_unmarked_replies <comments_json> <bot_user> <since_iso>
-#   <comments_json> is the REST `pulls/{pr}/comments` array. Emits one
-#   `<id>\t<base64 body>` row per comment that our account (bot_user, its
-#   [bot]-suffixed or stripped form) created at or after <since_iso> (the pass start)
-#   and that carries NO agent marker (the shared _MAINTAINER_REVIEW_GATE_AGENT_MARKERS
-#   set). dev-lead posts its skip notes from the model's shell as the SAME account the
-#   maintainer uses, so such a reply is indistinguishable from a maintainer comment
-#   until the harness stamps it (#2079 AC4). An empty <since_iso> or a non-array
-#   payload selects nothing (rc 0 / rc 1 on unparseable input). Pure.
-cl_select_unmarked_replies() {
-  local comments_json="${1:-}" bot_user="${2:-}" since="${3:-}"
-  [[ -z "$since" ]] && return 0
-  local bot_stripped="${bot_user%\[bot\]}"
-  jq -r \
-    --arg u "$bot_user" --arg us "$bot_stripped" --arg since "$since" \
-    --arg markers "$_MAINTAINER_REVIEW_GATE_AGENT_MARKERS" '
-      if type == "array" then
-        .[] | objects
-        | (.user.login // "") as $l
-        | select($l == $u or $l == $us or $l == ($us + "[bot]"))
-        | select((.created_at // "") >= $since)
-        | select(((.body // "") | test($markers)) | not)
-        | [(.id | tostring), ((.body // "") | @base64)]
-        | @tsv
-      else empty end
-    ' <<<"$comments_json" 2>/dev/null
+# cl_install_reply_recorder <record_file> [real_gh]
+#   Attribution by IDENTITY, not by time window (#2079 AC4). dev-lead posts as the SAME
+#   account the maintainer uses, so "our login since the pass start" would also match a
+#   comment the human posts mid-pass. Instead a `gh` shim is installed in a fresh
+#   directory (echoed on stdout; the caller prepends it to the engine's PATH). The shim
+#   forwards every call to the real gh unchanged and, for an
+#   addPullRequestReviewThreadReply call, appends the posted reply's node id to
+#   <record_file> (or the literal UNATTRIBUTED when the response carries no id, so the
+#   caller can fail closed). The record file is created empty. Returns 1 on failure.
+cl_install_reply_recorder() {
+  local record="${1:-}" real="${2:-}"
+  [[ -z "$record" ]] && return 1
+  [[ -z "$real" ]] && { real=$(command -v gh 2>/dev/null) || real=""; }
+  [[ -z "$real" ]] && return 1
+  local dir
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/dev-lead-recorder.XXXXXX") || return 1
+  : > "$record" || return 1
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'real=%q\nrec=%q\n' "$real" "$record"
+    cat <<'SHIM'
+case "$*" in
+  *addPullRequestReviewThreadReply*)
+    rc=0
+    out=$("$real" "$@") || rc=$?
+    printf '%s\n' "$out"
+    if [ "$rc" -eq 0 ]; then
+      id=$(jq -r '.data.addPullRequestReviewThreadReply.comment.id // empty' <<<"$out" 2>/dev/null || true)
+      printf '%s\n' "${id:-UNATTRIBUTED}" >> "$rec"
+    fi
+    exit "$rc"
+    ;;
+esac
+exec "$real" "$@"
+SHIM
+  } > "$dir/gh"
+  chmod +x "$dir/gh"
+  printf '%s\n' "$dir"
+}
+
+# cl_recorded_reply_ids <record_file>
+#   Emits the unique node ids the recorder captured, one per line. Returns 1 when the
+#   record is missing or holds an UNATTRIBUTED entry (a reply whose id is unknown, so
+#   nothing can be trusted: the no-change path must be disabled). Pure.
+cl_recorded_reply_ids() {
+  local record="${1:-}"
+  [[ -n "$record" && -f "$record" ]] || return 1
+  if grep -qx 'UNATTRIBUTED' "$record"; then
+    return 1
+  fi
+  { grep -v '^[[:space:]]*$' "$record" || true; } | sort -u
+  return 0
 }
 
 # cl_reply_stamp_body <body>

@@ -128,6 +128,10 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   # The pass boundary for the claim-retraction sweep (#2013): only claim replies
   # created at/after this instant are this pass's to retract.
   PASS_START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Reply-id record for stamp_pass_replies (#2079 AC4): created empty here so a pass
+  # that never runs the engine still has a (empty) record; the engine run installs the
+  # recording gh shim that fills it. A missing record disables the no-change path.
+  PASS_REPLY_RECORD="$(mktemp "${TMPDIR:-/tmp}/dev-lead-replies.XXXXXX" 2>/dev/null || true)"
   setup_git_identity
   # Backfill the five required description sections into a pre-existing PR whose
   # body still lacks them (#1805). Idempotent + marker-keyed, so open PRs heal on
@@ -176,7 +180,17 @@ build_and_run() {
   fi
 
   local rc=0
-  run_writer_with_fallback "$prompt_file" "${INTENT_TYPE:-}" || rc=$?
+  # Run the model with a recording gh shim first on PATH so every review-thread reply it
+  # posts is attributable by node id (#2079 AC4). No recorder => nothing is trusted.
+  local shim_dir="" engine_path="$PATH"
+  if [ -n "${PASS_REPLY_RECORD:-}" ] && shim_dir=$(cl_install_reply_recorder "$PASS_REPLY_RECORD"); then
+    engine_path="${shim_dir}:${PATH}"
+  else
+    echo "::warning::could not install the reply recorder — no-change dispositions are disabled this pass (#2079)"
+    [ -n "${PASS_REPLY_RECORD:-}" ] && printf 'UNATTRIBUTED\n' > "$PASS_REPLY_RECORD"
+  fi
+  PATH="$engine_path" run_writer_with_fallback "$prompt_file" "${INTENT_TYPE:-}" || rc=$?
+  [ -n "$shim_dir" ] && rm -rf "$shim_dir"
   rm -f "${prompt_file:-}"
   return "$rc"
 }
@@ -812,6 +826,8 @@ resolve_addressed_bot_threads() {
   # become a later pass's "maintainer verdict" (#2079 AC4). On failure the no-change
   # path is disabled for this pass.
   local stamp_ok=1
+  local nochange_epoch=""
+  nochange_epoch=$(nochange_epoch_cutoff) || stamp_ok=0
   stamp_pass_replies || stamp_ok=0
 
   # The enumeration pass ONLY collects candidate thread ids (unresolved,
@@ -880,7 +896,7 @@ resolve_addressed_bot_threads() {
     # A truncated comment page may hide a later neutral maintainer comment that
     # supersedes the affirmation -> fail closed (skip this path) unless fully read.
     if [ "$stamp_ok" -eq 1 ] && [ "$(printf '%s' "$node_json" | jq -r 'if .data.node.comments.pageInfo.hasNextPage == false then "false" else "true" end' 2>/dev/null || echo true)" = "false" ]; then
-      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json" "$_ACV_REPLY_MARKER_EPOCH") && nochange_rc=0 || nochange_rc=$?
+      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json" "$nochange_epoch") && nochange_rc=0 || nochange_rc=$?
     else
       nochange_disposition="" nochange_rc=1
     fi
@@ -1217,6 +1233,8 @@ resolve_deferred_bot_threads() {
   # Stamp this pass's own replies before evaluating any thread (#2079 AC4); on failure
   # the no-change path is disabled for this pass.
   local stamp_ok=1
+  local nochange_epoch=""
+  nochange_epoch=$(nochange_epoch_cutoff) || stamp_ok=0
   stamp_pass_replies || stamp_ok=0
   local ids
   ids=$(list_unresolved_bot_thread_ids) || {
@@ -1334,7 +1352,7 @@ resolve_deferred_bot_threads() {
     # A maintainer's "no change needed" verdict can resolve the thread without a deferral.
     local nochange_disposition nochange_rc
     if [ "$stamp_ok" -eq 1 ]; then
-      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json" "$_ACV_REPLY_MARKER_EPOCH") && nochange_rc=0 || nochange_rc=$?
+      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json" "$nochange_epoch") && nochange_rc=0 || nochange_rc=$?
     else
       nochange_disposition="" nochange_rc=1
     fi
@@ -2990,37 +3008,53 @@ verify_push_landed() {
   return 0
 }
 
+# nochange_epoch_cutoff — the instant from which a marker-less maintainer comment may
+# authorize a no-change resolution (#2079 AC4). Read from DEV_LEAD_NOCHANGE_EPOCH, never
+# hard-coded: dev-lead replies posted by a release that predates the stamping are
+# marker-less and look like the maintainer's own, so the maintainer turns the path on
+# (by setting this to an instant after the stamping release reached every consumer's
+# channel) only when that is safe. Unset or unparseable => returns 1: the no-change
+# path is disabled.
+nochange_epoch_cutoff() {
+  local e="${DEV_LEAD_NOCHANGE_EPOCH:-}"
+  [[ "$e" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  _acv_is_iso8601 "$e" || return 1
+  printf '%s\n' "$e"
+}
+
 # stamp_pass_replies — make every review-thread reply this pass posted attributable to
 # dev-lead (#2079 AC4). The model posts skip notes from its own shell as the SAME
 # account the maintainer uses, and only addressed claims are told to carry a marker, so
 # a marker-less "No change needed" skip note would otherwise read as the maintainer's
-# verdict and let the next pass resolve the bot thread with no human involved. Every
-# reply OUR account created since PASS_START_ISO that lacks an agent marker gets
-# `<!-- dev-lead:reply -->` appended. Enforced here in shell, not in the prompt.
-# Returns non-zero when the pass boundary is unknown or any listing/PATCH failed; the
-# resolvers then skip the no-change path (fail closed). Idempotent: stamped replies
-# carry a marker and are never selected again. Replies from before this stamping
-# existed are excluded by _ACV_REPLY_MARKER_EPOCH in acv_latest_nochange_disposition.
+# verdict. Attribution is by IDENTITY: the recording gh shim (cl_install_reply_recorder)
+# captured the node id of each reply the pass posted, and ONLY those ids are rewritten
+# (`<!-- dev-lead:reply -->` appended when no agent marker is present). A comment whose
+# id was not recorded — e.g. the maintainer's own, posted mid-pass — is never touched.
+# Returns non-zero when no recorder record exists, a reply could not be attributed, or a
+# fetch/update failed; the resolvers then skip the no-change path (fail closed).
+# Idempotent: a stamped reply carries a marker and is skipped.
 stamp_pass_replies() {
-  [ -z "${PR_NUMBER:-}" ] && return 1
-  [ -z "${PASS_START_ISO:-}" ] && return 1
-  local bot_user="${BOT_USER:-donpetry-bot}" comments rows id body_b64 body failed=0
-  if ! comments=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" 2>/dev/null | jq -s 'add // []' 2>/dev/null); then
-    echo "::warning::stamp_pass_replies: could not list review comments on PR #${PR_NUMBER} — no-change dispositions are disabled this pass (#2079)"
+  local record="${PASS_REPLY_RECORD:-}" ids id body_json body failed=0
+  if ! ids=$(cl_recorded_reply_ids "$record"); then
+    echo "::warning::stamp_pass_replies: no usable reply record — no-change dispositions are disabled this pass (#2079)"
     return 1
   fi
-  rows=$(cl_select_unmarked_replies "$comments" "$bot_user" "$PASS_START_ISO") || {
-    echo "::warning::stamp_pass_replies: could not parse the review comments on PR #${PR_NUMBER} — no-change dispositions are disabled this pass (#2079)"
-    return 1
-  }
-  while IFS=$'\t' read -r id body_b64; do
+  while IFS= read -r id; do
     [ -z "$id" ] && continue
-    body=$(base64 --decode <<<"$body_b64" 2>/dev/null) || { failed=1; continue; }
-    if ! gh api -X PATCH "repos/${REPO}/pulls/comments/${id}" -f body="$(cl_reply_stamp_body "$body")" >/dev/null 2>&1; then
-      echo "::warning::stamp_pass_replies: could not stamp reply ${id} on PR #${PR_NUMBER} (#2079)"
+    if ! body_json=$(gh api graphql \
+        -f query='query($id:ID!){node(id:$id){... on PullRequestReviewComment{body}}}' \
+        -f id="$id" 2>/dev/null); then
+      failed=1; continue
+    fi
+    body=$(jq -er '.data.node.body // empty' <<<"$body_json" 2>/dev/null) || { failed=1; continue; }
+    review_thread_is_agent_authored "$body" && continue
+    if ! gh api graphql \
+        -f query='mutation($id:ID!,$body:String!){updatePullRequestReviewComment(input:{pullRequestReviewCommentId:$id,body:$body}){pullRequestReviewComment{id}}}' \
+        -f id="$id" -f body="$(cl_reply_stamp_body "$body")" >/dev/null 2>&1; then
+      echo "::warning::stamp_pass_replies: could not stamp reply ${id} on PR #${PR_NUMBER:-} (#2079)"
       failed=1
     fi
-  done <<< "$rows"
+  done <<< "$ids"
   [ "$failed" -eq 0 ]
 }
 
