@@ -807,6 +807,13 @@ resolve_addressed_bot_threads() {
   # so they match both the raw BOT_USER and its stripped form.
   local bot_user="${BOT_USER:-donpetry-bot}"
 
+  # Attribute this pass's own replies to dev-lead BEFORE any thread is evaluated, on
+  # every pass (even one with no candidates), so an unstamped skip note can never
+  # become a later pass's "maintainer verdict" (#2079 AC4). On failure the no-change
+  # path is disabled for this pass.
+  local stamp_ok=1
+  stamp_pass_replies || stamp_ok=0
+
   # The enumeration pass ONLY collects candidate thread ids (unresolved,
   # bot-originated). It deliberately does NOT capture the last reply's body or
   # author: that snapshot goes stale the moment a new reply lands, and trusting it
@@ -872,8 +879,8 @@ resolve_addressed_bot_threads() {
     local nochange_disposition nochange_rc
     # A truncated comment page may hide a later neutral maintainer comment that
     # supersedes the affirmation -> fail closed (skip this path) unless fully read.
-    if [ "$(printf '%s' "$node_json" | jq -r '.data.node.comments.pageInfo.hasNextPage // true' 2>/dev/null || echo true)" = "false" ]; then
-      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json") && nochange_rc=0 || nochange_rc=$?
+    if [ "$stamp_ok" -eq 1 ] && [ "$(printf '%s' "$node_json" | jq -r 'if .data.node.comments.pageInfo.hasNextPage == false then "false" else "true" end' 2>/dev/null || echo true)" = "false" ]; then
+      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json" "$_ACV_REPLY_MARKER_EPOCH") && nochange_rc=0 || nochange_rc=$?
     else
       nochange_disposition="" nochange_rc=1
     fi
@@ -1207,6 +1214,10 @@ resolve_deferred_bot_threads() {
   fi
 
   local bot_user="${BOT_USER:-donpetry-bot}"
+  # Stamp this pass's own replies before evaluating any thread (#2079 AC4); on failure
+  # the no-change path is disabled for this pass.
+  local stamp_ok=1
+  stamp_pass_replies || stamp_ok=0
   local ids
   ids=$(list_unresolved_bot_thread_ids) || {
     echo "::error::resolve_deferred_bot_threads: could not enumerate review threads on PR #${PR_NUMBER}"
@@ -1322,7 +1333,11 @@ resolve_deferred_bot_threads() {
     # Check for a no-change disposition before checking for required disposition or deferral (#2079 AC1).
     # A maintainer's "no change needed" verdict can resolve the thread without a deferral.
     local nochange_disposition nochange_rc
-    nochange_disposition=$(acv_latest_nochange_disposition "$comments_json") && nochange_rc=0 || nochange_rc=$?
+    if [ "$stamp_ok" -eq 1 ]; then
+      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json" "$_ACV_REPLY_MARKER_EPOCH") && nochange_rc=0 || nochange_rc=$?
+    else
+      nochange_disposition="" nochange_rc=1
+    fi
     if [ "${nochange_rc:-0}" -eq 0 ] && [ -n "$nochange_disposition" ]; then
       # A no-change disposition was found. Re-read the thread immediately before resolution.
       local fresh_json fresh_resolved fresh_comments
@@ -2958,6 +2973,40 @@ verify_push_landed() {
   fi
   echo "::notice::push verified: ${pushed} is on the remote head ${remote} (#2013)"
   return 0
+}
+
+# stamp_pass_replies — make every review-thread reply this pass posted attributable to
+# dev-lead (#2079 AC4). The model posts skip notes from its own shell as the SAME
+# account the maintainer uses, and only addressed claims are told to carry a marker, so
+# a marker-less "No change needed" skip note would otherwise read as the maintainer's
+# verdict and let the next pass resolve the bot thread with no human involved. Every
+# reply OUR account created since PASS_START_ISO that lacks an agent marker gets
+# `<!-- dev-lead:reply -->` appended. Enforced here in shell, not in the prompt.
+# Returns non-zero when the pass boundary is unknown or any listing/PATCH failed; the
+# resolvers then skip the no-change path (fail closed). Idempotent: stamped replies
+# carry a marker and are never selected again. Replies from before this stamping
+# existed are excluded by _ACV_REPLY_MARKER_EPOCH in acv_latest_nochange_disposition.
+stamp_pass_replies() {
+  [ -z "${PR_NUMBER:-}" ] && return 1
+  [ -z "${PASS_START_ISO:-}" ] && return 1
+  local bot_user="${BOT_USER:-donpetry-bot}" comments rows id body_b64 body failed=0
+  if ! comments=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" 2>/dev/null | jq -s 'add // []' 2>/dev/null); then
+    echo "::warning::stamp_pass_replies: could not list review comments on PR #${PR_NUMBER} — no-change dispositions are disabled this pass (#2079)"
+    return 1
+  fi
+  rows=$(cl_select_unmarked_replies "$comments" "$bot_user" "$PASS_START_ISO") || {
+    echo "::warning::stamp_pass_replies: could not parse the review comments on PR #${PR_NUMBER} — no-change dispositions are disabled this pass (#2079)"
+    return 1
+  }
+  while IFS=$'\t' read -r id body_b64; do
+    [ -z "$id" ] && continue
+    body=$(base64 --decode <<<"$body_b64" 2>/dev/null) || { failed=1; continue; }
+    if ! gh api -X PATCH "repos/${REPO}/pulls/comments/${id}" -f body="$(cl_reply_stamp_body "$body")" >/dev/null 2>&1; then
+      echo "::warning::stamp_pass_replies: could not stamp reply ${id} on PR #${PR_NUMBER} (#2079)"
+      failed=1
+    fi
+  done <<< "$rows"
+  [ "$failed" -eq 0 ]
 }
 
 # retract_unlanded_claims <intent> <ok|failed> — the claim-retraction sweep (#2013).

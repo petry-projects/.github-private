@@ -815,3 +815,37 @@ setup() {
   run acv_latest_nochange_disposition "$comments"
   [[ "$status" -eq 1 ]]
 }
+
+# ── #2079 AC4: dev-lead's own marker-less skip notes must never authorize ────────
+
+@test "acv_latest_nochange_disposition: marker-less pass skip note 'No change needed in this pass' before the epoch -> rc1" {
+  local comments='[{"author":{"login":"don-petry","__typename":"User"},"authorAssociation":"MEMBER","body":"No change needed in this pass: the guard already exists.","createdAt":"2026-10-09T07:58:15Z"}]'
+  run acv_latest_nochange_disposition "$comments" "$_ACV_REPLY_MARKER_EPOCH"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: marker-less 'Skipped: this is a false positive' before the epoch -> rc1" {
+  local comments='[{"author":{"login":"don-petry","__typename":"User"},"authorAssociation":"MEMBER","body":"Skipped: this is a false positive, the helper is already called from the resolver.","createdAt":"2026-10-09T02:35:36Z"}]'
+  run acv_latest_nochange_disposition "$comments" "$_ACV_REPLY_MARKER_EPOCH"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: a stamped pass reply (<!-- dev-lead:reply -->) never authorizes -> rc1" {
+  local comments='[{"author":{"login":"don-petry","__typename":"User"},"authorAssociation":"MEMBER","body":"No change needed in this pass: the guard already exists.\n\n<!-- dev-lead:reply -->","createdAt":"2026-10-11T07:58:15Z"}]'
+  run acv_latest_nochange_disposition "$comments" "$_ACV_REPLY_MARKER_EPOCH"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_nochange_disposition: marker-less maintainer comment after the epoch still authorizes -> rc0" {
+  local comments='[{"author":{"login":"don-petry","__typename":"User"},"authorAssociation":"OWNER","body":"False positive, no change needed.","createdAt":"2026-10-11T08:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "$_ACV_REPLY_MARKER_EPOCH"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-10-11T08:00:00Z" ]]
+}
+
+@test "acv_latest_nochange_disposition: a pre-epoch legacy note does not hide a later real affirmation" {
+  local comments='[{"author":{"login":"don-petry","__typename":"User"},"authorAssociation":"MEMBER","body":"Skipped: this is a false positive.","createdAt":"2026-10-09T02:35:36Z"},{"author":{"login":"don-petry","__typename":"User"},"authorAssociation":"OWNER","body":"Confirmed, false positive.","createdAt":"2026-10-11T08:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "$_ACV_REPLY_MARKER_EPOCH"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-10-11T08:00:00Z" ]]
+}

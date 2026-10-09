@@ -6767,3 +6767,100 @@ _fbc_reply() {  # $1=disposition-tail $2=createdAt
   ! grep -q "the harness rejects a \`fixed\` sha from an earlier pass" "$SCRIPT_DIR/prompts/dev-lead/fix-reviews.md"
   ! grep -q "only verifies a \`fixed\` sha from the pass that cites it" "$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md"
 }
+
+# ── #2079 AC4: a pass's own marker-less "no change" skip note must never resolve ──
+# dev-lead posts skip notes as the SAME account the maintainer uses, with no marker.
+# The harness stamps every reply the pass created (stamp_pass_replies) before either
+# resolver reads the thread, so such a note stays attributable to dev-lead and the
+# bot thread it "dispositioned" stays open. The gh stub models GitHub: the PATCH that
+# stamps the reply rewrites the body the next GraphQL thread read returns.
+
+_nochange_resolver_case() {
+  # $1 = JSON array of REST pulls/54/comments the pass created (what stamping sees)
+  local rest_json="$1"
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  MUTATIONS_FILE="$BATS_TEST_TMPDIR/mutations"
+  PATCH_FILE="$BATS_TEST_TMPDIR/patches"
+  local body_file="$BATS_TEST_TMPDIR/maintainer-body"
+  : > "$MUTATIONS_FILE"
+  : > "$PATCH_FILE"
+  printf 'No change needed in this pass: the guard already exists.' > "$body_file"
+  printf '%s' "$rest_json" > "$BATS_TEST_TMPDIR/rest.json"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+  NC_BASE_SHA="$(git -C "$tmpdir" rev-parse HEAD)"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$MUTATIONS_FILE"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"-X PATCH"*)
+    for a in "\$@"; do case "\$a" in body=*) printf '%s' "\${a#body=}" > "$body_file"; echo "\$a" >> "$PATCH_FILE" ;; esac; done
+    echo '{}'
+    ;;
+  *"pulls/54/comments"*) cat "$BATS_TEST_TMPDIR/rest.json" ;;
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
+  *"PullRequestReviewThread"*)
+    jq -cn --rawfile b "$body_file" '{data:{node:{isResolved:false,path:"fix.txt",comments:{pageInfo:{hasNextPage:false},nodes:[
+      {author:{login:"gemini-code-assist",__typename:"Bot"},authorAssociation:"NONE",body:"Missing a guard.",createdAt:"2098-01-01T00:00:00Z"},
+      {author:{login:"don-petry",__typename:"User"},authorAssociation:"MEMBER",body:\$b,createdAt:"2099-01-01T00:00:00Z"}]}}}}'
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_nochange_bot","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
+    ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${NC_BASE_SHA}"},"auto_merge":null}' ;;
+  *"pr checkout"*|*"pr comment"*|*"pr merge"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Addressed feedback."
+printf 'fixed\n' > fix.txt
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$NC_BASE_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]'
+    export BOT_USER='don-petry'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+}
+
+@test "resolve_addressed_bot_threads (#2079 AC4): a marker-less 'No change needed' reply posted by this pass is stamped and does NOT resolve the thread" {
+  _nochange_resolver_case '[{"id":77,"user":{"login":"don-petry"},"created_at":"2099-01-01T00:00:00Z","body":"No change needed in this pass: the guard already exists."}]'
+  grep -q 'dev-lead:reply' "$PATCH_FILE"
+  ! grep -q "PRRT_nochange_bot" "$MUTATIONS_FILE"
+}
+
+@test "resolve_addressed_bot_threads (#2079 AC4): a marker-less maintainer comment the pass did not post still resolves the thread" {
+  _nochange_resolver_case '[]'
+  [ ! -s "$PATCH_FILE" ]
+  grep -q "PRRT_nochange_bot" "$MUTATIONS_FILE"
+}

@@ -112,6 +112,42 @@ cl_select_pass_claims() {
   done <<<"$rows"
 }
 
+# cl_select_unmarked_replies <comments_json> <bot_user> <since_iso>
+#   <comments_json> is the REST `pulls/{pr}/comments` array. Emits one
+#   `<id>\t<base64 body>` row per comment that our account (bot_user, its
+#   [bot]-suffixed or stripped form) created at or after <since_iso> (the pass start)
+#   and that carries NO agent marker (the shared _MAINTAINER_REVIEW_GATE_AGENT_MARKERS
+#   set). dev-lead posts its skip notes from the model's shell as the SAME account the
+#   maintainer uses, so such a reply is indistinguishable from a maintainer comment
+#   until the harness stamps it (#2079 AC4). An empty <since_iso> or a non-array
+#   payload selects nothing (rc 0 / rc 1 on unparseable input). Pure.
+cl_select_unmarked_replies() {
+  local comments_json="${1:-}" bot_user="${2:-}" since="${3:-}"
+  [[ -z "$since" ]] && return 0
+  local bot_stripped="${bot_user%\[bot\]}"
+  jq -r \
+    --arg u "$bot_user" --arg us "$bot_stripped" --arg since "$since" \
+    --arg markers "$_MAINTAINER_REVIEW_GATE_AGENT_MARKERS" '
+      if type == "array" then
+        .[] | objects
+        | (.user.login // "") as $l
+        | select($l == $u or $l == $us or $l == ($us + "[bot]"))
+        | select((.created_at // "") >= $since)
+        | select(((.body // "") | test($markers)) | not)
+        | [(.id | tostring), ((.body // "") | @base64)]
+        | @tsv
+      else empty end
+    ' <<<"$comments_json" 2>/dev/null
+}
+
+# cl_reply_stamp_body <body>
+#   The stamped form of an unmarked pass reply: the original text followed by the
+#   `<!-- dev-lead:reply -->` marker, which review_thread_is_agent_authored
+#   recognises, so the reply can never again be read as a maintainer verdict. Pure.
+cl_reply_stamp_body() {
+  printf '%s\n\n<!-- dev-lead:reply -->\n' "${1:-}"
+}
+
 # cl_retract_body <body> <reason>
 #   The retracted form of a claim reply. Removes the addressed-marker and the claim
 #   comment (so neither the thread gate nor another bot can treat it as a fix),

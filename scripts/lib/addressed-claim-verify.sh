@@ -72,6 +72,13 @@ readonly _ACV_DISPOSITION_RE_UPPER='(REQUIRED|MUST BE (FIXED|ADDRESSED|RESOLVED|
 # never clears a thread. Note "no change required" contains the substring REQUIRED
 # and so also matches _ACV_DISPOSITION_RE_UPPER; the caller must resolve that
 # collision in favour of the no-change intent.
+# Replies posted before the harness began stamping every pass reply with
+# `<!-- dev-lead:reply -->` (#2079 AC4) are marker-less and indistinguishable from a
+# maintainer's own comment, so none of them may authorize a no-change resolution.
+# Callers pass this as the 2nd arg of acv_latest_nochange_disposition. Bump it to the
+# merge instant of the stamping change if that lands later than this value.
+readonly _ACV_REPLY_MARKER_EPOCH='2026-10-10T00:00:00Z'
+
 readonly _ACV_NOCHANGE_RE_UPPER='(NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT)|NOT APPLICABLE|BY DESIGN|INTENDED BEHAVIOU?R)'
 
 # A NEGATED (or quoted-then-rejected) no-change phrase is NOT an affirmative no-change
@@ -426,7 +433,9 @@ acv_latest_maintainer_disposition() {
   return 1
 }
 
-# acv_latest_nochange_disposition <comments_json>
+# acv_latest_nochange_disposition <comments_json> [epoch_iso]
+#   The optional [epoch_iso] (production callers pass _ACV_REPLY_MARKER_EPOCH) makes any
+#   comment created before it non-authorizing; omitted, no cutoff applies.
 #   Scan ALL comments in a thread (#1743, #2079) for a standing maintainer "no change
 #   needed" disposition — the mirror of acv_latest_maintainer_disposition.
 #   <comments_json> is a JSON array of
@@ -449,7 +458,7 @@ acv_latest_maintainer_disposition() {
 #                                                           fail closed, leave open)
 #   Pure — no gh/git/network.
 acv_latest_nochange_disposition() {
-  local comments_json="${1:-}"
+  local comments_json="${1:-}" epoch="${2:-}"
 
   # Single jq pass serialises every comment as one row (login, typename, createdAt,
   # association, base64(body)). Fields are joined with the ASCII Unit Separator
@@ -489,7 +498,11 @@ acv_latest_nochange_disposition() {
       saw_unparseable=1
       continue
     fi
+    # A marker-less comment older than the stamping epoch may be one of dev-lead's own
+    # unstamped skip notes: it can never authorize, and counts as non-affirming so it
+    # also supersedes any earlier affirmation (fail closed, #2079 AC4).
     affirms=1
+    [[ -n "$epoch" && "$created" < "$epoch" ]] && affirms=0
     # A negated phrase ("this is not a false positive") is not an affirmative
     # disposition -> fail closed.
     [[ "$up" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]] && affirms=0

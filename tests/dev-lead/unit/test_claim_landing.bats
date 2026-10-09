@@ -287,3 +287,36 @@ _inject_foreign_commit() {
   [[ "$status" -eq 1 ]]
   [[ "$output" == "not-on-ref" ]]
 }
+
+# ── #2079 AC4: stamping the pass's own marker-less replies ──────────────────────
+
+@test "cl_select_unmarked_replies: selects our marker-less replies since the pass start" {
+  local c='[
+    {"id":1,"user":{"login":"don-petry"},"created_at":"2026-10-11T01:00:00Z","body":"No change needed in this pass: the guard already exists."},
+    {"id":2,"user":{"login":"don-petry"},"created_at":"2026-10-11T01:00:00Z","body":"Fixed. <!-- dev-lead:addressed -->"},
+    {"id":3,"user":{"login":"don-petry"},"created_at":"2026-10-10T00:00:00Z","body":"Skipped: this is a false positive."},
+    {"id":4,"user":{"login":"someone-else"},"created_at":"2026-10-11T01:00:00Z","body":"No change needed."},
+    {"id":5,"user":{"login":"don-petry"},"created_at":"2026-10-11T02:00:00Z","body":"Already stamped.\n\n<!-- dev-lead:reply -->"}
+  ]'
+  run cl_select_unmarked_replies "$c" "don-petry" "2026-10-11T00:00:00Z"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == 1$'\t'* ]]
+  [[ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]]
+}
+
+@test "cl_select_unmarked_replies: no pass boundary selects nothing" {
+  local c='[{"id":1,"user":{"login":"don-petry"},"created_at":"2026-10-11T01:00:00Z","body":"No change needed."}]'
+  run cl_select_unmarked_replies "$c" "don-petry" ""
+  [[ "$status" -eq 0 ]]
+  [[ -z "$output" ]]
+}
+
+@test "cl_reply_stamp_body: stamped reply is agent-authored and no longer a no-change maintainer verdict" {
+  local stamped
+  stamped=$(cl_reply_stamp_body "No change needed in this pass: the guard already exists.")
+  review_thread_is_agent_authored "$stamped"
+  local comments
+  comments=$(jq -cn --arg b "$stamped" '[{author:{login:"don-petry",__typename:"User"},authorAssociation:"MEMBER",body:$b,createdAt:"2026-10-11T08:00:00Z"}]')
+  run acv_latest_nochange_disposition "$comments" "$_ACV_REPLY_MARKER_EPOCH"
+  [[ "$status" -eq 1 ]]
+}
