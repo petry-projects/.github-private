@@ -2752,10 +2752,17 @@ commit_and_push() {
     # Test-tamper guard (#2013): a bot-driven fix pass must not silently rewrite an
     # existing test to make its own change pass (the petry-projects/.github#1220
     # `13927fc` shape). Refuse the push and escalate, like the no-op guard (rc 3).
+    # "Existing" means present at the merge base with the PR's base branch (#2141):
+    # tests the PR itself added are free to revise. The merge base is resolved only
+    # when the pass touches a test file; an unresolvable one leaves ttg_mb empty,
+    # which ttg_scan_pass then refuses (fail closed).
     case "$intent" in
       fix-reviews|fix-bot-comment|review-changes|human-pr)
-        local ttg_out ttg_rc=0 ttg_files
-        ttg_out=$(ttg_scan_pass "${RESOLUTION_BASE_SHA:-}" HEAD) || ttg_rc=$?
+        local ttg_out ttg_rc=0 ttg_files ttg_mb=""
+        if ttg_pass_touches_tests "${RESOLUTION_BASE_SHA:-}"; then
+          ttg_mb=$(ttg_resolve_merge_base "${BASE_REF:-main}" "${RESOLUTION_BASE_SHA:-}" "${HEAD_REF:-}") || ttg_mb=""
+        fi
+        ttg_out=$(ttg_scan_pass "${RESOLUTION_BASE_SHA:-}" HEAD "$ttg_mb") || ttg_rc=$?
         ttg_files=$(printf '%s\n' "$ttg_out" | sed '1d' | paste -sd ',' - | sed 's/,/, /g')
         if [ "$ttg_rc" -eq 1 ]; then
           echo "::error::Test-tamper guard: the ${intent} pass changed or skipped existing test(s) [${ttg_files:-skip added}] with no Test-Change-Justification trailer — refusing to push (#2013)"
@@ -2763,8 +2770,8 @@ commit_and_push() {
           return 4
         elif [ "$ttg_rc" -ne 0 ]; then
           # Fail closed: an unverifiable scan is not a clean scan.
-          echo "::error::Test-tamper guard: pre-pass base unknown — could not verify ${intent} for rewritten tests, refusing to push (#2013)"
-          flag_test_tamper "$intent" "(the tamper scan could not resolve the pre-pass head, so the pass could not be verified)"
+          echo "::error::Test-tamper guard: pre-pass head or merge base with ${BASE_REF:-main} unknown — could not verify ${intent} for rewritten tests, refusing to push (#2013/#2141)"
+          flag_test_tamper "$intent" "(the tamper scan could not resolve the pre-pass head or the PR's merge base with \`${BASE_REF:-main}\`, so the pass could not be verified)"
           return 4
         elif [ "$(printf '%s\n' "$ttg_out" | head -1)" = "justified" ]; then
           echo "::notice::Test-tamper guard: existing test(s) changed with a cited Test-Change-Justification: ${ttg_files:-skip added} (#2013)"
