@@ -38,6 +38,8 @@ set -euo pipefail
 #   DISPATCH_DELAY_SEC  — seconds between repo dispatches (default: 30) to
 #                         prevent cascading org-wide rate-limit hits
 #   DRY_RUN             — if "true", log what would be dispatched but don't send
+#   SWEEP_AGENT_REF     — override the sweep's dev-lead channel for the #2086
+#                         per-repo gate (default: this repo's dev-lead.yml pin)
 #   NOW_ISO             — override current time for testing (ISO-8601 UTC)
 #   BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC — seconds to wait after posting a
 #                         bot-comment retry marker before re-listing markers
@@ -78,6 +80,13 @@ set -euo pipefail
 #   threads with no reply from our automation, and dispatches one deduplicated
 #   fix-reviews pass per PR (lib/bot-thread-retry.sh). Threads that exhaust their
 #   attempts get a single visible notice, so the stall is never silent.
+#
+# Each target repo is gated on its own dev-lead.yml pin (#2086). The sweep runs one
+#   release of scripts/ (this repo's pinned channel), but every target runs its
+#   harness at its own pin. A repo pinned to an older channel than the sweep could
+#   be sent a client_payload field its harness cannot read, so main() skips it with
+#   a ::warning:: (lib/dispatch-channel-gate.sh). If the sweep's own pin cannot be
+#   read, the gate is off and every repo is scanned, as before.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Escalation gate (#946): pr_has_escalation_label / NEEDS_HUMAN_REVIEW_LABEL.
@@ -96,6 +105,9 @@ source "$SCRIPT_DIR/lib/bot-comment-retry.sh"
 # Unreplied bot review-thread retry decision + thread fetch (#2046).
 # shellcheck source=lib/bot-thread-retry.sh
 source "$SCRIPT_DIR/lib/bot-thread-retry.sh"
+# Per-target-repo channel gate (#2086): dcg_resolve_sweep_ref / dcg_repo_dispatch_allowed.
+# shellcheck source=lib/dispatch-channel-gate.sh
+source "$SCRIPT_DIR/lib/dispatch-channel-gate.sh"
 
 TARGET_ORG="${TARGET_ORG:-petry-projects}"
 DELEGATION_ORGS="${DELEGATION_ORGS:-}"
@@ -1257,8 +1269,23 @@ main() {
   local repo_count="${#all_repos[@]}"
   echo "[retry] scanning ${repo_count} repo(s) across org(s)"
 
-  local repo_index=0
+  # Gate each target on its own dev-lead.yml pin (#2086). If the sweep's own pin
+  # is unreadable the gate is off: failing closed here would silence the whole
+  # safety net on one transient read.
+  local sweep_ref=""
+  if sweep_ref="$(dcg_resolve_sweep_ref)"; then
+    echo "[retry] sweep channel: ${sweep_ref} (repos pinned older are skipped)"
+  else
+    sweep_ref=""
+    echo "::warning::[retry] cannot resolve the sweep's dev-lead channel from ${DCG_HOST_REPO}'s dev-lead.yml; per-repo channel gate disabled (#2086)" >&2
+  fi
+
+  local repo_index=0 skipped=0
   for repo in "${all_repos[@]}"; do
+    if [ -n "$sweep_ref" ] && ! dcg_repo_dispatch_allowed "$repo" "$sweep_ref"; then
+      skipped=$(( skipped + 1 ))
+      continue
+    fi
     if [ "$repo_index" -gt 0 ] && [ "$DISPATCH_DELAY_SEC" -gt 0 ]; then
       # Stagger dispatches to avoid hammering the rate-limited API simultaneously
       echo "[retry] waiting ${DISPATCH_DELAY_SEC}s before next repo (stagger)..."
@@ -1267,6 +1294,7 @@ main() {
     scan_repo "$repo"
     repo_index=$(( repo_index + 1 ))
   done
+  [ "$skipped" -eq 0 ] || echo "[retry] skipped ${skipped} repo(s) on the channel gate"
 
   echo "[retry] done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

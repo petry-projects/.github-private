@@ -31,6 +31,11 @@ name: Dev-Lead Retry (rate-limited)
 # whose registered reviewer-bot issue comment has no covering disposition (and no
 # info_status_pattern match) gets one deduplicated fix-bot-comment retry per scan,
 # addressed by the comment's node id (scan_pr_for_undispositioned_bot_comments).
+#
+# Each target repo runs its harness at its OWN dev-lead.yml pin, so the sweep
+# skips (with a ::warning::) any repo pinned to an older channel than the sweep's.
+# Such a repo could be sent a client_payload field it cannot read yet (#2086,
+# scripts/lib/dispatch-channel-gate.sh).
 
 on:
   schedule:
