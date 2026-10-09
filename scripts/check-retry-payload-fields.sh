@@ -25,8 +25,8 @@ set -euo pipefail
 #          `--input <file>`, and `-f/-F client_payload[key]=`. A dispatcher that sends
 #          nothing (or an unreadable body) for the probe arguments is a setup error,
 #          never a silent pass. Two conventions keep that complete: each dispatcher
-#          names the `/dispatches` endpoint literally (an endpoint held in a variable
-#          is a setup error), and each dispatcher sends ONE fixed set of fields — a
+#          spells the word `dispatches` in its own body (an endpoint held in a
+#          global variable is a setup error), and each dispatcher sends ONE fixed set of fields — a
 #          new payload shape gets a new function (as dispatch_bot_comment_retry
 #          did), never a field added only on some arguments.
 #   read — the intent parser (and the libs it sources) at each channel tag is
@@ -118,15 +118,16 @@ sent_fields() {
       done
       jq -cn --argjson keys "$keys" "{client_payload: (\$keys | map({(.): 1}) | add // {})}" >>"$CAPTURE"
     }
-    # Dispatchers are found by the endpoint literal in their own body. An endpoint
-    # held in a variable would hide its dispatcher, so that is a setup error.
+    # Dispatchers are found by the word `dispatches` in their own body, so an
+    # endpoint assembled in a local (`ep="repos/$r/"; ep+="dispatches"`) is still
+    # found. An endpoint held in a global would hide its dispatcher: setup error.
     for v in $(compgen -v); do
       case "$v" in BASH_*|FUNCNAME|_|CAPTURE|SWEEP_PATH) continue ;; esac
-      case "${!v}" in */dispatches*) echo "INDIRECT"; break ;; esac
+      case "${!v}" in *dispatches*) echo "INDIRECT"; break ;; esac
     done
     for fn in $(declare -F | awk "{print \$3}"); do
       [ "$fn" = gh ] && continue
-      declare -f "$fn" | grep -q "/dispatches" || continue
+      declare -f "$fn" | grep -q "dispatches" || continue
       : >"$CAPTURE"
       "$fn" 1 1 1 1 1 1 </dev/null >/dev/null 2>&1
       if [ ! -s "$CAPTURE" ] || grep -qx "\"UNREADABLE\"" "$CAPTURE"; then echo "NOPAYLOAD $fn"; continue; fi

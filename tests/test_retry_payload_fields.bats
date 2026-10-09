@@ -254,6 +254,23 @@ EOF2
   [[ "$output" == *"holds a /dispatches endpoint"* ]]
 }
 
+@test "an endpoint assembled in a dispatcher-local variable is still found (#2085 review)" {
+  write_stub dev-lead/v7-stable
+  write_intent pr_number
+  write_sweep pr_number
+  cat >> "$SANDBOX/scripts/dev-lead-retry.sh" <<'EOF2'
+dispatch_local() {
+  local ep="repos/$1/"
+  ep+="dispatches"
+  jq -n '{client_payload: {pr_number: 1, local_field: 1}}' | gh api --method POST "$ep" --input -
+}
+EOF2
+  tag_channels "${ALL[@]}"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"client_payload.local_field (sent by dispatch_local)"* ]]
+}
+
 @test "a read in a lib sourced by another parser lib counts as read (#2085 review)" {
   write_stub dev-lead/v7-stable
   write_intent pr_number
