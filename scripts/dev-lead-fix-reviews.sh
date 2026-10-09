@@ -836,7 +836,7 @@ resolve_addressed_bot_threads() {
       ... on PullRequestReviewThread {
         isResolved
         path
-        comments(first:100){nodes{author{login __typename} body createdAt}}
+        comments(first:100){nodes{author{login __typename} authorAssociation body createdAt}}
       }
     }
   }'
@@ -865,6 +865,62 @@ resolve_addressed_bot_threads() {
     # forever (the regression #1691 exposed). A marker from any other account still
     # does not authorize resolution (acv_latest_marker_index checks the author).
     comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+
+    # ── No-change disposition path (#2079): a maintainer may authorize resolution ──
+    # without an addressed-marker by asserting "no changes needed" or a false-positive
+    # disposition. This is checked FIRST, before the addressed-marker path (#1735).
+    local nochange_disposition nochange_rc
+    nochange_disposition=$(acv_latest_nochange_disposition "$comments_json") && nochange_rc=0 || nochange_rc=$?
+    if [ "${nochange_rc:-0}" -eq 0 ] && [ -n "$nochange_disposition" ]; then
+      # A no-change disposition was found. Re-read the thread immediately before
+      # resolution to ensure it hasn't changed (no new required disposition or bot finding).
+      local fresh_json fresh_resolved
+      fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
+      fresh_resolved=$(printf '%s' "$fresh_json" | jq -r \
+        'if .data.node.isResolved == null then "unknown"
+         elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+      if [ "$fresh_resolved" != "false" ]; then
+        echo "::notice::skipping thread ${id} — already resolved during no-change check"
+        continue
+      fi
+      local fresh_comments
+      fresh_comments=$(printf '%s' "$fresh_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+      if [ "$fresh_comments" != "$comments_json" ]; then
+        echo "::notice::skipping thread ${id} — thread changed during no-change disposition check; leaving unresolved"
+        continue
+      fi
+      # Reject if a newer required disposition exists (a REQUIRED overrides NO-CHANGE).
+      local req_disposition req_rc
+      req_disposition=$(acv_latest_maintainer_disposition "$fresh_comments" "__no-such-account__") && req_rc=0 || req_rc=$?
+      if [ "${req_rc:-0}" -ne 1 ]; then
+        echo "::notice::skipping thread ${id} — a required maintainer disposition blocks the no-change verdict; leaving unresolved (#2079)"
+        continue
+      fi
+      # Reject if a bot finding exists (the no-change verdict doesn't override open bot findings).
+      # Check the first comment (the originating bot finding) to ensure it exists and is from a bot.
+      local origin_is_bot
+      origin_is_bot=$(printf '%s' "$fresh_comments" | jq -r \
+        '.[0].author as $a | if (($a.__typename // "") == "Bot") or (($a.login // "") | endswith("[bot]"))
+         then "yes" else "no" end' 2>/dev/null || echo "no")
+      # If the origin is still a bot finding, we cannot resolve on a no-change disposition alone.
+      # The maintainer said "no changes needed" but the bot is still reporting a finding.
+      if [ "$origin_is_bot" = "yes" ]; then
+        echo "::notice::skipping thread ${id} — the originating bot finding is still present; a no-change disposition alone cannot resolve; leaving unresolved"
+        continue
+      fi
+      if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+          -f id="$id" >/dev/null 2>&1; then
+        resolved_count=$((resolved_count + 1))
+        echo "::notice::resolved bot thread ${id} due to no-change disposition (${nochange_disposition})"
+      else
+        echo "::warning::failed to resolve bot thread ${id} despite no-change disposition"
+      fi
+      continue
+    elif [ "${nochange_rc:-0}" -eq 2 ]; then
+      echo "::notice::skipping thread ${id} — a no-change disposition could not be parsed; leaving unresolved (fail closed) (#2079)"
+      continue
+    fi
+
     if ! marker_idx=$(acv_latest_marker_index "$comments_json" "$bot_user"); then
       echo "::notice::skipping thread ${id} — no addressed-marker reply from our account in the thread; leaving unresolved (#1735)"
       continue

@@ -84,7 +84,7 @@ readonly _ACV_NOCHANGE_RE_UPPER='(NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY
 # phrase that itself begins with a negator ("NOT A BUG", "NO CHANGE NEEDED") only
 # trips the guard when ANOTHER negator precedes it, so the bare affirmative forms are
 # never clobbered.
-readonly _ACV_NOCHANGE_NEGATION_RE_UPPER='(CANNOT|CAN.?T|COULD ?NOT|COULDN.?T|WILL NOT|WON.?T|WOULD ?NOT|WOULDN.?T|SHOULD ?NOT|SHOULDN.?T|IS ?NOT|ISN.?T|ARE ?NOT|AREN.?T|WAS ?NOT|WASN.?T|WERE ?NOT|WEREN.?T|DOES ?NOT|DOESN.?T|DO ?NOT|DON.?T|DID ?NOT|DIDN.?T|NEVER|NOT)[,[:space:]]+([^[:space:]]+[[:space:]]+){0,6}(FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|BY DESIGN|INTENDED BEHAVIOU?R|NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT)|NOT APPLICABLE)'
+readonly _ACV_NOCHANGE_NEGATION_RE_UPPER='(CANNOT|CAN.?T|COULD ?NOT|COULDN.?T|WILL NOT|WON.?T|WOULD ?NOT|WOULDN.?T|SHOULD ?NOT|SHOULDN.?T|IS ?NOT|ISN.?T|ARE ?NOT|AREN.?T|WAS ?NOT|WASN.?T|WERE ?NOT|WEREN.?T|DOES ?NOT|DOESN.?T|DO ?NOT|DON.?T|DID ?NOT|DIDN.?T|NEVER|NOT)[,[:space:]—-]+([^[:space:]]+[[:space:]]+){0,6}(FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|BY DESIGN|INTENDED BEHAVIOU?R|NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT)|NOT APPLICABLE)'
 
 # Post-marker BOT-comment classification (#1735 AC2/AC4). A review bot that replies
 # AFTER our addressed-marker either ACKNOWLEDGES (accepts our refutation / records a
@@ -476,7 +476,7 @@ acv_latest_nochange_disposition() {
     [[ "$up" =~ (MAY|MIGHT|COULD[[:space:]]BE|DISAGREE|DECLINE|REFUSE|DOUBT|UNCLEAR|NOT[[:space:]]SURE|UNSURE|NOT[[:space:]]CONVINCED) ]] && continue
     # A disposition with no parseable timestamp cannot be ordered against a newer
     # REQUIRED disposition or bot finding -> fail closed.
-    if ! [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]]; then
+    if ! _acv_is_iso8601 "$created"; then
       saw_unparseable=1
       continue
     fi
