@@ -467,7 +467,10 @@ acv_latest_nochange_disposition() {
     ' <<<"$comments_json" 2>/dev/null) || return 1
   [[ -z "$rows" ]] && return 1
 
-  local latest="" saw_unparseable=0
+  # latest_maintainer tracks the newest eligible maintainer comment of ANY content: an
+  # older affirmation is superseded by a later maintainer comment that does not itself
+  # affirm no-change (e.g. a hedge, a question, a negation, or unrelated follow-up).
+  local latest="" latest_maintainer="" saw_unparseable=0 affirms
   local login typename created assoc body_b64 body up
   while IFS=$'\x1f' read -r login typename created assoc body_b64; do
     [[ -z "$login$typename$created$assoc$body_b64" ]] && continue
@@ -480,21 +483,26 @@ acv_latest_nochange_disposition() {
     # our markers) is ours, never a maintainer disposition — even from the same login.
     review_thread_is_agent_authored "$body" && continue
     up="${body^^}"
-    # A negated phrase ("this is not a false positive") is not an affirmative
-    # disposition — checked FIRST so it falls through (fail closed).
-    [[ "$up" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]] && continue
-    [[ "$up" =~ $_ACV_NOCHANGE_RE_UPPER ]] || continue
-    # A question or an expression of doubt/disagreement is not an affirmative verdict
-    # ("Could this be a false positive?", "I disagree with calling this a false
-    # positive") -> fail closed.
-    [[ "$up" == *'?'* ]] && continue
-    [[ "$up" =~ (MAY|MIGHT|COULD[[:space:]]BE|DISAGREE|DECLINE|REFUSE|DOUBT|UNCLEAR|NOT[[:space:]]SURE|UNSURE|NOT[[:space:]]CONVINCED) ]] && continue
     # A disposition with no parseable timestamp cannot be ordered against a newer
-    # REQUIRED disposition or bot finding -> fail closed.
+    # REQUIRED disposition, bot finding or maintainer comment -> fail closed.
     if ! _acv_is_iso8601 "$created"; then
       saw_unparseable=1
       continue
     fi
+    if [[ -z "$latest_maintainer" || "$created" > "$latest_maintainer" ]]; then
+      latest_maintainer="$created"
+    fi
+    affirms=1
+    # A negated phrase ("this is not a false positive") is not an affirmative
+    # disposition -> fail closed.
+    [[ "$up" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]] && affirms=0
+    [[ "$affirms" -eq 1 && "$up" =~ $_ACV_NOCHANGE_RE_UPPER ]] || affirms=0
+    # A question or an expression of doubt/disagreement is not an affirmative verdict
+    # ("Could this be a false positive?", "I disagree with calling this a false
+    # positive") -> fail closed.
+    [[ "$up" == *'?'* ]] && affirms=0
+    [[ "$up" =~ (MAY|MIGHT|COULD[[:space:]]BE|DISAGREE|DECLINE|REFUSE|DOUBT|UNCLEAR|NOT[[:space:]]SURE|UNSURE|NOT[[:space:]]CONVINCED) ]] && affirms=0
+    [[ "$affirms" -eq 1 ]] || continue
     if [[ -z "$latest" || "$created" > "$latest" ]]; then
       latest="$created"
     fi
@@ -504,7 +512,8 @@ acv_latest_nochange_disposition() {
     echo "unparseable"
     return 2
   fi
-  if [[ -n "$latest" ]]; then
+  # The newest maintainer comment must itself be the affirmation.
+  if [[ -n "$latest" && "$latest" == "$latest_maintainer" ]]; then
     echo "$latest"
     return 0
   fi

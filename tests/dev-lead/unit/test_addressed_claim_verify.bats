@@ -328,6 +328,16 @@ setup() {
   [[ "$output" == "2026-09-05T00:00:00Z" ]]
 }
 
+@test "acv_latest_nochange_disposition: a later non-affirming maintainer comment supersedes the affirmation -> rc1" {
+  local comments='[
+    {"author":{"login":"m1","__typename":"User"},"authorAssociation":"MEMBER","body":"false positive","createdAt":"2026-09-01T00:00:00Z"},
+    {"author":{"login":"m2","__typename":"User"},"authorAssociation":"OWNER","body":"Please look at the retry path again.","createdAt":"2026-09-05T00:00:00Z"}
+  ]'
+  run acv_latest_nochange_disposition "$comments"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
 @test "acv_latest_nochange_disposition: neutral chatter is not a no-change disposition -> rc1" {
   local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"authorAssociation":"MEMBER","body":"Thanks for looking into this.","createdAt":"2026-09-02T12:00:00Z"}]'
   run acv_latest_nochange_disposition "$comments"

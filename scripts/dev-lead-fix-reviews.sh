@@ -1215,7 +1215,7 @@ resolve_deferred_bot_threads() {
     node(id:$id){
       ... on PullRequestReviewThread {
         isResolved
-        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} body createdAt lastEditedAt fullDatabaseId}}
+        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} authorAssociation body createdAt lastEditedAt fullDatabaseId}}
       }
     }
   }'
@@ -1324,6 +1324,11 @@ resolve_deferred_bot_threads() {
       fresh_resolved=$(printf '%s' "$fresh_json" | jq -r \
         'if .data.node.isResolved == null then "unknown"
          elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+      if [ "$fresh_resolved" = "unknown" ]; then
+        echo "::warning::could not re-read review thread ${id} during no-change check"
+        failed_count=$((failed_count + 1))
+        continue
+      fi
       if [ "$fresh_resolved" != "false" ]; then
         echo "::notice::skipping thread ${id} — already resolved during no-change check"
         continue
@@ -1355,6 +1360,7 @@ resolve_deferred_bot_threads() {
         echo "::notice::resolved deferred bot thread ${id} due to no-change disposition (${nochange_disposition})"
       else
         echo "::warning::failed to resolve deferred bot thread ${id} despite no-change disposition"
+        failed_count=$((failed_count + 1))
       fi
       continue
     elif [ "${nochange_rc:-0}" -eq 2 ]; then
