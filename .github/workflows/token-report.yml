@@ -62,9 +62,10 @@ on:
         default: ""
         type: string
 
+# Workflow-level token is read-only; the report job that posts the tracking issue
+# declares its own issues: write, and the canary job reads artifacts only.
 permissions:
   contents: read
-  issues: write
 
 # A canary dispatch gets its own group so it can neither cancel nor be cancelled
 # by the scheduled org-wide report.
@@ -76,6 +77,9 @@ jobs:
   report:
     # A canary dispatch runs only the canary job, not the org-wide report.
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_canary) }}
+    permissions:
+      contents: read
+      issues: write
     runs-on: ubuntu-latest
     # 60m (was 30m, #954) is a safety margin; the real fix is the bounded-parallel,
     # per-download-timeout collection in scripts/token_report.sh.
