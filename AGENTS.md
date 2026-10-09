@@ -962,6 +962,10 @@ even though every ref looks valid, because the stub is ahead of the channel it p
   and the harness it dispatches to in this repo are the same release
   (`tests/dev-lead/unit/test_dev_lead_retry_channel.bats`). The order still matters for
   target repos that pin an older channel than this one (#2086).
+  [`scripts/check-retry-payload-fields.sh`](./scripts/check-retry-payload-fields.sh) (the
+  `retry-payload-fields` job in `lint.yml`, #2081) enforces step (1) for every channel of the
+  pinned major. It fails a PR whose sweep sends a top-level field that the intent parser at any
+  `dev-lead/v<N>-{next,ring0,ring1,stable}` tag does not read.
 - **Enforcement.** The dev-lead prompt guardrail (part C, #1254) stops the agent from introducing the
   skew at the source; the **Part A CI guard (#1253)** is the belt-and-braces check that fails a PR whose
   caller-stub `with:` forwards an input the pinned channel does not declare.
