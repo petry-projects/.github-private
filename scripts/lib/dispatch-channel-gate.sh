@@ -1,121 +1,199 @@
 #!/usr/bin/env bash
-# dispatch-channel-gate.sh — skip a dispatch target whose dev-lead channel pin is
-# older than the sweep's (#2086).
+# dispatch-channel-gate.sh — hold a retry payload back from a target repo whose
+# pinned dev-lead harness does not read every field in it (#2086).
 #
 # WHY THIS EXISTS
 #   dev-lead-retry.yml runs scripts/ at ONE release: the channel this repo's
 #   dev-lead.yml pins via `agent_ref` (#2050). The sweep then sends
-#   repository_dispatch to every repo in the org, and each target runs its
-#   harness at ITS OWN dev-lead.yml pin (the stub contract allows a per-repo
-#   ring/channel pin). A target pinned to an older channel than the sweep can be
-#   sent a client_payload field its harness cannot read yet — the #2017 / #2050
+#   repository_dispatch events to every repo in the org, and each target parses
+#   them with scripts/dev-lead-intent.sh at ITS OWN dev-lead.yml pin (the stub
+#   contract allows a per-repo ring/channel pin). A target pinned older than the
+#   sweep can be sent a client_payload field its parser drops — the #2017 / #2050
 #   skew again, across repos instead of across time.
 #
 # WHAT THIS LIBRARY DECIDES
-#   For each target repo, read its dev-lead.yml `agent_ref` and compare it with
-#   the sweep's channel by git ancestry (the compare API on the dev-lead host
-#   repo), not by tag name — rings of one major sit on different commits, and a
-#   rollback can move a channel backwards:
-#     identical | behind     the target has every commit the sweep has → scan
-#     ahead | diverged       the sweep has commits the target lacks → SKIP, warn
-#     no dev-lead.yml        nothing in that repo receives a dispatch → skip
-#     unreadable / unknown   cannot prove compatibility → SKIP, warn (fail closed)
-#   A skipped repo keeps its markers; its retries resume once it is repinned to
-#   the sweep's channel or newer (or the sweep's channel moves back to it).
+#   Per payload, not per repo: most retry payloads carry only fields every
+#   release reads, so a target on an older channel (the fleet sits on stable)
+#   keeps its retries; only a payload with a field the target's parser lacks is
+#   held back. For each target:
+#     pin       its dev-lead.yml `agent_ref` (the reusable's default, main, when
+#               the stub passes none) — the ref its harness checks scripts/ out at
+#     fields    the `.client_payload.<key>` reads in dev-lead-intent.sh and the
+#               lib/*.sh files it names, at that pin (comments stripped; the
+#               same reading scripts/check-retry-payload-fields.sh does in CI)
+#   A payload goes out only when the target's parser reads all its fields
+#   (INFORMATIONAL ones aside). Pin == the sweep's channel needs no lookup: the
+#   sweep and that parser ship together, and CI checks them against each other.
+#     no dev-lead.yml            nothing in that repo receives it → hold, no warning
+#     pin or parser unreadable   compatibility unproven → hold, warn (fail closed)
+#     a field not read           hold, warn once per repo and field set
+#   A held payload leaves its markers in place, so the retry resumes once the
+#   target is repinned to a channel that reads the field.
+#
+# The gate is OFF (every payload allowed, no API reads) until dcg_init runs with
+# SWEEP_AGENT_REF set — dev-lead-retry.yml passes its resolved channel. Unit
+# tests and scripts/check-retry-payload-fields.sh source the sweep without it.
 #
 # Env:
-#   DCG_HOST_REPO    repo that hosts the dev-lead reusable, its channel tags and
-#                    the sweep's own dev-lead.yml (default: $GITHUB_REPOSITORY,
-#                    else petry-projects/.github-private)
-#   SWEEP_AGENT_REF  override the sweep's channel (default: DCG_HOST_REPO's pin —
-#                    the same ref dev-lead-retry.yml checks scripts/ out at)
+#   SWEEP_AGENT_REF  the channel tag the sweep's scripts/ run at; enables the gate
+#   DCG_HOST_REPO    repo hosting the dev-lead scripts and channel tags (default:
+#                    $GITHUB_REPOSITORY, else petry-projects/.github-private)
 
 DCG_HOST_REPO="${DCG_HOST_REPO:-${GITHUB_REPOSITORY:-petry-projects/.github-private}}"
 # Same channel-tag shape dev-lead-retry.yml accepts for the sweep's own pin.
 DCG_CHANNEL_RE='^dev-lead/v[0-9]+-(next|ring0|ring1|stable)$'
-# target agent_ref -> 0 (compatible) | 1 (older) | 2 (unknown), per sweep run.
-declare -gA _DCG_COMPAT_CACHE=()
+DCG_PARSER="scripts/dev-lead-intent.sh"
+# Sent for logs and audit only; no harness code reads them. Mirrors
+# INFORMATIONAL_FIELDS in scripts/check-retry-payload-fields.sh.
+DCG_INFORMATIONAL_FIELDS=(repo attempt)
+DCG_SWEEP_REF=""
+# repo -> pin | "!<rc>" (2 = no stub, 1 = unreadable); ref -> fields | "!"
+declare -gA _DCG_PIN_CACHE=() _DCG_FIELDS_CACHE=() _DCG_WARNED=()
 
-# dcg_parse_agent_ref: stdin = dev-lead.yml text; prints its `agent_ref` channel
-# tag. Returns 1 (prints nothing) when it is missing or not a channel tag.
+# dcg_init: turn the gate on for the sweep's channel. Returns 1 when
+# SWEEP_AGENT_REF is set but is not a channel tag (a configuration error).
+dcg_init() {
+  DCG_SWEEP_REF=""
+  [ -n "${SWEEP_AGENT_REF:-}" ] || return 0
+  if [[ ! "$SWEEP_AGENT_REF" =~ $DCG_CHANNEL_RE ]]; then
+    echo "::error::[retry] SWEEP_AGENT_REF '${SWEEP_AGENT_REF}' is not a dev-lead channel tag (dev-lead/v<N>-next|ring0|ring1|stable)" >&2
+    return 1
+  fi
+  DCG_SWEEP_REF="$SWEEP_AGENT_REF"
+}
+
+# dcg_parse_agent_ref: stdin = dev-lead.yml text; prints the ref its harness
+# runs at — `agent_ref`, else the reusable's default `main`. Returns 1 when the
+# value is not a plain ref (an expression, say), so it cannot be resolved here.
 dcg_parse_agent_ref() {
-  local ref
-  ref="$(sed -nE "s/^[[:space:]]*agent_ref:[[:space:]]*[\"']?([^\"'[:space:]#]*).*/\1/p" | head -n 1)"
-  [[ "$ref" =~ $DCG_CHANNEL_RE ]] || return 1
+  local text ref
+  text="$(cat)"
+  ref="$(sed -nE "s/^[[:space:]]*agent_ref:[[:space:]]*[\"']?([^\"'[:space:]#]*).*/\1/p" <<<"$text" | head -n 1)"
+  if ! grep -qE "^[[:space:]]*agent_ref:" <<<"$text"; then
+    ref="main"
+  fi
+  [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || return 1
   printf '%s\n' "$ref"
 }
 
-# dcg_read_repo_pin <repo>: prints the repo's dev-lead.yml agent_ref (default
-# branch). Returns 2 when the repo has no dev-lead.yml, 1 on any other read
-# failure or a malformed pin.
-dcg_read_repo_pin() {
-  local repo="$1" out gh_status=0
+# dcg_target_pin <repo>: prints the ref <repo>'s dev-lead harness runs at.
+# Returns 2 when the repo has no dev-lead.yml, 1 when the pin is unreadable.
+# Cached per sweep.
+dcg_target_pin() {
+  local repo="$1" out rc=0
+  if [ -n "${_DCG_PIN_CACHE[$repo]+set}" ]; then
+    out="${_DCG_PIN_CACHE[$repo]}"
+    if [[ "$out" == "!"* ]]; then return "${out#!}"; fi
+    printf '%s\n' "$out"; return 0
+  fi
   out="$(gh api "repos/${repo}/contents/.github/workflows/dev-lead.yml" \
-      -H "Accept: application/vnd.github.raw" 2>&1)" || gh_status=$?
-  if [ "$gh_status" -ne 0 ]; then
-    if [[ "$out" == *"HTTP 404"* ]]; then
-      return 2
+      -H "Accept: application/vnd.github.raw" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [[ "$out" == *"HTTP 404"* ]]; then rc=2; else rc=1; fi
+  elif ! out="$(dcg_parse_agent_ref <<<"$out")"; then
+    rc=1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    _DCG_PIN_CACHE[$repo]="!${rc}"
+    return "$rc"
+  fi
+  _DCG_PIN_CACHE[$repo]="$out"
+  printf '%s\n' "$out"
+}
+
+# _dcg_fetch_at <path> <ref>: raw file content from the host repo at <ref>.
+_dcg_fetch_at() {
+  local path="$1" ref="$2" enc
+  enc="$(jq -rn --arg r "$ref" '$r | @uri')" || return 1
+  gh api "repos/${DCG_HOST_REPO}/contents/${path}?ref=${enc}" \
+    -H "Accept: application/vnd.github.raw" 2>/dev/null
+}
+
+# dcg_fields_read_at <ref>: the top-level client_payload keys the intent parser
+# (and the lib/*.sh files it names, transitively) reads at <ref>, one per line.
+# Returns 1 when any of those files cannot be read. Cached per sweep.
+dcg_fields_read_at() {
+  local ref="$1" src all="" lib
+  if [ -n "${_DCG_FIELDS_CACHE[$ref]+set}" ]; then
+    [ "${_DCG_FIELDS_CACHE[$ref]}" != "!" ] || return 1
+    printf '%s' "${_DCG_FIELDS_CACHE[$ref]}"; return 0
+  fi
+  local -a queue=("$DCG_PARSER") seen=()
+  while [ "${#queue[@]}" -gt 0 ]; do
+    lib="${queue[0]}"; queue=("${queue[@]:1}")
+    case " ${seen[*]} " in *" $lib "*) continue ;; esac
+    seen+=("$lib")
+    if ! src="$(_dcg_fetch_at "$lib" "$ref")" || [ -z "$src" ]; then
+      _DCG_FIELDS_CACHE[$ref]="!"
+      return 1
     fi
-    return 1
-  fi
-  dcg_parse_agent_ref <<<"$out"
+    # Drop shell comments (not `$#`), so prose naming a field is not a read.
+    src="$(sed -E 's/(^|[^$])#.*$/\1/' <<<"$src")"
+    all+="$src"$'\n'
+    mapfile -t -O "${#queue[@]}" queue < <(grep -oE '/lib/[A-Za-z0-9_.-]+\.sh' <<<"$src" | sed 's|^|scripts|' | sort -u)
+  done
+  all="$(grep -oE '\.client_payload\.[A-Za-z_][A-Za-z0-9_]*' <<<"$all" \
+           | sed 's/^\.client_payload\.//' | sort -u || true)"
+  [ -z "$all" ] || all+=$'\n'
+  _DCG_FIELDS_CACHE[$ref]="$all"
+  printf '%s' "$all"
 }
 
-# dcg_resolve_sweep_ref: prints the channel the sweep's scripts/ run at.
-dcg_resolve_sweep_ref() {
-  if [ -n "${SWEEP_AGENT_REF:-}" ]; then
-    [[ "$SWEEP_AGENT_REF" =~ $DCG_CHANNEL_RE ]] || return 1
-    printf '%s\n' "$SWEEP_AGENT_REF"
-    return 0
-  fi
-  dcg_read_repo_pin "$DCG_HOST_REPO"
+# _dcg_warn_once <key> <message>: a ::warning:: per key per sweep, so a repo with
+# many held PRs logs its reason once.
+_dcg_warn_once() {
+  [ -z "${_DCG_WARNED[$1]+set}" ] || return 0
+  _DCG_WARNED[$1]=1
+  echo "::warning::$2" >&2
 }
 
-# dcg_pin_compat <target_ref> <sweep_ref>: 0 = the target's channel has every
-# commit the sweep's has; 1 = it is older (or diverged); 2 = unknown. Cached.
-dcg_pin_compat() {
-  local target="$1" sweep="$2" status rc cmp_status=0
-  [ "$target" = "$sweep" ] && return 0
-  if [ -n "${_DCG_COMPAT_CACHE[$target]+set}" ]; then
-    return "${_DCG_COMPAT_CACHE[$target]}"
-  fi
-  status="$(gh api "repos/${DCG_HOST_REPO}/compare/${target}...${sweep}" --jq '.status' 2>/dev/null)" || cmp_status=$?
-  if [ "$cmp_status" -ne 0 ]; then
-    status=""
-  fi
-  case "$status" in
-    identical|behind) rc=0 ;;
-    ahead|diverged)   rc=1 ;;
-    *)                rc=2 ;;
-  esac
-  _DCG_COMPAT_CACHE[$target]="$rc"
-  return "$rc"
-}
-
-# dcg_repo_dispatch_allowed <repo> <sweep_ref>: 0 = scan and dispatch to the
-# repo; 1 = skip it. Logs the reason to stderr.
-dcg_repo_dispatch_allowed() {
-  local repo="$1" sweep="$2" target rc=0
-  target="$(dcg_read_repo_pin "$repo")" || rc=$?
+# dcg_target_reads <repo> <field>...: 0 when <repo>'s pinned parser reads every
+# field (informational ones aside), or the gate is off; 1 to hold the payload.
+dcg_target_reads() {
+  local repo="$1"; shift
+  [ -n "$DCG_SWEEP_REF" ] || return 0
+  local pin rc=0
+  pin="$(dcg_target_pin "$repo")" || rc=$?
   case "$rc" in
     0) ;;
     2)
-      echo "[retry] skipping ${repo}: no dev-lead.yml, so nothing receives a dispatch" >&2
+      echo "  [hold] ${repo}: no dev-lead.yml, so nothing there receives a retry (#2086)" >&2
       return 1 ;;
     *)
-      echo "::warning::[retry] skipping ${repo}: cannot read a dev-lead channel from its dev-lead.yml agent_ref, so payload compatibility with the sweep's ${sweep} is unproven (#2086)" >&2
+      _dcg_warn_once "pin:${repo}" "[retry] holding retries for ${repo}: cannot read the ref its dev-lead.yml runs the harness at (agent_ref), so the fields its parser reads are unproven (#2086)"
       return 1 ;;
   esac
+  [ "$pin" != "$DCG_SWEEP_REF" ] || return 0
 
-  rc=0
-  dcg_pin_compat "$target" "$sweep" || rc=$?
-  case "$rc" in
-    0) return 0 ;;
-    1)
-      echo "::warning::[retry] skipping ${repo}: its dev-lead.yml pins ${target}, older than the sweep's ${sweep}; its harness may not read the sweep's dispatch payloads (#2086). Repin it to ${sweep} or newer." >&2
-      return 1 ;;
-    *)
-      echo "::warning::[retry] skipping ${repo}: could not compare its pin ${target} with the sweep's ${sweep} (#2086)" >&2
-      return 1 ;;
-  esac
+  local fields
+  if ! fields="$(dcg_fields_read_at "$pin")"; then
+    _dcg_warn_once "fields:${pin}" "[retry] holding retries for repos pinned to ${pin}: cannot read ${DCG_PARSER} and its libs there, so the fields it reads are unproven (#2086)"
+    return 1
+  fi
+  local f info missing=()
+  for f in "$@"; do
+    [ -n "$f" ] || continue
+    for info in "${DCG_INFORMATIONAL_FIELDS[@]}"; do
+      [ "$f" != "$info" ] || continue 2
+    done
+    grep -qxF -- "$f" <<<"$fields" || missing+=("$f")
+  done
+  [ "${#missing[@]}" -eq 0 ] && return 0
+  _dcg_warn_once "miss:${repo}:${missing[*]}" "[retry] holding retries for ${repo}: it pins ${pin}, whose ${DCG_PARSER} does not read client_payload field(s) ${missing[*]} that the sweep at ${DCG_SWEEP_REF} sends (#2086). Repin it to a channel that reads them."
+  echo "  [hold] ${repo} (${pin}) does not read: ${missing[*]}" >&2
+  return 1
+}
+
+# dcg_payload_allowed <repo> <event_json>: dcg_target_reads over the top-level
+# client_payload keys of a repository_dispatch body.
+dcg_payload_allowed() {
+  local repo="$1" body="$2" keys
+  [ -n "$DCG_SWEEP_REF" ] || return 0
+  if ! keys="$(jq -r '.client_payload | keys[]' <<<"$body" 2>/dev/null)"; then
+    echo "  [hold] ${repo}: unreadable retry payload (#2086)" >&2
+    return 1
+  fi
+  local -a fields=()
+  mapfile -t fields <<<"$keys"
+  dcg_target_reads "$repo" "${fields[@]}"
 }

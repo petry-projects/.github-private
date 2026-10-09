@@ -32,10 +32,9 @@ name: Dev-Lead Retry (rate-limited)
 # info_status_pattern match) gets one deduplicated fix-bot-comment retry per scan,
 # addressed by the comment's node id (scan_pr_for_undispositioned_bot_comments).
 #
-# Each target repo runs its harness at its OWN dev-lead.yml pin, so the sweep
-# skips (with a ::warning::) any repo pinned to an older channel than the sweep's.
-# Such a repo could be sent a client_payload field it cannot read yet (#2086,
-# scripts/lib/dispatch-channel-gate.sh).
+# Each target repo parses a payload at its OWN dev-lead.yml pin, so the sweep
+# holds back (with a ::warning::) any payload carrying a client_payload field the
+# target's pinned parser does not read (#2086, scripts/lib/dispatch-channel-gate.sh).
 
 on:
   schedule:
@@ -77,8 +76,8 @@ jobs:
       # `agent_ref`; running the sweep from main let it send payload fields that
       # channel could not read yet (#2017). Read the pin from the default branch
       # and check scripts/ out at it. Never hard-code the major here.
-      # One pin covers the whole sweep: target repos whose dev-lead.yml pins an
-      # older channel than this repo can still see the skew (#2086).
+      # Target repos pinned to another channel are covered per payload by the
+      # gate the run step turns on with SWEEP_AGENT_REF (#2086).
       - name: Fetch dev-lead caller stub
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -111,4 +110,7 @@ jobs:
           persist-credentials: false
 
       - name: Scan and retry rate-limited PRs
+        env:
+          # Turns on the per-target payload-field gate (#2086).
+          SWEEP_AGENT_REF: ${{ steps.channel.outputs.agent_ref }}
         run: bash scripts/dev-lead-retry.sh

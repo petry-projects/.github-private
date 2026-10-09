@@ -38,8 +38,9 @@ set -euo pipefail
 #   DISPATCH_DELAY_SEC  — seconds between repo dispatches (default: 30) to
 #                         prevent cascading org-wide rate-limit hits
 #   DRY_RUN             — if "true", log what would be dispatched but don't send
-#   SWEEP_AGENT_REF     — override the sweep's dev-lead channel for the #2086
-#                         per-repo gate (default: this repo's dev-lead.yml pin)
+#   SWEEP_AGENT_REF     — the dev-lead channel the sweep's scripts/ run at;
+#                         turns on the #2086 per-target payload-field gate
+#                         (dev-lead-retry.yml passes it; unset = gate off)
 #   NOW_ISO             — override current time for testing (ISO-8601 UTC)
 #   BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC — seconds to wait after posting a
 #                         bot-comment retry marker before re-listing markers
@@ -81,12 +82,12 @@ set -euo pipefail
 #   fix-reviews pass per PR (lib/bot-thread-retry.sh). Threads that exhaust their
 #   attempts get a single visible notice, so the stall is never silent.
 #
-# Each target repo is gated on its own dev-lead.yml pin (#2086). The sweep runs one
-#   release of scripts/ (this repo's pinned channel), but every target runs its
-#   harness at its own pin. A repo pinned to an older channel than the sweep could
-#   be sent a client_payload field its harness cannot read, so main() skips it with
-#   a ::warning:: (lib/dispatch-channel-gate.sh). If the sweep's own pin cannot be
-#   read, the gate is off and every repo is scanned, as before.
+# Each payload is gated on the target repo's own dev-lead.yml pin (#2086). The
+#   sweep runs one release of scripts/ (this repo's pinned channel), but every
+#   target parses a payload with dev-lead-intent.sh at its own pin. A payload
+#   carrying a client_payload field that parser does not read is held back, with
+#   a ::warning:: naming the field (lib/dispatch-channel-gate.sh); payloads every
+#   release reads still reach older-pinned repos.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Escalation gate (#946): pr_has_escalation_label / NEEDS_HUMAN_REVIEW_LABEL.
@@ -105,7 +106,7 @@ source "$SCRIPT_DIR/lib/bot-comment-retry.sh"
 # Unreplied bot review-thread retry decision + thread fetch (#2046).
 # shellcheck source=lib/bot-thread-retry.sh
 source "$SCRIPT_DIR/lib/bot-thread-retry.sh"
-# Per-target-repo channel gate (#2086): dcg_resolve_sweep_ref / dcg_repo_dispatch_allowed.
+# Per-target payload-field gate (#2086): dcg_init / dcg_payload_allowed / dcg_target_reads.
 # shellcheck source=lib/dispatch-channel-gate.sh
 source "$SCRIPT_DIR/lib/dispatch-channel-gate.sh"
 
@@ -243,6 +244,8 @@ dispatch_ci_retry() {
                   app_slug: "github-actions", id: $check_run_id}]
       }
     }')
+  # The target's pinned parser must read every field sent (#2086).
+  dcg_payload_allowed "$repo" "$payload" || return 1
   if ! echo "$payload" | gh api --method POST "repos/${repo}/dispatches" --input - >/dev/null 2>&1; then
     echo "  [warn] dispatch failed for PR ${pr_number} in ${repo}" >&2
     return 1
@@ -273,6 +276,8 @@ dispatch_reviews_retry() {
         intent_type: $intent_type
       }
     }')
+  # The target's pinned parser must read every field sent (#2086).
+  dcg_payload_allowed "$repo" "$payload" || return 1
   if ! echo "$payload" | gh api --method POST "repos/${repo}/dispatches" --input - >/dev/null 2>&1; then
     echo "  [warn] dispatch failed for PR ${pr_number} in ${repo}" >&2
     return 1
@@ -304,6 +309,8 @@ dispatch_issue_retry() {
         attempt: $attempt
       }
     }')
+  # The target's pinned parser must read every field sent (#2086).
+  dcg_payload_allowed "$repo" "$payload" || return 1
   if ! echo "$payload" | gh api --method POST "repos/${repo}/dispatches" --input - >/dev/null 2>&1; then
     echo "  [warn] dispatch failed for issue ${issue_number} in ${repo}" >&2
   fi
@@ -601,6 +608,11 @@ withdraw_bot_comment_retry_marker() {
   fi
 }
 
+# The client_payload keys dispatch_bot_comment_retry sends, so the scan can check
+# the target reads them (#2086) BEFORE it posts a retry marker. Keep in step with
+# the payload below (tests/dev-lead/unit/test_dispatch_channel_gate.bats checks).
+BOT_COMMENT_RETRY_FIELDS=(pr_number head_sha repo intent_type comment_node_id)
+
 # dispatch_bot_comment_retry <repo> <pr_number> <head_sha> <comment_node_id>
 # Re-dispatches a fix-bot-comment pass for ONE bot comment (#2017). Reuses the
 # dev-lead-reviews-retry type every caller stub already subscribes to, so no stub
@@ -630,6 +642,8 @@ dispatch_bot_comment_retry() {
         comment_node_id: $comment_node_id
       }
     }')
+  # The target's pinned parser must read every field sent (#2086).
+  dcg_payload_allowed "$repo" "$payload" || return 1
   if ! echo "$payload" | gh api --method POST "repos/${repo}/dispatches" --input - >/dev/null 2>&1; then
     echo "  [warn] dispatch failed for PR ${pr_number} in ${repo}" >&2
     return 1
@@ -774,6 +788,13 @@ scan_pr_for_undispositioned_bot_comments() {
   fi
   now_iso="${NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   echo "  [retry] bot-comment ${cid} ($(jq -r '.login' <<< "$pick")) on PR ${pr_number}: undispositioned → fix-bot-comment attempt ${attempt}" >&2
+
+  # A target pinned to a parser that drops comment_node_id would fail the run
+  # (#2050); hold before the marker, which would block the comment for the whole
+  # pending window (#2086).
+  if ! dcg_target_reads "$repo" "${BOT_COMMENT_RETRY_FIELDS[@]}"; then
+    echo "0"; return 0
+  fi
 
   # Record the attempt BEFORE dispatching so a concurrent caller (the cron and
   # pr-review's gate verdict) sees it as pending and does not duplicate it.
@@ -1269,24 +1290,17 @@ main() {
   local repo_count="${#all_repos[@]}"
   echo "[retry] scanning ${repo_count} repo(s) across org(s)"
 
-  # Gate each target on its own dev-lead.yml pin (#2086). If the sweep's own pin
-  # is unreadable the gate is off: failing closed here would silence the whole
-  # safety net on one transient read.
-  local sweep_ref="" sweep_status=0
-  sweep_ref="$(dcg_resolve_sweep_ref)" || sweep_status=$?
-  if [ "$sweep_status" -eq 0 ]; then
-    echo "[retry] sweep channel: ${sweep_ref} (repos pinned older are skipped)"
+  # Hold each retry payload back from a target whose pinned parser does not
+  # read all its fields (#2086). Off unless the workflow passes SWEEP_AGENT_REF.
+  dcg_init || exit 1
+  if [ -n "$DCG_SWEEP_REF" ]; then
+    echo "[retry] sweep channel: ${DCG_SWEEP_REF} (a payload goes only to repos whose pinned parser reads all its fields)"
   else
-    sweep_ref=""
-    echo "::warning::[retry] cannot resolve the sweep's dev-lead channel from ${DCG_HOST_REPO}'s dev-lead.yml; per-repo channel gate disabled (#2086)" >&2
+    echo "[retry] SWEEP_AGENT_REF unset: per-target payload-field gate off (#2086)"
   fi
 
-  local repo_index=0 skipped=0
+  local repo_index=0
   for repo in "${all_repos[@]}"; do
-    if [ -n "$sweep_ref" ] && ! dcg_repo_dispatch_allowed "$repo" "$sweep_ref"; then
-      skipped=$(( skipped + 1 ))
-      continue
-    fi
     if [ "$repo_index" -gt 0 ] && [ "$DISPATCH_DELAY_SEC" -gt 0 ]; then
       # Stagger dispatches to avoid hammering the rate-limited API simultaneously
       echo "[retry] waiting ${DISPATCH_DELAY_SEC}s before next repo (stagger)..."
@@ -1295,7 +1309,6 @@ main() {
     scan_repo "$repo"
     repo_index=$(( repo_index + 1 ))
   done
-  [ "$skipped" -eq 0 ] || echo "[retry] skipped ${skipped} repo(s) on the channel gate"
 
   echo "[retry] done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

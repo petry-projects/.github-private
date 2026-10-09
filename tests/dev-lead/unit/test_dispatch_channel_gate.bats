@@ -1,50 +1,63 @@
 #!/usr/bin/env bats
-# Per-target-repo channel gate for the dev-lead retry sweep (#2086).
+# Per-target payload-field gate for the dev-lead retry sweep (#2086).
 #
 # The sweep runs one release of scripts/ (the channel this repo's dev-lead.yml
-# pins, #2050) but dispatches to every repo in the org, and each target runs its
-# harness at ITS OWN dev-lead.yml pin. A target pinned to an older channel can
-# receive a client_payload field its harness cannot read (#2017 skew, across
-# repos). The gate reads each target's pin and skips — loudly — any repo whose
-# channel lacks commits the sweep's channel has. These tests pin:
-#   • agent_ref parsing (channel tags only; same regex as dev-lead-retry.yml);
-#   • pin reads: found / no stub (404) / read error / malformed;
-#   • the ancestry compare: identical|behind → dispatch, ahead|diverged → skip,
-#     compare failure → skip (fail closed), same ref → no API call, cached;
-#   • main(): an older-pinned repo is skipped with a warning while others scan,
-#     and an unresolvable sweep pin keeps today's scan-everything behaviour.
+# pins, #2050) but sends repository_dispatch events to every repo in the org, and
+# each target parses them with dev-lead-intent.sh at ITS OWN dev-lead.yml pin. A
+# payload carrying a client_payload field that parser does not read must be held
+# back; a payload of fields every release reads must still reach older-pinned
+# repos (the fleet sits on stable). These tests pin:
+#   • agent_ref parsing (any plain ref; the reusable's default `main` when absent);
+#   • pin reads: found / no stub (404) / read error / unresolvable, cached;
+#   • the fields a ref's parser reads: parser + libs it names, comments ignored,
+#     an unreadable file fails closed, cached, ref URL-encoded;
+#   • the decision: gate off without SWEEP_AGENT_REF, same pin skips the lookup,
+#     a missing field holds with one warning naming it, informational fields ignored;
+#   • every dispatcher is gated, and BOT_COMMENT_RETRY_FIELDS matches its payload;
+#   • main(): every repo is still scanned; an invalid SWEEP_AGENT_REF is an error.
 #
 # Run: bats tests/dev-lead/unit/test_dispatch_channel_gate.bats
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 RETRY_SCRIPT="$REPO_ROOT/scripts/dev-lead-retry.sh"
 
+# The v1 parser reads every field except comment_node_id (the #2050 skew).
+V1_FIELDS=(pr_number issue_number head_sha checks intent_type)
+
 setup() {
   MOCK_BIN="$(mktemp -d)"
   export MOCK_BIN
   export PATH="$MOCK_BIN:$PATH"
-  mkdir -p "$MOCK_BIN/stubs"
-  : >"$MOCK_BIN/compare"
+  mkdir -p "$MOCK_BIN/stubs" "$MOCK_BIN/src"
   : >"$MOCK_BIN/calls"
-  export DRY_RUN="true"
+  export DRY_RUN="false"
   export DISPATCH_DELAY_SEC="0"
   export TARGET_ORG="petry-projects"
   export DCG_HOST_REPO="petry-projects/.github-private"
   unset SWEEP_AGENT_REF DELEGATION_ORGS GITHUB_REPOSITORY
 
-  # gh stub. Every call is logged to $MOCK_BIN/calls.
-  #   contents/.github/workflows/dev-lead.yml for owner/name
-  #       -> $MOCK_BIN/stubs/<owner>__<name>; missing file -> HTTP 404;
+  # gh stub. Every call is logged to $MOCK_BIN/calls; an unexpected call fails
+  # loudly (exit 97) so a test never passes on a silent default.
+  #   repos/<host>/contents/<path>?ref=<enc-ref>
+  #       -> $MOCK_BIN/src/<enc-ref>/<path, / as __>; missing -> HTTP 404
+  #   repos/<owner>/<name>/contents/.github/workflows/dev-lead.yml
+  #       -> $MOCK_BIN/stubs/<owner>__<name>; missing -> HTTP 404;
   #          a file containing exactly ERROR -> HTTP 502
-  #   compare/<base>...<head> -> status from "$MOCK_BIN/compare" lines
-  #       "<base>...<head> <status>"; no line -> HTTP 500
-  #   repo list -> $REPO_LIST_JSON (post-jq array of nameWithOwner)
+  #   repos/<repo>/dispatches -> body appended to $MOCK_BIN/dispatched
+  #   repo list -> $REPO_LIST_JSON
   cat >"$MOCK_BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$MOCK_BIN/calls"
 args="$*"
 case "$args" in
   "repo list"*) printf '%s' "${REPO_LIST_JSON:-[]}"; exit 0 ;;
+  *"/dispatches"*) cat >>"$MOCK_BIN/dispatched"; echo >>"$MOCK_BIN/dispatched"; exit 0 ;;
+  *"contents/"*"?ref="*)
+    p="${args#*/contents/}"; p="${p%% *}"
+    ref="${p#*\?ref=}"; path="${p%%\?ref=*}"
+    f="$MOCK_BIN/src/${ref}/${path//\//__}"
+    if [ ! -f "$f" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    cat "$f"; exit 0 ;;
   *contents/.github/workflows/dev-lead.yml*)
     repo="${args#*repos/}"; repo="${repo%%/contents/*}"
     f="$MOCK_BIN/stubs/${repo//\//__}"
@@ -58,12 +71,7 @@ case "$args" in
       exit 1
     fi
     cat "$f"; exit 0 ;;
-  *compare/*)
-    bh="${args#*compare/}"; bh="${bh%% *}"
-    st="$(awk -v k="$bh" '$1 == k {print $2}' "$MOCK_BIN/compare")"
-    if [ -z "$st" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
-    printf '%s\n' "$st"; exit 0 ;;
-  *) echo "[]" ;;
+  *) echo "mock gh: unexpected call: $args" >&2; exit 97 ;;
 esac
 GHEOF
   chmod +x "$MOCK_BIN/gh"
@@ -87,20 +95,37 @@ jobs:
 EOF
 }
 
-# _compare <base> <head> <status>
-_compare() {
-  printf '%s...%s %s\n' "$1" "$2" "$3" >>"$MOCK_BIN/compare"
+# _parser <ref> <field>...: the host repo's dev-lead-intent.sh at <ref> reads
+# <field>s — the last one through a lib it sources.
+_parser() {
+  local ref="$1" enc; shift
+  enc="$(jq -rn --arg r "$ref" '$r | @uri')"
+  mkdir -p "$MOCK_BIN/src/$enc"
+  local f last="" body=""
+  for f in "$@"; do last="$f"; done
+  for f in "$@"; do
+    [ "$f" = "$last" ] && continue
+    body+="  ${f}=\$(jq -r '.client_payload.${f} // empty' \"\$EVENT_PATH\")"$'\n'
+  done
+  {
+    echo '#!/usr/bin/env bash'
+    echo '# .client_payload.comment_node_id is named only in this comment'
+    echo 'source "$(dirname "$0")/lib/helper.sh"'
+    echo 'parse() {'
+    printf '%s' "$body"
+    echo '}'
+  } >"$MOCK_BIN/src/$enc/scripts__dev-lead-intent.sh"
+  printf 'helper() { jq -r %s; }\n' "'.client_payload.${last} // empty'" \
+    >"$MOCK_BIN/src/$enc/scripts__lib__helper.sh"
 }
 
-_compare_calls() {
-  grep -c 'compare/' "$MOCK_BIN/calls" || true
-}
+_calls() { grep -c -- "$1" "$MOCK_BIN/calls" || true; }
 
 # ── dcg_parse_agent_ref ──────────────────────────────────────────────────────
 
-@test "parse: returns the agent_ref of a caller stub, for any major and tier" {
+@test "parse: returns the agent_ref of a caller stub" {
   local ch out
-  for ch in dev-lead/v139-stable dev-lead/v1-next dev-lead/v7-ring0 dev-lead/v12-ring1; do
+  for ch in dev-lead/v139-stable dev-lead/v1-next dev-lead/v7-ring0 main 4fd4eac; do
     _pin o/r "$ch"
     out="$(dcg_parse_agent_ref <"$MOCK_BIN/stubs/o__r")"
     [ "$out" = "$ch" ]
@@ -112,183 +137,219 @@ _compare_calls() {
   [ "$out" = "dev-lead/v139-ring1" ]
 }
 
+@test "parse: no agent_ref → the reusable's default, main" {
+  out="$(printf 'jobs:\n  dev-lead:\n    uses: o/r/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable\n' | dcg_parse_agent_ref)"
+  [ "$out" = "main" ]
+}
+
 @test "parse: reads this repo's live dev-lead.yml stub" {
   run dcg_parse_agent_ref <"$REPO_ROOT/.github/workflows/dev-lead.yml"
   [ "$status" -eq 0 ]
   [[ "$output" =~ ^dev-lead/v[0-9]+-(next|ring0|ring1|stable)$ ]]
 }
 
-@test "parse: rejects a missing or non-channel agent_ref" {
-  run dcg_parse_agent_ref <<<'jobs: {}'
-  [ "$status" -ne 0 ]
+@test "parse: rejects an empty or non-literal agent_ref" {
   local bad
-  for bad in main dev-lead/v139 dev-lead/vX-stable dev-lead/v139-canary pr-review/v1-stable 'dev-lead/v139-stable;x' '../../x'; do
+  for bad in '' '${{ inputs.ref }}' '../../x' '-x'; do
     run dcg_parse_agent_ref <<<"      agent_ref: $bad"
     [ "$status" -ne 0 ]
     [ -z "$output" ]
   done
 }
 
-# ── dcg_read_repo_pin ────────────────────────────────────────────────────────
+# ── dcg_target_pin ───────────────────────────────────────────────────────────
 
-@test "read pin: returns the repo's agent_ref" {
+@test "pin: returns the repo's agent_ref, read once per sweep" {
   _pin petry-projects/markets dev-lead/v139-ring1
-  run dcg_read_repo_pin petry-projects/markets
+  run dcg_target_pin petry-projects/markets
   [ "$status" -eq 0 ]
   [ "$output" = "dev-lead/v139-ring1" ]
+  dcg_target_pin petry-projects/markets >/dev/null
+  dcg_target_pin petry-projects/markets >/dev/null
+  [ "$(_calls 'repos/petry-projects/markets/contents')" -eq 2 ]  # run's subshell + the cached one
 }
 
-@test "read pin: a repo with no dev-lead.yml returns 2" {
-  run dcg_read_repo_pin petry-projects/no-stub
+@test "pin: no dev-lead.yml → 2; read error or unresolvable pin → 1" {
+  run dcg_target_pin petry-projects/no-stub
   [ "$status" -eq 2 ]
-  [ -z "$output" ]
-}
-
-@test "read pin: a read error returns 1 (not mistaken for no stub)" {
   echo ERROR >"$MOCK_BIN/stubs/petry-projects__flaky"
-  run dcg_read_repo_pin petry-projects/flaky
+  run dcg_target_pin petry-projects/flaky
   [ "$status" -eq 1 ]
-  [ -z "$output" ]
-}
-
-@test "read pin: a malformed agent_ref returns 1" {
-  _pin petry-projects/odd main
-  run dcg_read_repo_pin petry-projects/odd
-  [ "$status" -eq 1 ]
-  [ -z "$output" ]
-}
-
-# ── dcg_pin_compat ───────────────────────────────────────────────────────────
-
-@test "compat: same ref → compatible without any API call" {
-  run dcg_pin_compat dev-lead/v139-stable dev-lead/v139-stable
-  [ "$status" -eq 0 ]
-  [ "$(_compare_calls)" -eq 0 ]
-}
-
-@test "compat: target identical to or newer than the sweep → compatible" {
-  _compare dev-lead/v139-ring0 dev-lead/v139-stable identical
-  run dcg_pin_compat dev-lead/v139-ring0 dev-lead/v139-stable
-  [ "$status" -eq 0 ]
-  _compare dev-lead/v139-ring1 dev-lead/v139-stable behind
-  run dcg_pin_compat dev-lead/v139-ring1 dev-lead/v139-stable
-  [ "$status" -eq 0 ]
-}
-
-@test "compat: target older than the sweep (sweep ahead) → older" {
-  _compare dev-lead/v1-stable dev-lead/v139-stable ahead
-  run dcg_pin_compat dev-lead/v1-stable dev-lead/v139-stable
+  _pin petry-projects/expr '${{ inputs.ref }}'
+  run dcg_target_pin petry-projects/expr
   [ "$status" -eq 1 ]
 }
 
-@test "compat: diverged channels (e.g. a rollback) → older" {
-  _compare dev-lead/v139-ring1 dev-lead/v139-stable diverged
-  run dcg_pin_compat dev-lead/v139-ring1 dev-lead/v139-stable
+# ── dcg_fields_read_at ───────────────────────────────────────────────────────
+
+@test "fields: the parser's reads plus its libs', not names in comments" {
+  _parser dev-lead/v1-stable "${V1_FIELDS[@]}"
+  run dcg_fields_read_at dev-lead/v1-stable
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '%s\n' "${V1_FIELDS[@]}" | sort -u)" ]
+  # The ref is URL-encoded and read from the host repo.
+  grep -q 'repos/petry-projects/.github-private/contents/scripts/lib/helper.sh?ref=dev-lead%2Fv1-stable' "$MOCK_BIN/calls"
+}
+
+@test "fields: a lib that cannot be read fails closed" {
+  _parser dev-lead/v1-stable "${V1_FIELDS[@]}"
+  rm "$MOCK_BIN/src/dev-lead%2Fv1-stable/scripts__lib__helper.sh"
+  run dcg_fields_read_at dev-lead/v1-stable
   [ "$status" -eq 1 ]
 }
 
-@test "compat: compare against the dev-lead host repo" {
-  _compare dev-lead/v1-stable dev-lead/v139-stable ahead
-  dcg_pin_compat dev-lead/v1-stable dev-lead/v139-stable || true
-  grep -q 'repos/petry-projects/.github-private/compare/dev-lead/v1-stable...dev-lead/v139-stable' "$MOCK_BIN/calls"
+@test "fields: cached per ref within a sweep" {
+  _parser dev-lead/v1-stable "${V1_FIELDS[@]}"
+  dcg_fields_read_at dev-lead/v1-stable >/dev/null
+  dcg_fields_read_at dev-lead/v1-stable >/dev/null
+  [ "$(_calls 'dev-lead-intent.sh?ref=')" -eq 1 ]
 }
 
-@test "compat: compare failure → unknown (2)" {
-  run dcg_pin_compat dev-lead/v138-stable dev-lead/v139-stable
-  [ "$status" -eq 2 ]
+# ── dcg_init / dcg_target_reads ──────────────────────────────────────────────
+
+@test "init: unset → gate off; a channel tag → on; anything else is an error" {
+  dcg_init
+  [ -z "$DCG_SWEEP_REF" ]
+  SWEEP_AGENT_REF=dev-lead/v139-ring0 dcg_init
+  [ "$DCG_SWEEP_REF" = "dev-lead/v139-ring0" ]
+  SWEEP_AGENT_REF=main run dcg_init
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::"* ]]
 }
 
-@test "compat: result is cached per target ref within a sweep" {
-  _compare dev-lead/v1-stable dev-lead/v139-stable ahead
-  dcg_pin_compat dev-lead/v1-stable dev-lead/v139-stable || true
-  dcg_pin_compat dev-lead/v1-stable dev-lead/v139-stable || true
-  dcg_pin_compat dev-lead/v1-stable dev-lead/v139-stable || true
-  [ "$(_compare_calls)" -eq 1 ]
-}
-
-# ── dcg_repo_dispatch_allowed ────────────────────────────────────────────────
-
-@test "allowed: same pin as the sweep → scan" {
-  _pin petry-projects/markets dev-lead/v139-stable
-  run dcg_repo_dispatch_allowed petry-projects/markets dev-lead/v139-stable
+@test "reads: gate off → allowed with no API call" {
+  run dcg_target_reads petry-projects/broodly comment_node_id
   [ "$status" -eq 0 ]
+  [ ! -s "$MOCK_BIN/calls" ]
 }
 
-@test "allowed: older pin → skip with a warning naming both channels" {
+@test "reads: pinned to the sweep's channel → allowed without reading its parser" {
+  DCG_SWEEP_REF=dev-lead/v139-ring0
+  _pin petry-projects/x dev-lead/v139-ring0
+  run dcg_target_reads petry-projects/x comment_node_id
+  [ "$status" -eq 0 ]
+  [ "$(_calls 'dev-lead-intent.sh')" -eq 0 ]
+}
+
+@test "reads: an older pin whose parser reads every field → allowed" {
+  DCG_SWEEP_REF=dev-lead/v139-ring0
   _pin petry-projects/broodly dev-lead/v1-stable
-  _compare dev-lead/v1-stable dev-lead/v139-stable ahead
-  run dcg_repo_dispatch_allowed petry-projects/broodly dev-lead/v139-stable
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"::warning::"* ]]
-  [[ "$output" == *"petry-projects/broodly"* ]]
-  [[ "$output" == *"dev-lead/v1-stable"* ]]
-  [[ "$output" == *"dev-lead/v139-stable"* ]]
+  _parser dev-lead/v1-stable "${V1_FIELDS[@]}"
+  run dcg_target_reads petry-projects/broodly pr_number head_sha repo intent_type
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::warning::"* ]]
 }
 
-@test "allowed: no dev-lead.yml → skip (nothing would receive a dispatch)" {
-  run dcg_repo_dispatch_allowed petry-projects/no-stub dev-lead/v139-stable
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"no dev-lead.yml"* ]]
+@test "reads: informational fields (repo, attempt) need no reader" {
+  DCG_SWEEP_REF=dev-lead/v139-ring0
+  _pin petry-projects/broodly dev-lead/v1-stable
+  _parser dev-lead/v1-stable issue_number
+  run dcg_target_reads petry-projects/broodly issue_number repo attempt
+  [ "$status" -eq 0 ]
 }
 
-@test "allowed: unreadable pin → skip with a warning (fail closed)" {
+@test "reads: a field the pinned parser does not read → held, one warning naming it" {
+  DCG_SWEEP_REF=dev-lead/v139-ring0
+  _pin petry-projects/broodly dev-lead/v1-stable
+  _parser dev-lead/v1-stable "${V1_FIELDS[@]}"
+  local err="$BATS_TEST_TMPDIR/err" rc=0
+  dcg_target_reads petry-projects/broodly pr_number comment_node_id 2>"$err" || rc=$?
+  [ "$rc" -eq 1 ]
+  dcg_target_reads petry-projects/broodly pr_number comment_node_id 2>>"$err" || rc=$?
+  [ "$(grep -c '::warning::' "$err")" -eq 1 ]
+  grep -q '::warning::.*petry-projects/broodly.*dev-lead/v1-stable.*comment_node_id' "$err"
+}
+
+@test "reads: no dev-lead.yml → held without a warning" {
+  DCG_SWEEP_REF=dev-lead/v139-ring0
+  run dcg_target_reads petry-projects/no-stub pr_number
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"::warning::"* ]]
+}
+
+@test "reads: unreadable pin or parser → held with a warning (fail closed)" {
+  DCG_SWEEP_REF=dev-lead/v139-ring0
   echo ERROR >"$MOCK_BIN/stubs/petry-projects__flaky"
-  run dcg_repo_dispatch_allowed petry-projects/flaky dev-lead/v139-stable
+  run dcg_target_reads petry-projects/flaky pr_number
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::warning::"* ]]
+  _pin petry-projects/old dev-lead/v1-ring1   # no parser source at that ref
+  run dcg_target_reads petry-projects/old pr_number
   [ "$status" -eq 1 ]
   [[ "$output" == *"::warning::"* ]]
 }
 
-@test "allowed: compare failure → skip with a warning (fail closed)" {
-  _pin petry-projects/odd dev-lead/v138-stable
-  run dcg_repo_dispatch_allowed petry-projects/odd dev-lead/v139-stable
+# ── dispatchers ──────────────────────────────────────────────────────────────
+
+_v1_target() {
+  DCG_SWEEP_REF=dev-lead/v139-ring0
+  _pin petry-projects/broodly dev-lead/v1-stable
+  _parser dev-lead/v1-stable "${V1_FIELDS[@]}"
+}
+
+@test "dispatch: a bot-comment retry is held from a target that drops comment_node_id" {
+  _v1_target
+  run dispatch_bot_comment_retry petry-projects/broodly 7 abc IC_x
   [ "$status" -eq 1 ]
-  [[ "$output" == *"::warning::"* ]]
+  [ ! -s "$MOCK_BIN/dispatched" ]
 }
 
-# ── dcg_resolve_sweep_ref ────────────────────────────────────────────────────
-
-@test "sweep ref: read from the host repo's dev-lead.yml" {
-  _pin petry-projects/.github-private dev-lead/v139-stable
-  run dcg_resolve_sweep_ref
-  [ "$status" -eq 0 ]
-  [ "$output" = "dev-lead/v139-stable" ]
+@test "dispatch: reviews, CI and issue retries still reach a v1-pinned target" {
+  _v1_target
+  lookup_check_run_details() { echo '{"id":"","details_url":""}'; }
+  dispatch_reviews_retry petry-projects/broodly 7 abc fix-reviews
+  dispatch_ci_retry petry-projects/broodly 7 abc "CI"
+  dispatch_issue_retry petry-projects/broodly 9 1
+  [ "$(grep -c 'client_payload' "$MOCK_BIN/dispatched")" -eq 3 ]
 }
 
-@test "sweep ref: SWEEP_AGENT_REF overrides, and must be a channel tag" {
-  _pin petry-projects/.github-private dev-lead/v139-stable
-  SWEEP_AGENT_REF=dev-lead/v139-ring1 run dcg_resolve_sweep_ref
-  [ "$status" -eq 0 ]
-  [ "$output" = "dev-lead/v139-ring1" ]
-  SWEEP_AGENT_REF=main run dcg_resolve_sweep_ref
-  [ "$status" -ne 0 ]
+@test "dispatch: every dispatcher in the sweep consults the gate" {
+  local fn n=0
+  for fn in $(declare -F | awk '{print $3}'); do
+    # A sweep dispatcher POSTs its payload to the target's /dispatches.
+    declare -f "$fn" | grep -qF 'POST "repos/${repo}/dispatches"' || continue
+    n=$((n + 1))
+    declare -f "$fn" | grep -q 'dcg_payload_allowed' || { echo "ungated: $fn"; return 1; }
+  done
+  [ "$n" -ge 4 ]
+}
+
+@test "BOT_COMMENT_RETRY_FIELDS matches dispatch_bot_comment_retry's payload" {
+  dispatch_bot_comment_retry petry-projects/x 7 abc IC_x
+  [ "$(jq -r '.client_payload | keys[]' "$MOCK_BIN/dispatched" | sort)" \
+    = "$(printf '%s\n' "${BOT_COMMENT_RETRY_FIELDS[@]}" | sort)" ]
 }
 
 # ── main() wiring ────────────────────────────────────────────────────────────
 
-@test "main: older-pinned repo is skipped, same-pinned repo is scanned" {
-  export REPO_LIST_JSON='["petry-projects/.github-private","petry-projects/broodly","petry-projects/markets"]'
-  _pin petry-projects/.github-private dev-lead/v139-stable
-  _pin petry-projects/broodly dev-lead/v1-stable
-  _pin petry-projects/markets dev-lead/v139-ring1
-  _compare dev-lead/v1-stable dev-lead/v139-stable ahead
-  _compare dev-lead/v139-ring1 dev-lead/v139-stable behind
+@test "main: with the gate on, every repo is still scanned" {
+  export REPO_LIST_JSON='["petry-projects/.github-private","petry-projects/broodly"]'
   scan_repo() { echo "SCANNED $1"; }
-
-  run main
+  SWEEP_AGENT_REF=dev-lead/v139-ring0 run main
   [ "$status" -eq 0 ]
+  [[ "$output" == *"sweep channel: dev-lead/v139-ring0"* ]]
   [[ "$output" == *"SCANNED petry-projects/.github-private"* ]]
-  [[ "$output" == *"SCANNED petry-projects/markets"* ]]
-  [[ "$output" != *"SCANNED petry-projects/broodly"* ]]
-  [[ "$output" == *"::warning::"*"petry-projects/broodly"* ]]
+  [[ "$output" == *"SCANNED petry-projects/broodly"* ]]
 }
 
-@test "main: unresolvable sweep pin → warn and scan every repo (today's behaviour)" {
-  export REPO_LIST_JSON='["petry-projects/a","petry-projects/b"]'
+@test "main: SWEEP_AGENT_REF unset → gate off, logged" {
+  export REPO_LIST_JSON='["petry-projects/a"]'
   scan_repo() { echo "SCANNED $1"; }
-
   run main
   [ "$status" -eq 0 ]
-  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" == *"gate off"* ]]
   [[ "$output" == *"SCANNED petry-projects/a"* ]]
-  [[ "$output" == *"SCANNED petry-projects/b"* ]]
+}
+
+@test "main: an invalid SWEEP_AGENT_REF fails the sweep before any scan" {
+  export REPO_LIST_JSON='["petry-projects/a"]'
+  scan_repo() { echo "SCANNED $1"; }
+  SWEEP_AGENT_REF='dev-lead/v139-canary' run main
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"SCANNED"* ]]
+}
+
+@test "workflow: the run step passes the resolved channel as SWEEP_AGENT_REF" {
+  grep -q 'SWEEP_AGENT_REF: \${{ steps.channel.outputs.agent_ref }}' \
+    "$REPO_ROOT/.github/workflows/dev-lead-retry.yml"
 }
