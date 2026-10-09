@@ -424,6 +424,7 @@ detect_advisory_rate_limit() {
 #   dedup check, so no extra API call is needed to decide whether to post.
 #   The marker prefix ("rate-limited" before v1) deliberately never matches the
 #   idempotency marker regex (<!-- pr-review-agent v1 sha=...).
+#   With DRY_RUN=true nothing is posted; the would-be post is logged instead.
 maybe_post_rate_limited_marker() {
   local pr_url="${1:-}" head_sha="${2:-}" reset_iso="${3:-}" comments_json="${4:-}"
   if [[ -z "$pr_url" || -z "$head_sha" ]]; then
@@ -444,6 +445,12 @@ maybe_post_rate_limited_marker() {
     | length' <<< "$cj" 2>/dev/null || echo 0)
   if [[ "${already:-0}" -gt 0 ]]; then
     log_info "Rate-limited marker already present at head ${head_sha:0:8} — not re-posting"
+    return 0
+  fi
+
+  # A DRY_RUN makes no GitHub writes: report the marker instead of posting it.
+  if [[ "${DRY_RUN:-false}" == "true" ]]; then
+    log_info "DRY_RUN: would post rate-limited marker on $pr_url (head ${head_sha:0:8}, reset ${reset_iso:-n/a})"
     return 0
   fi
 
