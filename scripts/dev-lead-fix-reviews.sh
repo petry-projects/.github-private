@@ -3039,26 +3039,44 @@ nochange_epoch_cutoff() {
 # Idempotent: a stamped reply carries a marker and is skipped.
 stamp_pass_replies() {
   local record="${PASS_REPLY_RECORD:-}" ids id body_json body failed=0
-  if ! ids=$(cl_recorded_reply_ids "$record"); then
+  local pending_file="${PASS_REPLY_PENDING_FILE:-${RUNNER_TEMP:-/tmp}/dev-lead-unstamped-replies-${PR_NUMBER:-0}}"
+  local recorded="" pending="" new_pending=""
+  if recorded=$(cl_recorded_reply_ids "$record"); then
+    :
+  else
     echo "::warning::stamp_pass_replies: no usable reply record — no-change dispositions are disabled this pass (#2079)"
-    return 1
+    failed=1
+    recorded=""
   fi
+  # Replies that failed to be stamped in an earlier pass stay pending until stamped,
+  # so a marker-less dev-lead reply is never forgotten (#2079).
+  [ -f "$pending_file" ] && pending=$(cat "$pending_file" 2>/dev/null || true)
+  ids=$(printf '%s\n%s\n' "$recorded" "$pending" | awk 'NF && !seen[$0]++')
   while IFS= read -r id; do
     [ -z "$id" ] && continue
     if ! body_json=$(gh api graphql \
         -f query='query($id:ID!){node(id:$id){... on PullRequestReviewComment{body}}}' \
         -f id="$id" 2>/dev/null); then
-      failed=1; continue
+      failed=1; new_pending+="${id}"$'\n'; continue
     fi
-    body=$(jq -er '.data.node.body // empty' <<<"$body_json" 2>/dev/null) || { failed=1; continue; }
+    body=$(jq -er '.data.node.body // empty' <<<"$body_json" 2>/dev/null) || { failed=1; new_pending+="${id}"$'\n'; continue; }
     review_thread_is_agent_authored "$body" && continue
     if ! gh api graphql \
         -f query='mutation($id:ID!,$body:String!){updatePullRequestReviewComment(input:{pullRequestReviewCommentId:$id,body:$body}){pullRequestReviewComment{id}}}' \
         -f id="$id" -f body="$(cl_reply_stamp_body "$body")" >/dev/null 2>&1; then
-      echo "::warning::stamp_pass_replies: could not stamp reply ${id} on PR #${PR_NUMBER:-} (#2079)"
+      echo "::warning::stamp_pass_replies: could not stamp reply ${id} on PR #${PR_NUMBER:-} — will retry on later passes (#2079)"
       failed=1
+      new_pending+="${id}"$'\n'
     fi
   done <<< "$ids"
+  # Persist whatever is still unstamped so later passes retry it and keep no-change
+  # dispositions disabled until it is resolved.
+  if [ -n "$new_pending" ]; then
+    printf '%s' "$new_pending" > "$pending_file" 2>/dev/null || \
+      echo "::warning::stamp_pass_replies: could not persist unstamped reply ids to ${pending_file} (#2079)"
+  else
+    rm -f "$pending_file" 2>/dev/null || true
+  fi
   [ "$failed" -eq 0 ]
 }
 

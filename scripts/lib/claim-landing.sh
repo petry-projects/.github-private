@@ -118,7 +118,8 @@ cl_select_pass_claims() {
 #   comment the human posts mid-pass. Instead a `gh` shim is installed in a fresh
 #   directory (echoed on stdout; the caller prepends it to the engine's PATH). The shim
 #   forwards every call to the real gh unchanged and, for an
-#   addPullRequestReviewThreadReply call, appends the posted reply's node id to
+#   reply-creating call (the GraphQL reply mutation, any */replies* REST path,
+#   in_reply_to, or a query/payload read from --input / @file), appends the posted reply's node id to
 #   <record_file> (or the literal UNATTRIBUTED when the response carries no id, so the
 #   caller can fail closed). The record file is created empty. Returns 1 on failure.
 cl_install_reply_recorder() {
@@ -133,18 +134,58 @@ cl_install_reply_recorder() {
     printf '#!/usr/bin/env bash\n'
     printf 'real=%q\nrec=%q\n' "$real" "$record"
     cat <<'SHIM'
-case "$*" in
-  *addPullRequestReviewThreadReply*)
-    rc=0
-    out=$("$real" "$@") || rc=$?
-    printf '%s\n' "$out"
-    if [ "$rc" -eq 0 ]; then
-      id=$(jq -r '.data.addPullRequestReviewThreadReply.comment.id // empty' <<<"$out" 2>/dev/null || true)
-      printf '%s\n' "${id:-UNATTRIBUTED}" >> "$rec"
+flag=0
+tmpin=""
+check() {
+  case "$1" in
+    *addPullRequestReviewThreadReply*|*/replies*|*in_reply_to*) flag=1 ;;
+  esac
+}
+check "$*"
+prev=""
+for a in "$@"; do
+  f=""
+  [ "$prev" = "--input" ] && f=$a
+  case "$a" in
+    --input=*) f=${a#--input=} ;;
+    *=@*) f=${a#*=@} ;;
+    @*) f=${a#@} ;;
+  esac
+  if [ -n "$f" ]; then
+    if [ "$f" = "-" ]; then
+      if [ -z "$tmpin" ]; then
+        tmpin=$(mktemp)
+        cat > "$tmpin"
+      fi
+      check "$(cat "$tmpin")"
+    elif [ -r "$f" ]; then
+      check "$(cat "$f")"
+    else
+      flag=1
     fi
-    exit "$rc"
-    ;;
-esac
+  fi
+  prev=$a
+done
+run_real() {
+  if [ -n "$tmpin" ]; then "$real" "$@" < "$tmpin"; else "$real" "$@"; fi
+}
+if [ "$flag" -eq 1 ]; then
+  rc=0
+  out=$(run_real "$@") || rc=$?
+  printf '%s\n' "$out"
+  if [ "$rc" -eq 0 ]; then
+    id=$(jq -r '(.data.addPullRequestReviewThreadReply.comment.id // .node_id // empty) | tostring' <<<"$out" 2>/dev/null || true)
+    printf '%s\n' "${id:-UNATTRIBUTED}" >> "$rec"
+  fi
+  [ -n "$tmpin" ] && rm -f "$tmpin"
+  exit "$rc"
+fi
+if [ -n "$tmpin" ]; then
+  rc=0
+  run_real "$@" || rc=$?
+  rm -f "$tmpin"
+  exit "$rc"
+fi
 exec "$real" "$@"
 SHIM
   } > "$dir/gh"
