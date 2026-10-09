@@ -60,6 +60,14 @@ readonly _APPROVAL_DIAG_AGENT_MARKERS='<!-- (pr-review-agent|pr-review-claim|per
 # shellcheck disable=SC2034
 readonly _APPROVAL_DIAG_RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
 
+# Canonical unsupported-file-type body pattern — when an advisory bot posts a
+# comment indicating it cannot review the PR's file types, it should be marked
+# UNSUPPORTED (not counted as participation, similar to RATE_LIMITED). The
+# diagnostic classifies comments matching this pattern as UNSUPPORTED rather than
+# COMMENTED, mirroring the runtime gate's behavior (#1902 bot comment).
+# shellcheck disable=SC2034
+readonly _APPROVAL_DIAG_UNSUPPORTED_RE='unsupported|not supported|cannot.*review|file type.*not|unsupported.*file|not.*file type'
+
 # Sentinel the caller passes for [review_threads_json] when the review-thread FETCH
 # itself failed (mrtg_fetch_review_threads echoes an empty string only on an API
 # failure — a PR with no threads yields {"reviewThreads":[]}). The real
@@ -151,7 +159,7 @@ diagnose_approval() {
   # to the local regex with an identity scope if the gate cannot be sourced.
   local _rl_scope_jq='def rl_scope: (.body // "" | tostring);'
   local _cubic_login='cubic-dev-ai' _cubic_re='cubic.{0,40}(trial|free trial) (ended|expired)'
-  local _rl_re="$_APPROVAL_DIAG_RATE_LIMIT_RE" _gate_out=""
+  local _rl_re="$_APPROVAL_DIAG_RATE_LIMIT_RE" _unsupported_re="$_APPROVAL_DIAG_UNSUPPORTED_RE" _gate_out=""
   # shellcheck disable=SC1091
   if _gate_out="$(
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/advisory-review-gate.sh" >/dev/null 2>&1 || exit 1
@@ -169,6 +177,7 @@ diagnose_approval() {
     --arg approver "$approver" \
     --arg markers "$_APPROVAL_DIAG_AGENT_MARKERS" \
     --arg ratelimit "$_rl_re" \
+    --arg unsupported "$_unsupported_re" \
     --arg cubic "$_cubic_login" --arg cubicre "$_cubic_re" "$_rl_scope_jq"'
       def approver_logins: [$approver, ($approver | if endswith("[bot]") then .[0:-5] else . end)];
       # Validate the snapshot BEFORE deriving a verdict (#1902). An incomplete
@@ -186,11 +195,12 @@ diagnose_approval() {
       | (.reviewDecision // "") as $decision
       # Advisory participation, reconciled with advisory-review-gate.sh
       # get_advisory_bot_states: build each advisory bot submission set (a review
-      # carries its own state; a comment whose body matches the rate-limit pattern
-      # is RATE_LIMITED, else COMMENTED), keep the LATEST per bot, and count a bot as
-      # participated only when its latest state is neither RATE_LIMITED nor
-      # UNSUPPORTED — the gate effective set. So a bot whose newest signal is a
-      # rate-limit notice (even after an older real review) is NOT counted (b76).
+      # carries its own state; a comment whose body matches the unsupported pattern
+      # is UNSUPPORTED; a comment matching rate-limit pattern is RATE_LIMITED; else
+      # COMMENTED), keep the LATEST per bot, and count a bot as participated only
+      # when its latest state is neither RATE_LIMITED nor UNSUPPORTED — the gate
+      # effective set. So a bot whose newest signal is an unsupported/rate-limit
+      # notice (even after an older real review) is NOT counted (#1902).
       | ( [ (.reviews // [])[]
               | { bot: (.author.login // "" | ascii_downcase),
                   state: (.state // ""),
@@ -199,8 +209,10 @@ diagnose_approval() {
               | (.author.login // "" | ascii_downcase) as $who
               | ({bot: $who, body: (.body // "")} | rl_scope) as $scoped
               | { bot: $who,
-                  state: (if (($scoped | test($ratelimit; "i"))
-                              or ($who == ($cubic | ascii_downcase) and ($scoped | test($cubicre; "i"))))
+                  state: (if (($scoped | test($unsupported; "i")))
+                          then "UNSUPPORTED"
+                          elif (($scoped | test($ratelimit; "i"))
+                                or ($who == ($cubic | ascii_downcase) and ($scoped | test($cubicre; "i"))))
                           then "RATE_LIMITED" else "COMMENTED" end),
                   time: (.lastEditedAt // .createdAt // "") } ]
           | map(select(.bot as $b | $adv | index($b)))
@@ -219,9 +231,12 @@ diagnose_approval() {
       | ([ [($adv | length) - ($unavailable_bots | length), 1] | max ]) as $eff_arr
       | ([ $adv[] | select(. as $b | ($participated | index($b)) | not) ] | sort) as $missing
       # Undispositioned non-agent issue comments (maintainer-comment-gate logic).
+      # Exclude comments from advisory bots (part of advisory evidence, not
+      # maintainer feedback). Only count comments from non-approver, non-advisory users.
       | ([ (.comments // [])[] | objects
            | (.author.login // "" | ascii_downcase) as $l
            | select((approver_logins | map(ascii_downcase) | index($l)) | not)
+           | select(($adv | index($l)) | not)
            | select(((.body // "") | test($markers)) | not)
            | select(((.isMinimized // false) == true)
                     and (((.minimizedReason // "") | ascii_downcase) == "resolved") | not)

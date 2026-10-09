@@ -412,6 +412,34 @@ _registry_advisory_count() {
   [ "$(jq -r '.advisory.missing | index("gemini-code-assist") != null' <<<"$output")" = "true" ]
 }
 
+@test "diagnostic: a bot posting an unsupported comment is classified UNSUPPORTED, not counted (effective denominator)" {
+  # When an advisory bot posts a comment indicating it cannot review (e.g., "file
+  # type not supported"), it should be marked UNSUPPORTED, not COMMENTED. This is
+  # the same treatment as a rate-limit notice — unavailable bots are dropped from
+  # the required total. If gemini-code-assist submitted a real review and codeant-ai
+  # posted "unsupported file type", then effective = 2 - 1 = 1, submitted = 1.
+  # The diagnostic must NOT report waiting-for-advisory-bots (#1902 bot comment).
+  local snap='{
+    "reviewDecision": "REVIEW_REQUIRED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "gemini-code-assist"}, "state": "COMMENTED", "commit": {"oid": "abc123"}, "body": "advisory finding", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": [
+      {"author": {"login": "codeant-ai"}, "body": "This file type is not supported by our analysis tool.", "isMinimized": false, "minimizedReason": "", "createdAt": "2026-09-21T10:01:00Z"}
+    ]
+  }'
+  run diagnose_approval "$snap" '["codeant-ai","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  # codeant-ai is unavailable (unsupported comment), not counted as participation
+  [ "$(jq -r '.advisory.submitted' <<<"$output")" = "1" ]
+  [ "$(jq -r '.advisory.required' <<<"$output")" = "2" ]
+  # Must NOT report waiting (effective denominator: 2 - 1 unavailable = 1 required, 1 submitted)
+  [ "$(jq -r '.blocking_gate' <<<"$output")" != "waiting-for-advisory-bots" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "approval-not-yet-issued" ]
+}
+
 # ── Fail-closed on malformed input (mirrors the gate posture) ─────────────────
 
 @test "diagnostic: malformed snapshot fails closed (non-zero, does not claim approved)" {
