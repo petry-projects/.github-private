@@ -863,7 +863,7 @@ generate_rate_limit_samples_report() {
   [ -n "$samples" ] || samples='[]'
 
   printf '## Unparsed rate-limit messages\n\n'
-  if [ "$(jq 'length' <<< "$samples")" -eq 0 ]; then
+  if [ "$samples" = "[]" ]; then
     printf '_None — every rate-limit message in the window carried a reset time the parser could read._\n'
     return 0
   fi

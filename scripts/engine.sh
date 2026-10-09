@@ -2526,7 +2526,8 @@ _record_unparsed_rate_limit() {
   sample=$(grep -iE "$(_rate_limit_pattern)" 2>/dev/null | head -n 3 \
     | redact_secrets | head -c "$RATE_LIMIT_SAMPLE_MAX_BYTES" || true)
   [ -n "$sample" ] || return 0
-  shape=$(printf '%s' "$sample" | sed -E 's/[0-9]+/N/g' | cksum | awk '{print $1}')
+  shape=$(printf '%s' "$sample" | sed -E 's/[0-9]+/N/g' | cksum)
+  shape=${shape%% *}
   emit_rate_limit_sample_record "${REVIEW_ENGINE:-}" "$shape" "$sample" || true
 }
 

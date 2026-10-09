@@ -258,10 +258,9 @@ emit_rate_limit_sample_record() {
 
   local engine="${1:-}" shape="${2:-}" sample="${3:-}"
   [ -n "$shape" ] && [ -n "$sample" ] || return 0
-  # Raw-line parse (fromjson?) so one malformed ledger line cannot hide a match.
-  if [ -f "$TOKEN_LOG_FILE" ] && jq -cR --arg shape "$shape" \
-      'fromjson? | select(.kind? == "rate_limit_sample" and .shape? == $shape)' \
-      "$TOKEN_LOG_FILE" 2>/dev/null | grep -q .; then
+  # Shape is a numeric checksum and records are minified, so a fixed-string grep
+  # finds a prior record without spawning jq over the whole ledger.
+  if [ -f "$TOKEN_LOG_FILE" ] && grep -qF "\"shape\":\"$shape\"" "$TOKEN_LOG_FILE" 2>/dev/null; then
     return 0
   fi
 
