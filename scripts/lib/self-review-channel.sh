@@ -5,17 +5,18 @@
 # version of this repo's agentic review/merge duty must NOT be able to block the
 # PR that fixes its own breakage. For `.github-private`'s dev/merge duty the
 # structural property that guarantees this is that `dev-lead.yml` pins its
-# reusable to a **stable-tier** channel (`@dev-lead/v1-stable`) even though this
-# repo sits in ring `next` — so a broken `next` cannot, by construction, gate its
-# own fix. This is the sanctioned SC2 exception the `pinned-version-report`
+# reusable to a **promoted** channel — ring<N> or stable; `@dev-lead/v139-ring0`
+# since #2091 — even though this repo sits in ring `next`, so a broken `next`
+# cannot, by construction, gate its own fix, and a bad promoted tier is rolled
+# back by moving its tag. This is the sanctioned SC2 exception the `pinned-version-report`
 # ring-mismatch flag calls out (see docs/release/versioning.md,
 # docs/initiatives/agentic-release-strategy.md).
 #
 # These are pure helpers with no side effects and no network: they parse the
-# `uses:` channel pin from a caller stub and classify its TIER. "stable-tier"
-# means the channel tier, not a literal string — both the major-scoped
-# `v1-stable` and the legacy bare `stable` qualify; `v1-next`, `next`, `ring0`,
-# `@main`, and bare SHAs do not.
+# `uses:` channel pin from a caller stub and classify its TIER. A "promoted"
+# tier means the channel tier, not a literal string — `v1-ring0`, `ring1`,
+# `v1-stable` and the legacy bare `stable` qualify; `v1-next`, `next`, `@main`,
+# and bare SHAs do not. (src_is_stable_tier still answers the narrower question.)
 #
 # Sourced by tests/test_sc2_self_review_channel.bats. This file defines functions
 # only (no top-level `set -euo pipefail`), matching the repo's sourceable-lib
@@ -44,8 +45,8 @@ src_stub_uses_ref() {
 #   Returns non-zero if the file declares no such input. This is the ref
 #   dev-lead's own scripts/prompts are CHECKED OUT from (dev-lead-reusable.yml
 #   `inputs.agent_ref`, consumed at the `ref:` of its `actions/checkout` steps),
-#   so for the SC2 duty it must be stable-tier just like the `uses:` pin — a
-#   stable reusable driven by a `next` `agent_ref` would still run the actual
+#   so for the SC2 duty it must be a promoted tier just like the `uses:` pin — a
+#   promoted reusable driven by a `next` `agent_ref` would still run the actual
 #   review/merge logic from an unsafe channel.
 src_stub_agent_ref() {
   local file="$1" line stripped ref content
@@ -116,7 +117,7 @@ src_assert_self_review_stable() {
     printf '::error::SC2 self-review guard: %s declares no `agent_ref` input, so the dev-lead scripts default to `main` (unpromoted). Pin `with: agent_ref: <promoted channel>`.\n' "$label" >&2
     return 1
   fi
-  # Both the workflow pin AND the script-checkout ref must be stable: a stable
+  # Both the workflow pin AND the script-checkout ref must be promoted: a promoted
   # `uses:` with a `next` `agent_ref` still runs the duty logic from an unsafe
   # channel, so validating only the `uses:` ref leaves an SC2 bypass open.
   if src_is_promoted_tier "$ref" && src_is_promoted_tier "$agent_ref"; then

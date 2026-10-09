@@ -15,21 +15,21 @@ exactly as it does a downstream consumer, while `pr-review-trigger.yml`
 deliberately pins `next` to dogfood the candidate, so mechanism (2) is that
 path's operative SC2 safety net:
 
-1. **Channel decoupling (structural).** New versions are exercised on `next`/`ring0`
-   while production self-review/dev duty stays pinned to `stable`
+1. **Channel decoupling (structural).** New versions are exercised on `next`
+   while production self-review/dev duty stays pinned to a promoted channel
    ([versioning.md](./versioning.md)). A break in `next` does not, by
-   construction, take out a `stable`-pinned gate — the fix PR is still evaluated by
-   the last known-good `stable`. **This repo keeps its dev/merge duty
+   construction, take out a gate pinned to a promoted channel — the fix PR is
+   still evaluated by promoted, known-good code. **This repo keeps its dev/merge duty
    (`dev-lead.yml`) pinned to a promoted channel — `@dev-lead/v1-ring0` since
    2026-10 (#2091), `stable` before that — even though it sits in ring `next`** —
    the deliberate SC2 exception (#1624). ring0 is promoted from `next` only after
    its dwell, and a bad ring0 is rolled back by moving the tag, with no PR to
    block; it gets this repo dev-lead fixes days before `stable`. `pinned-version-report` flags
    that pin as a ⚠️ ring mismatch (it expects `next` for a ring-`next` repo); that
-   flag is correct from the ring-rollout view and the stable pin is correct from
+   flag is correct from the ring-rollout view and the promoted pin is correct from
    the SC2 view — the two are reconciled, not contradictory (see
    [versioning.md](./versioning.md) "Production self-review/dev duty stays pinned
-   to `stable`"). By contrast `pr-review-trigger.yml` pins `next` to dogfood the
+   to a promoted channel"). By contrast `pr-review-trigger.yml` pins `next` to dogfood the
    candidate, so for the pr-review path channel decoupling alone does not provide
    the SC2 guarantee — mechanism (2) is required there.
 

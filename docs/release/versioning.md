@@ -71,8 +71,10 @@ partitioned by which one is the host:
 
 Concretely for **`dev-lead`** (hosted in `.github-private`): `next` = `.github-private`,
 `ring0` = `.github`, `ring1` = `{TalkTerm, bmad-bgreat-suite}`, `stable` = the rest.
-**Production self-review/dev duty stays pinned to `stable` even within ring 0** — the agent validating
-fixes is never the unvalidated candidate (the circular-dependency fix #500 targets). The intended
+**Production self-review/dev duty stays pinned to a promoted channel (never `next`) even within ring 0**
+— the agent validating fixes is never the unvalidated candidate (the circular-dependency fix #500
+targets). `.github-private`'s own `dev-lead.yml` pins `ring0` (since #2091; `stable` before), so it runs
+dev-lead fixes once they clear the `next` dwell while a bad `ring0` is still rolled back by a tag move. The intended
 machine-readable source of truth is `standards/canary-rings.json`, now hosted in
 `petry-projects/.github` and consumed by the promotion automation (#501, relocated there under #613).
 
