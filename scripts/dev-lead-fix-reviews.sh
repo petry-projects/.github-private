@@ -1198,9 +1198,12 @@ resolve_deferred_bot_threads() {
     parse_rc=0
     ref=$(dtv_parse_deferral "$reply_body") || parse_rc=$?
     if [ "$parse_rc" -ne 0 ]; then
-      # Most threads simply carry no deferral; only report a malformed one.
+      # Most threads simply carry no deferral. A malformed deferral attempt is a
+      # failure, not a skip: the thread stays merge-blocking, so no terminal may be
+      # posted over it and the pass must stay retryable.
       if [ "$ref" != "no-deferral" ]; then
-        echo "::notice::skipping thread ${id} — deferral marker not verifiable (${ref}); leaving unresolved (#2045)"
+        echo "::warning::thread ${id} — deferral marker not verifiable (${ref}); leaving unresolved (#2045)"
+        failed_count=$((failed_count + 1))
       fi
       continue
     fi
@@ -2367,7 +2370,7 @@ has_reviews_rate_limited_marker() {
   local sha="${HEAD_SHA:-}"
   [ -z "$sha" ] && return 1  # no SHA means no dedup possible
   local status_token="rate-limited"
-  [ "$reason" = "blocked" ] && status_token="blocked"
+  { [ "$reason" = "blocked" ] || [ "$reason" = "resolve-failed" ]; } && status_token="blocked"
   local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=${status_token}"
   local count
   count=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
@@ -2404,7 +2407,9 @@ post_reviews_rate_limited() {
   # The blocked path owns its backoff: a fixed 30-minute reset so the retry cron
   # backs off instead of re-dispatching immediately. The rate-limit path's reset
   # is parsed from engine output (parse_reset_time) before this function is called.
-  if [ "$reason" = "blocked" ]; then
+  # resolve-failed (a thread/comment resolution or finalization failure) is not a
+  # quota hold either: it takes the same non-quota status and backoff (#2045).
+  if [ "$reason" = "blocked" ] || [ "$reason" = "resolve-failed" ]; then
     printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
   fi
 
@@ -2455,13 +2460,19 @@ post_reviews_rate_limited() {
   # for visible-text selection + marker forensics. The retry cron and marker dedup
   # patterns match `status=(rate-limited|blocked)`, so both tokens re-dispatch.
   local status_token="rate-limited"
-  [ "$reason" = "blocked" ] && status_token="blocked"
+  { [ "$reason" = "blocked" ] || [ "$reason" = "resolve-failed" ]; } && status_token="blocked"
   local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=${status_token} reason=${reason}${reset_detail} -->"
 
   # Retry message depends on the reason and on whether the intent can be
   # re-dispatched automatically.
   local heading retry_msg
-  if [ "$reason" = "blocked" ]; then
+  if [ "$reason" = "resolve-failed" ]; then
+    heading="## Dev-Lead — could not finish resolving review items (intent: ${intent})"
+    retry_msg="A review-thread or comment resolution step failed after the fix pass, so the pass was not marked done. The retry cron will re-attempt automatically."
+    if [ -n "$reset_time" ]; then
+      retry_msg="${retry_msg} Next attempt after: \`${reset_time}\`"
+    fi
+  elif [ "$reason" = "blocked" ]; then
     heading="## Dev-Lead — waiting on PR blockers (intent: ${intent})"
     retry_msg="No changes were committed, but the PR still can't be marked done: $(blocking_reason_phrase). The retry cron will re-attempt automatically."
     if [ -n "$reset_time" ]; then

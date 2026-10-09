@@ -1891,7 +1891,8 @@ _2045_open_issue() {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred -->')"
   export DEFER_ISSUE_JSON="$(_2045_open_issue)"
   _2045_run_case
-  [ "$_HARNESS_STATUS" -eq 0 ]
+  # A malformed deferral is a resolver failure, so the pass stays retryable.
+  [ "$_HARNESS_STATUS" -eq 1 ]
   [[ "$_HARNESS_OUTPUT" == *"missing-ref"* ]]
   run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
   [ "$status" -eq 1 ]
@@ -1948,7 +1949,10 @@ _2045_open_issue() {
   [ "$_HARNESS_STATUS" -eq 1 ]
   [[ "$_HARNESS_OUTPUT" == *"failed to resolve deferred bot thread PRRT_2045"* ]]
   # dev-lead-retry.sh re-dispatches only on a retry marker; an absent terminal is never retried.
-  grep -q "status=rate-limited reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  # Non-quota: recorded as status=blocked, never as a provider rate limit.
+  grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -q "status=rate-limited reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
 }
 
 @test "resolve_deferred_bot_threads (#2045): the deferral is matched by fullDatabaseId (ids exceed 32-bit Int)" {
@@ -2006,7 +2010,8 @@ _2045_open_issue() {
 <!-- dev-lead:deferred ref=#2050 -->')"
   export DEFER_ISSUE_JSON="$(_2045_open_issue)"
   _2045_run_case
-  [ "$_HARNESS_STATUS" -eq 0 ]
+  # A malformed deferral is a resolver failure, so the pass stays retryable.
+  [ "$_HARNESS_STATUS" -eq 1 ]
   [[ "$_HARNESS_OUTPUT" == *"multiple-deferrals"* ]]
   run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
   [ "$status" -eq 1 ]
