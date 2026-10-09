@@ -24,6 +24,10 @@
 # empty tree" — which is what keeps PATH-stubbed unit tests (whose git stub
 # echoes nothing for unknown args) failing open instead of falsely aborting.
 
+# git_history_deepen (#2053): the single shared un-shallow helper.
+# shellcheck source=scripts/lib/git-history.sh
+source "$(dirname "${BASH_SOURCE[0]}")/git-history.sh"
+
 # _ndg_resolve_base_sha <base> — echo the concrete commit SHA for origin/<base>,
 # deepening a shallow clone and fetching the ref if needed. Echoes nothing (and
 # the caller fails open) when it cannot be resolved.
@@ -32,13 +36,8 @@ _ndg_resolve_base_sha() {
   local baseref="origin/${base}"
 
   # actions/checkout defaults to a depth-1 shallow clone, which lacks the common
-  # ancestor the three-dot diff needs. A plain `git fetch origin <base>` does NOT
-  # deepen a shallow checkout, so unshallow first; fall back to a bounded fetch.
-  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
-    git fetch --quiet --unshallow origin 2>/dev/null \
-      || git fetch --quiet --depth=2147483647 origin "$base" 2>/dev/null \
-      || true
-  fi
+  # ancestor the three-dot diff needs. Deepen it first (shared helper, #2053).
+  git_history_deepen "$base"
 
   # Always fetch the base ref to ensure we have the latest version, not a stale
   # cached copy. Use FETCH_HEAD to get the exact commit that was just fetched,

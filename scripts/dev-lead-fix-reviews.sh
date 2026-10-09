@@ -10,10 +10,11 @@ source "$(dirname "$0")/lib/auto-merge.sh"
 source "$(dirname "$0")/lib/git-push-guard.sh"
 source "$(dirname "$0")/lib/pr-automation-budget.sh"
 source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
-# Paginated unresolved-thread enumeration for OPEN_THREADS_JSON (#2046).
-source "$(dirname "$0")/lib/open-review-threads.sh"
 source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
+# Paginated, fail-closed open-review-thread fetch shared by fix-reviews and
+# review-changes (#2056).
+source "$(dirname "$0")/lib/open-review-threads.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
 source "$(dirname "$0")/lib/addressed-claim-verify.sh"
 # Claim landing (#2013): "did the push land?" as a pure verdict, and retraction of
@@ -44,6 +45,10 @@ source "$(dirname "$0")/lib/redact.sh"
 # Rebase exhaustion handling (#865): abort cleanly on hard conflicts instead of
 # timing out (exit 124), and dampen sentinel bursts.
 source "$(dirname "$0")/lib/rebase-exhaustion.sh"
+# Shallow-checkout history deepening (#2053): git_history_deepen /
+# git_ensure_merge_base — the one copy of the un-shallow logic, used by the
+# rebase arm before conflict detection and by pr_nets_to_zero.
+source "$(dirname "$0")/lib/git-history.sh"
 # CI gate status (#1859, completes #1795): the blocker check delegates to
 # compute_ci_status so a failing NON-required check never stops the
 # fix/disposition pass — the same library review-one-pr.sh and the sweeps use.
@@ -139,10 +144,25 @@ build_and_run() {
     | sed 's/<!-- VARIABLES: //; s/ -->//' \
     | tr ',' '\n' \
     | awk '{gsub(/^ +| +$/, ""); if (length) printf "${%s}", $0}' || true)
+  # OPEN_THREADS_JSON is unbounded (paginated, #2056) and must never ride in the
+  # environment: a single env string over ~128 KiB makes every exec fail with
+  # "Argument list too long". envsubst sees a placeholder; the real payload is
+  # spliced in with shell builtins afterwards.
+  local ph="@@OPEN_THREADS_JSON_PLACEHOLDER@@"
   if [ -n "$vars_spec" ]; then
-    envsubst "$vars_spec" < "$template_path" > "$prompt_file"
+    OPEN_THREADS_JSON="$ph" envsubst "$vars_spec" < "$template_path" > "$prompt_file"
   else
-    envsubst < "$template_path" > "$prompt_file"
+    OPEN_THREADS_JSON="$ph" envsubst < "$template_path" > "$prompt_file"
+  fi
+  if [ -n "${OPEN_THREADS_JSON:-}" ] && grep -qF -- "$ph" "$prompt_file"; then
+    local content out="" rest
+    content=$(<"$prompt_file")
+    rest="$content"
+    while [[ "$rest" == *"$ph"* ]]; do
+      out+="${rest%%"$ph"*}${OPEN_THREADS_JSON}"
+      rest="${rest#*"$ph"}"
+    done
+    printf '%s\n' "${out}${rest}" > "$prompt_file"
   fi
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
@@ -171,6 +191,27 @@ build_and_run() {
 # never break out of the marker.
 post_reviews_terminal() {
   local intent="$1" status="${2:-applied}" summary="${3:-}"
+  # #2037: a comment the resolver failed to unminimize stays RESOLVED without a
+  # verified disposition. An applied/no-changes marker would record the pass as a
+  # success, and the retry cron and the #2008 stale-edit dedup would then skip it.
+  # Downgrade to partial, which neither counts as done. The cron does not
+  # re-dispatch a partial marker itself (that would loop on a persistent unminimize
+  # failure); the next pass for this PR re-attempts the comment.
+  if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+    case "$status" in
+      applied|no-changes)
+        status="partial"
+        local msg="**Not complete:** a dispositioned PR comment could not be re-opened (unminimize failed), so it stays resolved without a verified disposition. It needs another dev-lead pass."
+        if [ -n "$summary" ]; then
+          summary="${summary}
+
+${msg}"
+        else
+          summary="$msg"
+        fi
+        ;;
+    esac
+  fi
   local sha_part="" comment_part="" read_part=""
   [ -n "${HEAD_SHA:-}" ] && sha_part=" sha=${HEAD_SHA}"
   if [ "$intent" = "fix-bot-comment" ] && [[ "${COMMENT_NODE_ID:-}" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
@@ -898,6 +939,97 @@ resolve_addressed_bot_threads() {
   echo "::notice::resolve_addressed_bot_threads: resolved ${resolved_count} addressed bot thread(s) on PR #${PR_NUMBER}"
 }
 
+# ── `fixed` disposition verification by diff content (#2004) ─────────────────
+# A `fixed` disposition must cite the commit whose diff addresses the finding. On
+# PR #1977 one cited the commit that INTRODUCED the finding; under the old "this
+# pass produced the sha" rule that failed silently, so the comment never minimized
+# and dev-lead never re-answered. The judgement is the pure cdv_fixed_verdict.
+# These helpers gather its git facts.
+
+# rdc_fixed_refs — set RDC_FIXED_REF (the PR's pushed head) and RDC_FIXED_BASE
+# (the base branch tip). Same reference-head rule as retract_unlanded_claims: the
+# remote head; the local HEAD only when there is no upstream (rc 1) on a pass whose
+# push succeeded. An unreadable remote leaves RDC_FIXED_REF empty, so every cited
+# sha is not-on-head (fail closed). An unreadable base leaves RDC_FIXED_BASE empty
+# (base-unknown).
+rdc_fixed_refs() {
+  local ref_rc=0 baseref="origin/${BASE_REF:-main}"
+  RDC_FIXED_REF=$(cl_remote_head) || ref_rc=$?
+  if [ -z "$RDC_FIXED_REF" ] && [ "$ref_rc" -eq 1 ]; then
+    RDC_FIXED_REF="$(git rev-parse HEAD 2>/dev/null || true)"
+  fi
+  local base_rc=0
+  RDC_FIXED_BASE=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null) || base_rc=$?
+  if [ "$base_rc" -ne 0 ]; then
+    git fetch --quiet origin "${BASE_REF:-main}" 2>/dev/null || true
+    RDC_FIXED_BASE=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null || true)
+  fi
+}
+
+# rdc_commit_diff <sha> — the commit's own diff, without its message or context lines.
+rdc_commit_diff() {
+  git show --format= --no-color --no-ext-diff --no-renames -U0 "$1" 2>/dev/null || true
+}
+
+# rdc_fixed_verdict <sha> <finding_body> <finding_created>
+#   Echo cdv_fixed_verdict's reason for <sha> against the finding; rc 0 = verified.
+rdc_fixed_verdict() {
+  local sha="$1" body="$2" created="$3"
+  local facts on_head="false" in_base="unknown" own_files=0 commit_date="" content this_pass="false"
+  if [ -n "${RDC_FIXED_REF:-}" ]; then
+    facts=$(acv_gather_commit_facts "$sha" "${RDC_FIXED_BASE:-}" "$RDC_FIXED_REF")
+    on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
+    if [ -n "${RDC_FIXED_BASE:-}" ]; then
+      in_base=$(printf '%s' "$facts" | jq -r 'if .in_base == false then "false" else "true" end' 2>/dev/null || echo "true")
+    fi
+    own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
+    commit_date=$(printf '%s' "$facts" | jq -r '.commit_date // ""' 2>/dev/null || echo "")
+  fi
+  # A tokenless finding verifies only on a commit this pass produced: one not
+  # reachable from the pre-pass head. No snapshot or an unreadable sha is "no".
+  if [ -n "${RESOLUTION_BASE_SHA:-}" ] \
+     && git cat-file -e "${sha}^{commit}" 2>/dev/null \
+     && ! git merge-base --is-ancestor "$sha" "$RESOLUTION_BASE_SHA" 2>/dev/null; then
+    this_pass="true"
+  fi
+  content=$(cdv_diff_token_verdict "$(rdc_commit_diff "$sha")" "$(cdv_finding_tokens "$body")") || true
+  cdv_fixed_verdict "$on_head" "$in_base" "$own_files" "$commit_date" "$created" "$content" "$this_pass"
+}
+
+# rdc_live_comment_body <comment_node_id>
+# Prints the comment's CURRENT body, fetched fresh. Returns 1 if it cannot be read.
+rdc_live_comment_body() {
+  local out
+  out=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{body}}}' \
+    -f id="$1" 2>/dev/null | jq -r '.data.node.body // empty' 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+# rdc_find_fixing_commit <finding_body> <finding_created>
+#   Echo the newest PR-branch commit (base..head, merges excluded)
+#   whose own diff removes one of the finding's tokens and passes every other
+#   check; rc 1 when there is none. Never searches for a tokenless finding: with no
+#   token, any later commit would qualify, which fails open.
+rdc_find_fixing_commit() {
+  local body="$1" created="$2" c reason tokens
+  tokens=$(cdv_finding_tokens "$body") || true
+  [ -n "$tokens" ] || return 1
+  [ -n "${RDC_FIXED_REF:-}" ] && [ -n "${RDC_FIXED_BASE:-}" ] || return 1
+  while IFS= read -r c; do
+    [ -z "$c" ] && continue
+    reason=$(rdc_fixed_verdict "$c" "$body" "$created") || {
+      # Newest-first: a newer commit that re-adds the token means it is still present.
+      [ "$reason" = "content-adds-token" ] && return 1
+      continue
+    }
+    [ "$reason" = "content-removes-token" ] || continue
+    echo "$c"
+    return 0
+  done < <(git rev-list --no-merges "${RDC_FIXED_BASE}..${RDC_FIXED_REF}" 2>/dev/null || true)
+  return 1
+}
+
 # resolve_dispositioned_comments: the issue-comment sibling of
 # resolve_addressed_bot_threads (#1813). A PR *issue comment* (from `gh pr comment`
 # or the GitHub main comment box) creates no review thread, so it is invisible to
@@ -936,7 +1068,7 @@ fbc_target_resolved() {
              else "no" end' 2>/dev/null || echo "unknown"
 }
 
-# resolve_dispositioned_comments <intent> [pass_outcome]: verifies and minimizes resolved PR issue comments.
+# resolve_dispositioned_comments: minimize PR issue comments that carry a verified disposition.
 resolve_dispositioned_comments() {
   local intent="$1"
   # $2 = "failed" when called from a failed/timed-out pass. On that path a
@@ -1032,6 +1164,10 @@ resolve_dispositioned_comments() {
   #       like any other: on success the stale reply goes OUTDATED, on failure the
   #       comment is unminimized (fail closed).
   local reopen_ids reverify_ids rid
+  # #2037: set on any unminimize failure. Such a comment stays RESOLVED and the
+  # gate clears it, so the pass must not end as a success. Every candidate is
+  # still processed, then the function returns non-zero.
+  local unminimize_failed=0
   reopen_ids=$(maintainer_gate_reopen_candidates "$all_comments" "$bot_user" 2>/dev/null \
     | jq -r '.[]?' 2>/dev/null || true)
   while IFS= read -r rid; do
@@ -1040,7 +1176,8 @@ resolve_dispositioned_comments() {
         -f id="$rid" >/dev/null 2>&1; then
       echo "::notice::unminimized comment ${rid} — edited after its latest disposition (or its disposition cannot cover a finding-bearing body); it needs a fresh disposition (#2008)"
     else
-      echo "::warning::failed to unminimize comment ${rid} (edited after its latest disposition); the maintainer-comment gate still blocks on it (#2008)"
+      echo "::warning::failed to unminimize comment ${rid} (edited after its latest disposition); it stays RESOLVED (#2008, #2037)"
+      unminimize_failed=1
     fi
   done <<< "$reopen_ids"
   reverify_ids=$(printf '%s' "$all_comments" | jq -r --arg reopen "$reopen_ids" '
@@ -1059,14 +1196,18 @@ resolve_dispositioned_comments() {
 
   if [ -z "$(printf '%s' "$candidate_ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no undispositioned PR issue comments on PR #${PR_NUMBER}"
+    _rdc_unminimize_status "$unminimize_failed" || return 1
     return 0
   fi
 
   local resolved_count=0
   local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
   local reverify edited_at chosen_created stale_rc
+  # #2004: the `fixed` refs are read once per resolver run, on first use.
+  local rdc_refs_ready="false" corrected_at
   while IFS= read -r cid || [ -n "$cid" ]; do
     [ -z "$cid" ] && continue
+    corrected_at=""
 
     # (b) above: an already-RESOLVED, edited bot comment. It is re-verified only
     # when a fresh disposition straddles the edit (checked after selection below).
@@ -1146,6 +1287,7 @@ resolve_dispositioned_comments() {
           echo "::notice::unminimized comment ${cid} — unreadable edit/disposition timestamp (#2008)"
         else
           echo "::warning::failed to unminimize comment ${cid} with an unreadable edit/disposition timestamp (#2008)"
+          unminimize_failed=1
         fi
         continue
       fi
@@ -1186,35 +1328,89 @@ resolve_dispositioned_comments() {
           echo "::notice::skipping comment ${cid} — a \`fixed\` disposition is not certified on a failed pass (its commit may not have been pushed); leaving open (#1992)"
           if [ "$reverify" = "true" ]; then
             # Already RESOLVED with a stale body: fail closed by re-opening it.
-            gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
-              -f id="$cid" >/dev/null 2>&1 \
-              || echo "::error::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)" >&2
+            if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                -f id="$cid" >/dev/null 2>&1; then
+              echo "::error::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)" >&2
+              unminimize_failed=1
+            fi
           fi
           continue
         fi
-        # Bind the `fixed` evidence to THIS pass's commit — not merely any ancestor
-        # already on the PR head. Without this, a prior pass's commit (or any
-        # existing ancestor) satisfies the on-head + non-empty-diff check even when
-        # the current pass produced no fix. Require: this pass advanced the head
-        # (RESOLUTION_BASE_SHA → current HEAD via ri_may_resolve), the cited sha was
-        # produced by this pass (reachable from HEAD but NOT from the pre-pass base),
-        # and its diff is non-empty. Fail closed when the pre-pass base or HEAD is
-        # unknowable, or the sha predates this pass.
-        local facts on_head own_files cumulative_files pass_base pass_head
-        pass_base="${RESOLUTION_BASE_SHA:-}"
-        pass_head="$(git rev-parse HEAD 2>/dev/null || true)"
-        if ri_may_resolve "$pass_base" "$pass_head" \
-             && git merge-base --is-ancestor "$sha" "$pass_head" 2>/dev/null \
-             && ! git merge-base --is-ancestor "$sha" "$pass_base" 2>/dev/null; then
-          facts=$(acv_gather_commit_facts "$sha")
-          on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
-          own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
-          cumulative_files=$(printf '%s' "$facts" | jq -r '(.cumulative_files // []) | length' 2>/dev/null || echo "0")
-          if [ "$on_head" = "true" ] && { [ "${own_files:-0}" -gt 0 ] || [ "${cumulative_files:-0}" -gt 0 ]; }; then
-            verified="true"
-          fi
+        # Verify the cited commit's DIFF CONTENT (#2004), not which pass produced
+        # it: on the PR's pushed head, not on the base branch, a non-empty diff that
+        # REMOVES a token the finding names and does not ADD it, dated after the
+        # finding. A finding with no token fails closed unless the cited sha was produced by this pass (tokenless-not-this-pass).
+        # The old "produced by THIS pass" rule could never accept a fix that landed
+        # in an earlier pass. Accepting any later commit would let an unrelated
+        # commit resolve the comment.
+        if [ "${rdc_refs_ready:-false}" != "true" ]; then
+          rdc_fixed_refs
+          rdc_refs_ready="true"
+        fi
+        local orig_body orig_created fixed_reason corrected removed_tok fix_body
+        orig_body=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+          'first(.[] | select(.id == $id)) | .body // ""' 2>/dev/null || echo "")
+        orig_created=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+          'first(.[] | select(.id == $id)) | .createdAt // ""' 2>/dev/null || echo "")
+        if fixed_reason=$(rdc_fixed_verdict "$sha" "$orig_body" "$orig_created"); then
+          verified="true"
+          echo "::notice::comment ${cid}: \`fixed\` disposition verified against ${sha} (${fixed_reason}) (#2004)"
         else
-          echo "::notice::skipping comment ${cid} — cited sha ${sha} was not produced by this pass (base=${pass_base:-<unset>} head=${pass_head:-<unset>}); leaving open (#1813)"
+          # AC2: loud and distinguishable from "dev-lead has not run yet".
+          echo "::warning::comment ${cid}: \`fixed\` disposition citing ${sha} did not verify (fixed-unverified:${fixed_reason}); the cited commit's diff must remove what the finding names (#2004)"
+          # AC3: an unverified disposition is not settled. Re-answer it with the
+          # PR-branch commit whose diff removes the finding's token, when one exists.
+          local corrected_rc=0 live_body
+          corrected=$(rdc_find_fixing_commit "$orig_body" "$orig_created") || corrected_rc=$?
+          # The body can be edited after enumeration. The correction judges only the
+          # captured body, so re-read the live one first; a changed or unreadable
+          # body leaves the comment open for a disposition of the current body.
+          if [ "$corrected_rc" -eq 0 ] \
+             && { ! live_body=$(rdc_live_comment_body "$cid") || [ "$live_body" != "$orig_body" ]; }; then
+            echo "::warning::comment ${cid}: its body changed or could not be re-read since it was captured; no correction posted, it stays open for a disposition of the current body (#2004)"
+            if [ "$reverify" = "true" ]; then
+              # Already RESOLVED: a changed body must not stay minimized (#2008).
+              if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                  -f id="$cid" >/dev/null 2>&1; then
+                echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                unminimize_failed=1
+              fi
+            fi
+            continue
+          fi
+          if [ "$corrected_rc" -eq 0 ]; then
+            removed_tok=$(cdv_removed_token "$(rdc_commit_diff "$corrected")" "$(cdv_finding_tokens "$orig_body")" || true)
+            # Quote the token only when it is plain, so it can never form a marker.
+            [[ "$removed_tok" =~ ^[A-Za-z0-9_./:=-]+$ ]] || removed_tok=""
+            fix_body="Correcting my earlier \`fixed\` disposition for this comment: it cited \`${sha}\`, which does not address the finding (\`${fixed_reason}\`). The fix is in \`${corrected}\`${removed_tok:+, whose diff removes \`${removed_tok}\`}.
+
+<!-- dev-lead:comment-disposition id=${cid} disposition=fixed sha=${corrected} -->"
+            if gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$fix_body" >/dev/null 2>&1; then
+              echo "::notice::re-answered comment ${cid}: the corrected \`fixed\` disposition cites ${corrected} in place of ${sha} (#2004)"
+              # Re-read after posting: an edit that raced the post was never checked.
+              if ! live_body=$(rdc_live_comment_body "$cid") || [ "$live_body" != "$orig_body" ]; then
+                echo "::warning::comment ${cid}: its body changed while the correction was posted; leaving it open for a disposition of the current body (#2004)"
+                if [ "$reverify" = "true" ]; then
+                  # Already RESOLVED: a changed body must not stay minimized (#2008).
+                  if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                      -f id="$cid" >/dev/null 2>&1; then
+                    echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                    unminimize_failed=1
+                  fi
+                fi
+                continue
+              fi
+              # The corrected reply is now the latest. The wrong one is superseded.
+              superseded_ids+=("$chosen_reply_id")
+              sha="$corrected"
+              corrected_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              verified="true"
+            else
+              echo "::warning::comment ${cid}: could not post the corrected \`fixed\` disposition citing ${corrected}; it stays open (fixed-unverified:${fixed_reason}) (#2004)"
+            fi
+          else
+            echo "::warning::comment ${cid}: no commit on this branch removes what the finding names. The next pass must re-answer it with a fresh disposition (fixed-unverified:${fixed_reason}) (#2004)"
+          fi
         fi
         ;;
       out-of-scope)
@@ -1250,6 +1446,19 @@ resolve_dispositioned_comments() {
 
     if ! cdv_authorize "$disposition" "$is_human" "$verified"; then
       echo "::notice::skipping comment ${cid} — disposition '${disposition}' not authorized to resolve (is_human=${is_human} verified=${verified}); leaving open (#1813)"
+      if [ "$disposition" = "fixed" ] && [ "$reverify" != "true" ]; then
+        # #2004: an unverified `fixed` is re-answered on later passes. Converge the
+        # older replies to OUTDATED now, so the replies never stack (#1992).
+        local usid
+        for usid in "${superseded_ids[@]}"; do
+          if gh api graphql -f query='mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}' \
+              -f id="$usid" >/dev/null 2>&1; then
+            echo "::notice::minimized superseded disposition reply ${usid} OUTDATED (#1992, #2004)"
+          else
+            echo "::warning::failed to minimize superseded disposition reply ${usid} OUTDATED"
+          fi
+        done
+      fi
       if [ "$reverify" = "true" ]; then
         # Fail closed: the fresh disposition answering the edit did not verify,
         # and the older one predates the edit, so nothing covers the current body.
@@ -1258,6 +1467,7 @@ resolve_dispositioned_comments() {
           echo "::notice::unminimized comment ${cid} — its post-edit disposition did not verify (#2008)"
         else
           echo "::warning::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)"
+          unminimize_failed=1
         fi
       fi
       continue
@@ -1285,6 +1495,8 @@ resolve_dispositioned_comments() {
     edited_at=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
       'first(.[] | select(.id == $id)) | .lastEditedAt // ""' 2>/dev/null || echo "")
     chosen_created=$(printf '%s' "${selection:-}" | jq -r '.chosen.createdAt // ""' 2>/dev/null || echo "")
+    # A corrected `fixed` reply posted above judged the current body (#2004).
+    [ -n "$corrected_at" ] && chosen_created="$corrected_at"
     stale_rc=0
     cdv_disposition_is_stale "$edited_at" "$chosen_created" || stale_rc=$?
     if [ "$stale_rc" -ne 1 ]; then
@@ -1328,6 +1540,18 @@ resolve_dispositioned_comments() {
     fi
   done <<< "$candidate_ids"
   echo "::notice::resolve_dispositioned_comments: minimized ${resolved_count} dispositioned comment(s) on PR #${PR_NUMBER}"
+  _rdc_unminimize_status "$unminimize_failed" || return 1
+}
+
+# _rdc_unminimize_status <unminimize_failed> — resolve_dispositioned_comments'
+# return status (#2037): non-zero when any comment that needed re-opening could
+# not be unminimized, so the caller ends the pass partial instead of applied.
+_rdc_unminimize_status() {
+  if [ "${1:-0}" -ne 0 ]; then
+    echo "::error::resolve_dispositioned_comments: failed to unminimize at least one comment on PR #${PR_NUMBER} — it stays RESOLVED without a verified disposition, so this pass must not end as a success (#2037)" >&2
+    return 1
+  fi
+  return 0
 }
 
 # ── CI blocking gate (#1859, completes #1795) ─────────────────────────────────
@@ -1850,7 +2074,7 @@ expire_stale_rate_limited_marker() {
     echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${sha}"
     return 0
   fi
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked)"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked|history-unavailable)"
   local stale_ids
   stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
@@ -1936,7 +2160,7 @@ post_reviews_rate_limited() {
     if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
       echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${HEAD_SHA}"
     else
-      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=(rate-limited|blocked)"
+      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=(rate-limited|blocked|history-unavailable)"
       stale_rl_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
         | jq -r --arg pat "$rl_pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
     fi
@@ -2087,13 +2311,8 @@ pr_nets_to_zero() {
   # ancestor "${baseref}...HEAD" needs. A plain `git fetch origin "$base"` does NOT
   # deepen a shallow checkout, so the merge-base stays absent, the diff below errors,
   # and the guard silently fails OPEN (returns 1 → "not net-zero" → push proceeds).
-  # Deepen to full history first so the merge-base resolves; fall back to a bounded
-  # fetch if --unshallow is unavailable.
-  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
-    git fetch --quiet --unshallow origin 2>/dev/null \
-      || git fetch --quiet --depth=2147483647 origin "$base" 2>/dev/null \
-      || true
-  fi
+  # Deepen to full history first so the merge-base resolves (lib/git-history.sh).
+  git_history_deepen "$base"
   if ! git rev-parse --verify --quiet "${baseref}^{commit}" >/dev/null 2>&1; then
     git fetch --quiet origin "$base" 2>/dev/null || {
       echo "::warning::no-op guard: could not resolve ${baseref} — skipping net-zero check" >&2
@@ -2660,10 +2879,14 @@ case "$INTENT_TYPE" in
     # comparison). The workflow passes the actor via TRIGGERING_REVIEWER, so
     # fall back to it when ACTOR is not set explicitly.
     export ACTOR="${ACTOR:-${TRIGGERING_REVIEWER:-}}"
-    # Every unresolved thread, all pages, from every reviewer (#2046).
-    OPEN_THREADS_JSON=$(fetch_open_review_threads "$REPO" "$PR_NUMBER") \
-      || { echo "::error::could not fetch review threads for ${REPO}#${PR_NUMBER}" >&2; exit 1; }
-    export OPEN_THREADS_JSON
+    # Paginated + fail-closed (#2056): an unreadable thread list is an error, never
+    # an empty "nothing to address" list.
+    OPEN_THREADS_JSON=$(ort_fetch_open_threads "$REPO" "$PR_NUMBER") || {
+      echo "::error::fix-reviews: could not read open review threads for PR #${PR_NUMBER} — aborting rather than treating them as empty (#2056)"
+      exit 1
+    }
+    # Deliberately NOT exported (see build_and_run): unbounded payload.
+    export -n OPEN_THREADS_JSON  # an inherited export would carry the payload into every exec
     fetch_pr_context
     rc=0
     build_and_run "fix-reviews" || rc=$?
@@ -2674,6 +2897,19 @@ case "$INTENT_TYPE" in
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
       retract_unlanded_claims "fix-reviews" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
+      # Deliberately OUTSIDE the review-thread resolution gate: each disposition is
+      # verified on its own terms (a `fixed` sha must be on head; out-of-scope needs
+      # a tracking issue; invalid/answered/informational need a non-empty evidence
+      # reply), so an answered/invalid disposition requires no head advance. Runs on
+      # every successful pass, including a net-zero one where the model only replied.
+      # Runs BEFORE the terminal marker (#2037): if a comment could not be
+      # unminimized, post_reviews_terminal downgrades applied/no-changes to partial.
+      if [ "$cp_rc" -eq 4 ]; then
+        resolve_dispositioned_comments "fix-reviews" failed || _DISPOSITIONS_UNRESOLVED=1
+      else
+        resolve_dispositioned_comments "fix-reviews" || _DISPOSITIONS_UNRESOLVED=1
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         finalize_review_application "fix-reviews"
@@ -2695,19 +2931,6 @@ case "$INTENT_TYPE" in
           post_no_changes "fix-reviews"
         fi
       fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
-      # Deliberately OUTSIDE the review-thread resolution gate: each disposition is
-      # verified on its own terms (a `fixed` sha must be on head; out-of-scope needs
-      # a tracking issue; invalid/answered/informational need a non-empty evidence
-      # reply), so an answered/invalid disposition requires no head advance. Runs on
-      # every successful pass, including a net-zero one where the model only replied.
-      # A tamper-guard abort (rc 4) pushed nothing: a `fixed` disposition would cite a
-      # local commit that never landed, so treat it like a failed pass (#2013).
-      if [ "$cp_rc" -eq 4 ]; then
-        resolve_dispositioned_comments "fix-reviews" failed
-      else
-        resolve_dispositioned_comments "fix-reviews"
-      fi
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
@@ -2720,10 +2943,18 @@ case "$INTENT_TYPE" in
         else
           echo "::notice::resolution gate closed (#1609): the fix-reviews pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
-        # Never auto-merge an escalated or not-fully-applied review pass (#1567).
-        if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
+        # Never auto-merge an escalated or not-fully-applied review pass (#1567),
+        # nor one that left a comment RESOLVED it failed to re-open (#2037).
+        if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ] \
+           && [ "${_DISPOSITIONS_UNRESOLVED:-0}" -ne 1 ]; then
           try_enable_auto_merge
         fi
+      fi
+      # #2037: the pass ends failed so it is visibly not done. Also drop the EXIT-trap
+      # auto-merge restore, or it would re-enable merge over a RESOLVED comment.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
       fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992). The engine
@@ -2736,7 +2967,8 @@ case "$INTENT_TYPE" in
       # (A hard action-budget SIGKILL that kills the process mid-step can't be
       # recovered in-process — but the next pass self-heals via the idempotent
       # posting + duplicate recovery above.)
-      resolve_dispositioned_comments "fix-reviews" failed
+      resolve_dispositioned_comments "fix-reviews" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed fix-reviews pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-reviews" failed || true
     fi
@@ -2761,6 +2993,16 @@ case "$INTENT_TYPE" in
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
       retract_unlanded_claims "fix-bot-comment" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
+      # Outside the review-thread resolution gate for the same reason as fix-reviews:
+      # each disposition is independently verified, so a non-`fixed` disposition
+      # needs no head advance. Runs on every successful pass, net-zero included.
+      # Runs BEFORE the terminal marker (#2037) — see fix-reviews above.
+      if [ "$cp_rc" -eq 4 ]; then
+        resolve_dispositioned_comments "fix-bot-comment" failed || _DISPOSITIONS_UNRESOLVED=1
+      else
+        resolve_dispositioned_comments "fix-bot-comment" || _DISPOSITIONS_UNRESOLVED=1
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         _fbc_terminal="applied"
@@ -2779,17 +3021,6 @@ case "$INTENT_TYPE" in
           echo "::warning::Unresolved bot review threads remain — recording no-changes; the terminal marker posts only if the comment ends RESOLVED, otherwise the #2017 scan retries it"
         fi
         _fbc_terminal="no-changes"
-      fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
-      # Outside the review-thread resolution gate for the same reason as fix-reviews:
-      # each disposition is independently verified, so a non-`fixed` disposition
-      # needs no head advance. Runs on every successful pass, net-zero included.
-      # A tamper-guard abort (rc 4) pushed nothing: a `fixed` disposition would cite a
-      # local commit that never landed, so treat it like a failed pass (#2013).
-      if [ "$cp_rc" -eq 4 ]; then
-        resolve_dispositioned_comments "fix-bot-comment" failed
-      else
-        resolve_dispositioned_comments "fix-bot-comment"
       fi
       if [ "${RDC_STATE_UNKNOWN:-0}" = "1" ]; then
         echo "::warning::fix-bot-comment: a comment's current state could not be confirmed — withholding the terminal marker so the bot-comment retry can re-dispatch (#2017)"
@@ -2817,12 +3048,18 @@ case "$INTENT_TYPE" in
         else
           echo "::notice::resolution gate closed (#1609): the fix-bot-comment pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
-        try_enable_auto_merge
+        [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] || try_enable_auto_merge
+      fi
+      # #2037: the pass ends failed so it is visibly not done; no auto-merge restore.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
       fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
-      resolve_dispositioned_comments "fix-bot-comment" failed
+      resolve_dispositioned_comments "fix-bot-comment" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed fix-bot-comment pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-bot-comment" failed || true
     fi
@@ -2863,10 +3100,15 @@ case "$INTENT_TYPE" in
     # threads from the triggering reviewer in the no-changes branch. The
     # workflow's review-changes step passes ACTOR via env.INTENT_ACTOR.
     export REPO ACTOR="${ACTOR:-}" PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
-    # Every unresolved thread, all pages, from every reviewer (#2046).
-    OPEN_THREADS_JSON=$(fetch_open_review_threads "$REPO" "$PR_NUMBER") \
-      || { echo "::error::could not fetch review threads for ${REPO}#${PR_NUMBER}" >&2; exit 1; }
-    export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
+    # Paginated + fail-closed (#2056): an unreadable thread list is an error, never
+    # an empty "nothing to address" list.
+    OPEN_THREADS_JSON=$(ort_fetch_open_threads "$REPO" "$PR_NUMBER") || {
+      echo "::error::review-changes: could not read open review threads for PR #${PR_NUMBER} — aborting rather than treating them as empty (#2056)"
+      exit 1
+    }
+    # OPEN_THREADS_JSON deliberately NOT exported (see build_and_run): unbounded payload.
+    export -n OPEN_THREADS_JSON  # an inherited export would carry the payload into every exec
+    export BASE_REF="${BASE_REF:-main}"
     fetch_pr_context
     rc=0
     build_and_run "review-changes" || rc=$?
@@ -2890,9 +3132,14 @@ case "$INTENT_TYPE" in
       # thread resolves and auto-merge stays off.
       if [ "$cp_rc" -eq 4 ]; then
         echo "::warning::review-changes was refused by a test guard (tamper/regression) — flagged for human, not pushed (#2013)"
-        resolve_dispositioned_comments "review-changes" failed
+        resolve_dispositioned_comments "review-changes" failed || _DISPOSITIONS_UNRESOLVED=1
+        [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
         exit "$rc"
       fi
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813) —
+      # independently verified, so outside the head-movement resolution gate.
+      # Runs BEFORE the terminal marker (#2037) — see fix-reviews above.
+      resolve_dispositioned_comments "review-changes" || _DISPOSITIONS_UNRESOLVED=1
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         finalize_review_application "review-changes"
@@ -2907,9 +3154,6 @@ case "$INTENT_TYPE" in
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813) —
-      # independently verified, so outside the head-movement resolution gate.
-      resolve_dispositioned_comments "review-changes"
       # Resolution gate (#1617): auto-resolve threads only when this pass advanced
       # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
       if resolution_gate_open "$cp_rc"; then
@@ -2921,14 +3165,22 @@ case "$INTENT_TYPE" in
       else
         echo "::notice::resolution gate closed (#1609): the review-changes pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
       fi
-      # Never auto-merge an escalated or not-fully-applied review pass (#1567).
-      if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
+      # Never auto-merge an escalated or not-fully-applied review pass (#1567),
+      # nor one that left a comment RESOLVED it failed to re-open (#2037).
+      if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ] \
+         && [ "${_DISPOSITIONS_UNRESOLVED:-0}" -ne 1 ]; then
         try_enable_auto_merge
+      fi
+      # #2037: the pass ends failed so it is visibly not done; no auto-merge restore.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
       fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
-      resolve_dispositioned_comments "review-changes" failed
+      resolve_dispositioned_comments "review-changes" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed review-changes pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "review-changes" failed || true
     fi
@@ -2961,7 +3213,30 @@ case "$INTENT_TYPE" in
       echo "::error::could not retrieve PR #${PR_NUMBER} comments to check rebase exhaustion — failing closed, not invoking engine (#865)"
       exit 1
     fi
-    git fetch origin "$BASE_REF"
+    # Full history before anything reads it (#2053). The checkout is depth-1, so
+    # the branch and base look unrelated until history is deepened; doing it here
+    # makes the conflict list and the engine's rebase see the real merge base,
+    # instead of depending on the model to un-shallow. If history cannot be
+    # deepened, that is an infrastructure failure: say so, and record it with a
+    # status that is NOT `failed`, so it never counts toward the #865 limit.
+    history_rc=0
+    history_msg=$(git_ensure_merge_base "$BASE_REF" "$HEAD_REF") || history_rc=$?
+    if [ "$history_rc" -eq 2 ]; then
+      echo "::error::rebase: ${history_msg} — infrastructure failure, not a conflict; not counted toward the rebase exhaustion limit (#2053)"
+      git merge --abort >/dev/null 2>&1 || true
+      git rebase --abort >/dev/null 2>&1 || true
+      post_reviews_terminal "rebase" "history-unavailable" "Automated rebase did not run: ${history_msg}. This is an infrastructure failure, not a merge conflict, and it does not count toward the rebase exhaustion limit. The next rebase trigger will retry."
+      exit 1
+    elif [ "$history_rc" -eq 1 ]; then
+      # Genuinely unrelated histories are not a resolvable conflict: abort before
+      # conflict detection or the engine, with a terminal marker that is not
+      # `failed` so it does not count toward the #865 exhaustion limit.
+      echo "::error::rebase: history is complete but HEAD shares no merge base with origin/${BASE_REF} — the histories are genuinely unrelated; aborting (#2053)"
+      git merge --abort >/dev/null 2>&1 || true
+      git rebase --abort >/dev/null 2>&1 || true
+      post_reviews_terminal "rebase" "unrelated-histories" "Automated rebase did not run: this branch shares no common ancestor with \`${BASE_REF}\` (unrelated histories), so there is nothing to rebase or resolve. Please recreate the branch from \`${BASE_REF}\` or rebase it manually. This does not count toward the rebase exhaustion limit."
+      exit 1
+    fi
     CONFLICTING_FILES=$(detect_conflicting_paths "$BASE_REF")
     export CONFLICTING_FILES
     # Up-front large-conflict guard (#865): a conflict spanning more files than

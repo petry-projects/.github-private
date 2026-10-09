@@ -1,59 +1,91 @@
 #!/usr/bin/env bash
-# open-review-threads.sh — enumerate EVERY unresolved review thread on a PR for a
-# dev-lead fix-reviews / review-changes pass (#2046).
+# open-review-threads.sh — fetch every UNRESOLVED review thread on a PR (#2056).
 #
-# WHY THIS EXISTS
-#   OPEN_THREADS_JSON used to come from a single `reviewThreads(first:50)` page.
-#   GitHub returns threads oldest first, so on a PR with more than 50 threads a
-#   pass only ever saw the oldest page. On PR #1953 that page held five
-#   already-deferred Codex threads, and the newer cubic and Codex threads never
-#   reached the engine, which left them with no reply and no resolution. This
-#   helper pages through every thread. It filters only on isResolved, never on
-#   the triggering reviewer or review, so a pass sees every unresolved thread
-#   from every reviewer.
+# The defect: dev-lead's fix-reviews and review-changes passes read threads with
+# an unpaginated reviewThreads(first:50). Resolved threads sort first, so on a
+# long-lived PR the newest open thread falls past the window (PR #1953: 66
+# threads, the one open Codex P1 at position 66) and OPEN_THREADS_JSON came out
+# empty — the pass "addressed 0 threads". A swallowed fetch error (`|| echo "[]"`)
+# looked exactly the same.
+#
+# ort_fetch_open_threads paginates via pageInfo{hasNextPage endCursor} until
+# exhausted and FAILS CLOSED: any failed page fetch, GraphQL `errors` payload,
+# malformed response, or hasNextPage without a cursor returns non-zero with
+# nothing on stdout, so the caller can never mistake a failure for "nothing to do".
 
-# fetch_open_review_threads <repo> <pr_number>
-#   Echo a JSON array of the PR's unresolved review threads, each
-#   {id, isResolved, isOutdated, line, path, comments{nodes[{body, author{login,
-#   __typename}}]}} (the first 100 comments). `gh --paginate` applies the --jq
-#   filter to each page and prints one array per page, which are concatenated
-#   here. It fails closed (non-zero, nothing on stdout) on any API failure, a
-#   malformed page, a page that reports GraphQL errors, or an unresolved thread with
-#   more than 100 comments, so a
-#   pass never runs on an incomplete snapshot.
-fetch_open_review_threads() {
-  local repo="$1" pr="$2" pages
-  # shellcheck disable=SC2016  # $owner/$repo/$pr/$endCursor are GraphQL variables
-  pages=$(gh api graphql --paginate -f query='
-      query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
-        repository(owner:$owner, name:$repo) {
-          pullRequest(number:$pr) {
-            reviewThreads(first:100, after:$endCursor) {
-              pageInfo { hasNextPage endCursor }
-              nodes { id isResolved isOutdated line path comments(first:100) { pageInfo { hasNextPage } nodes { body author { login __typename } } } }
-            }
-          }
-        }
-      }' \
-      -F owner="${repo%%/*}" -F repo="${repo##*/}" -F pr="$pr" \
-      2>/dev/null) || { echo "::error::fetch_open_review_threads: thread fetch failed for ${repo}#${pr}" >&2; return 1; }
-  # Filter locally (not via gh --jq). Fail closed: a page whose thread list is not
-  # an array is a partial snapshot, and so is an open thread with >100 comments.
-  local snapshot
-  snapshot=$(printf '%s\n' "$pages" | jq -sce '
-      [ .[] | if ((.errors // []) | length) > 0 then error("page reported errors") else . end
-        | .data.repository.pullRequest.reviewThreads.nodes
-        | if type == "array" then . else error("non-array page") end ]
-      | [ .[][] | select(.isResolved == false) ]
-      | if any(.[]; .comments.pageInfo.hasNextPage == true)
-        then error("open thread has more than 100 comments") else . end' 2>/dev/null) \
-    || { echo "::error::fetch_open_review_threads: incomplete thread pages for ${repo}#${pr}" >&2; return 1; }
-  # Fail closed rather than drop review text: the snapshot is exported as one
-  # environment string (Linux caps that near 128 KiB), so refuse an oversized one.
-  # Checked separately so the operator sees the real cause, not "incomplete pages".
-  if [ "$(printf '%s' "$snapshot" | wc -c)" -gt 100000 ]; then
-    echo "::error::fetch_open_review_threads: open-thread snapshot exceeds 100000 bytes for ${repo}#${pr}" >&2
+# ort_fetch_open_threads <owner/repo> <pr_number>
+# Emit a JSON array of the PR's unresolved review threads (node shape: id
+# isResolved isOutdated line path comments(first:5){body author{login __typename}}),
+# in GitHub's thread order. Returns non-zero (no stdout) on any fetch failure.
+ort_fetch_open_threads() {
+  local repo="${1:-}" pr="${2:-}"
+  if [ -z "$repo" ] || [ -z "$pr" ]; then
+    echo "::error::ort_fetch_open_threads: repo and PR number are required" >&2
     return 1
   fi
-  printf '%s\n' "$snapshot"
+
+  # GraphQL caps reviewThreads at 100 per page; ORT_PAGE_SIZE overrides for tests.
+  local page_size="${ORT_PAGE_SIZE:-100}"
+  local query
+  query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String) {
+    repository(owner:$owner, name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:'"$page_size"', after:$cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
+        }
+      }
+    }
+  }'
+
+  # Pages accumulate one JSON array per line and merge via stdin at the end, so a
+  # large open-thread set never rides on argv (MAX_ARG_STRLEN).
+  local acc="" page_response page_open has_next cursor="" prev_cursor="" page_no=0
+  local cursor_args=()
+  while :; do
+    page_no=$((page_no + 1))
+    page_response=$(gh api graphql -f query="$query" \
+        -F owner="${repo%%/*}" -F repo="${repo##*/}" -F pr="$pr" \
+        "${cursor_args[@]}" 2>/dev/null) || {
+      echo "::error::ort_fetch_open_threads: review-thread page ${page_no} fetch failed for ${repo}#${pr}" >&2
+      return 1
+    }
+    # Validate the page before trusting it: a missing nodes array or an `errors`
+    # payload is a failure, never an empty page.
+    if ! printf '%s' "$page_response" | jq -e '
+        (.errors // [] | length) == 0
+        and ((.data?.repository?.pullRequest?.reviewThreads?.nodes? | type) == "array")' \
+        >/dev/null 2>&1; then
+      echo "::error::ort_fetch_open_threads: review-thread page ${page_no} for ${repo}#${pr} returned an error or malformed response" >&2
+      return 1
+    fi
+    page_open=$(printf '%s' "$page_response" | jq -c \
+      '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))') || return 1
+    acc+="${page_open}"$'\n'
+
+    # hasNextPage is Boolean! in the schema: missing/null/non-boolean is a malformed
+    # page, never "last page".
+    has_next=$(printf '%s' "$page_response" | jq -r '
+      .data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage
+      | if type == "boolean" then tostring else "invalid" end') || return 1
+    if [ "$has_next" = "invalid" ]; then
+      echo "::error::ort_fetch_open_threads: page ${page_no} for ${repo}#${pr} has a missing or non-boolean hasNextPage" >&2
+      return 1
+    fi
+    [ "$has_next" = "true" ] || break
+    prev_cursor="$cursor"
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""') || return 1
+    if [ -z "$cursor" ]; then
+      echo "::error::ort_fetch_open_threads: page ${page_no} for ${repo}#${pr} reports hasNextPage without an endCursor" >&2
+      return 1
+    fi
+    if [ "$cursor" = "$prev_cursor" ]; then
+      echo "::error::ort_fetch_open_threads: page ${page_no} for ${repo}#${pr} returned an endCursor that did not advance" >&2
+      return 1
+    fi
+    cursor_args=(-f "cursor=${cursor}")
+  done
+
+  printf '%s' "$acc" | jq -cs 'add // []'
 }

@@ -34,7 +34,7 @@ setup() {
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -162,7 +162,9 @@ _setup_rebase_failure_stubs() {
   # dispatch (worktree add/checkout/rev-parse/merge --abort), but intercept the two
   # commands a hermetic test cannot satisfy: the network `fetch`, and the unmerged-
   # path listing that drives the large-conflict guard (emit STUB_NUM_CONFLICTS
-  # synthetic paths).
+  # synthetic paths). Because fetch is faked, the #2053 history guard is faked
+  # with it: origin/<base> resolves and HEAD shares a merge base with it, so these
+  # tests behave the same on a depth-1 CI checkout that has no origin/main.
   export REAL_GIT
   REAL_GIT="$(command -v git)"
   cat > "$STUB_BIN_DIR/git" <<'GITEOF'
@@ -171,6 +173,8 @@ ARGS="$*"
 case "$ARGS" in
   "fetch"*)
     exit 0 ;;
+  "rev-parse --verify --quiet origin/"*|"merge-base HEAD origin/"*)
+    echo "0000000000000000000000000000000000000000"; exit 0 ;;
   *"diff --name-only --diff-filter=U"*)
     i=1
     while [ "$i" -le "${STUB_NUM_CONFLICTS:-0}" ]; do
@@ -267,6 +271,128 @@ GHEOF
   rm -f "$ENGINE_CALLED_FILE"
 }
 
+# ── shallow-checkout history guard (#2053) ─────────────────────────────────────
+# The rebase arm runs on a depth-1 checkout. It must deepen history before the
+# conflict list or the engine see it, and when the remote cannot be deepened it
+# must say so — not report a conflict / "unrelated histories", and not record a
+# status=failed marker that counts toward the #865 exhaustion limit.
+
+# _shallow_rebase_repo <dir>: bare remote with main + feat diverged after shared
+# history, cloned at depth 1 (what actions/checkout leaves) with feat checked out.
+_shallow_rebase_repo() {
+  local dir="$1" remote="$BATS_TEST_TMPDIR/remote.git" seed="$BATS_TEST_TMPDIR/seed"
+  local g=(git -c user.email=t@test -c user.name=T -c init.defaultBranch=main)
+  "${g[@]}" init -q --bare "$remote"
+  "${g[@]}" init -q "$seed"
+  printf 'line1\nline2\n' > "$seed/conflict.txt"
+  "${g[@]}" -C "$seed" add .
+  "${g[@]}" -C "$seed" commit -qm "base"
+  "${g[@]}" -C "$seed" checkout -qb feat
+  printf 'line1\nfeat\n' > "$seed/conflict.txt"
+  "${g[@]}" -C "$seed" commit -qam "feat"
+  "${g[@]}" -C "$seed" checkout -q main
+  printf 'line1\nmain\n' > "$seed/conflict.txt"
+  "${g[@]}" -C "$seed" commit -qam "main"
+  "${g[@]}" -C "$seed" push -q "file://$remote" main feat
+  "${g[@]}" clone -q --depth 1 --no-single-branch "file://$remote" "$dir"
+  "${g[@]}" -C "$dir" checkout -q feat
+}
+
+@test "fix-reviews: rebase on an un-deepenable shallow checkout reports an infra failure, not a conflict, and does not count toward #865 (#2053)" {
+  local git_repo="$BATS_TEST_TMPDIR/clone"
+  export ENGINE_CALLED_FILE="$BATS_TEST_TMPDIR/engine_called"
+  : > "$ENGINE_CALLED_FILE"
+  _shallow_rebase_repo "$git_repo"
+  # The remote disappears: neither --unshallow nor the deep fetch can succeed.
+  git -C "$git_repo" remote set-url origin "file://$BATS_TEST_TMPDIR/gone.git"
+
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" <<'STUB'
+#!/usr/bin/env bash
+echo "invoked" >> "$ENGINE_CALLED_FILE"
+exit 0
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"api"*"repos/"*"issues/"*"comments"*) echo "[]" ;;
+  *"pr comment"*) echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
+  *"api"*"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=rebase DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 HEAD_REF=feat REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 1 ]
+  # Says what happened, in those words.
+  [[ "$output" == *"history could not be deepened"* ]]
+  # The engine never ran on a history it could not see.
+  [ ! -s "$ENGINE_CALLED_FILE" ]
+  # Not recorded as a counted failure, not escalated as exhausted.
+  [[ "$output" == *"intent=rebase status=history-unavailable"* ]]
+  [[ "$output" != *"status=failed"* ]]
+  [[ "$output" != *"status=exhausted"* ]]
+  [[ "$output" != *"too large for automated resolution"* ]]
+}
+
+@test "fix-reviews: rebase on a depth-1 checkout deepens history before conflict detection and the engine (#2053)" {
+  local git_repo="$BATS_TEST_TMPDIR/clone"
+  export ENGINE_SEEN_FILE="$BATS_TEST_TMPDIR/engine_seen"
+  : > "$ENGINE_SEEN_FILE"
+  _shallow_rebase_repo "$git_repo"
+
+  # Engine stub records what the model would see, then fails so the run stops
+  # before push/mergeability checks.
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" <<'STUB'
+#!/usr/bin/env bash
+{
+  echo "shallow=$(git rev-parse --is-shallow-repository)"
+  git merge-base HEAD origin/main >/dev/null 2>&1 && echo "merge-base=ok"
+  echo "conflicts=${CONFLICTING_FILES}"
+} >> "$ENGINE_SEEN_FILE"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"api"*"repos/"*"issues/"*"comments"*) echo "[]" ;;
+  *"pr comment"*) echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
+  *"api"*"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=rebase DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 HEAD_REF=feat REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  grep -q "merge-base=ok" "$ENGINE_SEEN_FILE"
+  grep -qx "conflicts=conflict.txt" "$ENGINE_SEEN_FILE"
+  [[ "$output" != *"history could not be deepened"* ]]
+}
+
 @test "fix-reviews: unknown INTENT_TYPE → exits 1" {
   export INTENT_TYPE="totally-unknown-intent"
   export DEV_LEAD_DRY_RUN="true"
@@ -334,7 +460,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -432,7 +558,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
@@ -508,7 +634,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     exit 0 ;;
   *"api"*"repos/"*"issues/"*)
@@ -631,7 +757,7 @@ esac
 ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"api"*"repos/"*"pulls/"*)
@@ -1099,7 +1225,7 @@ case "\$ARGS" in
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
   *"reviewThreads"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"PRRT_outdated_thread_id","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"}}]}}]}}}}}'
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRT_outdated_thread_id","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"}}]}}]}}}}}'
     ;;
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
@@ -2181,7 +2307,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     exit 0 ;;
   *"api"*"repos/"*"issues/"*)
@@ -2238,7 +2364,7 @@ esac
 ARGS="\$*"
 case "\$ARGS" in
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"-X DELETE"*)
     echo "DELETE" >> "${delete_log}"
     exit 0 ;;
@@ -2288,7 +2414,7 @@ case "\$ARGS" in
     # Return raw GitHub API format with user as object — script now uses --paginate piped to jq -s
     echo '[{"id":1,"user":{"login":"gemini-code-assist[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2550,7 +2676,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2605,7 +2731,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2654,7 +2780,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2707,7 +2833,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[{"id":7,"user":{"login":"a-human"},"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T00:00:00Z"}]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2756,7 +2882,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2809,7 +2935,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2886,7 +3012,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -2930,7 +3056,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -2976,6 +3102,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3039,6 +3166,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3097,6 +3225,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3204,6 +3333,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3262,7 +3392,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3314,7 +3444,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3371,7 +3501,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3417,7 +3547,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3461,7 +3591,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3510,7 +3640,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3561,7 +3691,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3610,7 +3740,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3659,6 +3789,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3719,6 +3850,7 @@ case "$ARGS" in
         "repository": {
           "pullRequest": {
             "reviewThreads": {
+              "pageInfo": {"hasNextPage": false, "endCursor": null},
               "nodes": [
                 {
                   "isResolved": false,
@@ -3776,7 +3908,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -3838,7 +3970,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -3882,7 +4014,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -3934,7 +4066,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     # Record DELETE calls (must come before the generic issues/comments match)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
@@ -3990,7 +4122,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -4042,7 +4174,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
   *"issues/"*"comments"*)
@@ -4096,7 +4228,7 @@ case "$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
     echo "[]" ;;
   *"pr checkout"*) exit 0 ;;
@@ -4148,7 +4280,7 @@ case "\$ARGS" in
   *"pulls/"*"reviews"*)
     echo '[]' ;;
   *"graphql"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviewDecision":null}}}}' ;;
   *"-X DELETE"*)
     echo "\$*" >> "${deletions_file}"; exit 0 ;;
   *"issues/"*"comments"*)
@@ -4233,7 +4365,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"reviews"*) echo '[]' ;;
-  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
   *"issues/"*"comments"*) echo '[]' ;;
   *"pulls/"*) echo '{"head":{"sha":"${head_sha}"},"auto_merge":null,"state":"open"}' ;;
   *) echo "{}" ;;
@@ -4470,7 +4602,9 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"reviews"*) echo '[]' ;;
-  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":${threads_json}}}}}}' ;;
+  *"reviewThreads(first:"*"after:"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":${threads_json}}}}}}' ;;
+  *"graphql"*) echo '${threads_json}' ;;
   *"issues/"*"comments"*) echo '${comments_json}' ;;
   *"issues/comments/"*) exit 0 ;;
   *"pulls/"*) echo '{"head":{"sha":"'"${EV_HEAD_SHA}"'"},"auto_merge":null,"state":"open"}' ;;
@@ -4753,13 +4887,28 @@ STUB
 #!/usr/bin/env bash
 ARGS="$*"
 case "$ARGS" in
+  *"unminimizeComment"*)
+    # #2037: log every unminimize call, then simulate an API failure for the
+    # one configured comment id.
+    echo "$ARGS" >> "$MINLOG"
+    case "$ARGS" in
+      *"id=${UNMINIMIZE_FAIL_ID:-<none>}"*) exit 1 ;;
+    esac
+    printf '%s' '{"data":{"unminimizeComment":{"unminimizedComment":{"isMinimized":false}}}}'; exit 0 ;;
   *"minimizeComment"*)
     echo "$ARGS" >> "$MINLOG"
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
   *"on IssueComment"*)
+    # NODE_REOPENS=1: a successful unminimize call re-opens the node on readback.
+    if [ "${NODE_REOPENS:-}" = "1" ] && grep -q 'unminimizeComment' "$MINLOG" 2>/dev/null; then
+      printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0
+    fi
+    if [ "${NODE_RESOLVED:-}" = "1" ]; then
+      printf '%s' '{"data":{"node":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}'; exit 0
+    fi
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
   *"reviewThreads"*)
-    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'; exit 0 ;;
+    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; exit 0 ;;
   *"pageInfo"*)
     printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$COMMENTS_NODES"'}}}}}'; exit 0 ;;
   *"graphql"*)
@@ -4767,7 +4916,7 @@ case "$ARGS" in
   *"pr view"*)
     printf '%s' '{"state":"OPEN","headRefName":"testbranch"}'; exit 0 ;;
   *"pr checkout"*) exit 0 ;;
-  *"pr comment"*) exit 0 ;;
+  *"pr comment"*) echo "$ARGS" >> "${COMMENTLOG:-/dev/null}"; exit 0 ;;
   *"issue comment"*) exit 0 ;;
   *"api"*"issues/"*) echo "[]"; exit 0 ;;
   *"api"*) echo "{}"; exit 0 ;;
@@ -5099,7 +5248,7 @@ _resolved_bot_comment() {
   end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   [ -n "$start" ] && [ -n "$end" ]
   block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   applied=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
   nochg=$(grep -n 'post_no_changes "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$applied" ] && [ -n "$nochg" ]
@@ -5121,7 +5270,7 @@ _resolved_bot_comment() {
   start=$(grep -n '^  fix-bot-comment)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   guard=$(grep -n 'RDC_STATE_UNKNOWN:-0}" = "1"' <<< "$block" | head -1 | cut -d: -f1)
   post=$(grep -n 'case "\$_fbc_terminal" in' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$guard" ] && [ -n "$post" ]
@@ -5210,7 +5359,7 @@ _target_state() {
   local block
   block="$(sed -n '/build_and_run "fix-bot-comment"/,/try_enable_auto_merge/p' "$FIX_REVIEWS_SCRIPT")"
   local resolver check terminal
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   check=$(grep -n 'fbc_target_resolved' <<< "$block" | head -1 | cut -d: -f1)
   terminal=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$check" ] && [ -n "$terminal" ]
@@ -5489,4 +5638,535 @@ SH
 
   [ -s "$T2013_PUSH" ]
   [[ "$output" == *"Test suite: NOT RUN"* ]]
+}
+
+# ── #2037: an unminimizeComment failure fails the resolver closed ─────────────
+# A comment that must be re-opened but whose unminimize call fails stays RESOLVED,
+# and the gate would clear it. The resolver keeps processing the remaining
+# candidates, then returns non-zero. A success-path caller must then post no
+# applied/no-changes terminal marker, so the comment is retried.
+
+# _reverify_fixed_pair <comment-id> <old-reply-id> <new-reply-id>
+#   A RESOLVED bot comment edited at 21:30, with an `informational` disposition
+#   from before the edit and a fresh `fixed` one after it. The fresh `fixed` cites
+#   a sha this pass did not produce, so its re-verification fails.
+_reverify_fixed_pair() {
+  jq -nc --arg id "$1" '{id:$id, author:{login:"coderabbitai", __typename:"Bot"},
+    body:"Walkthrough only.", isMinimized:true, minimizedReason:"RESOLVED",
+    createdAt:"2026-09-26T20:00:00Z", lastEditedAt:"2026-09-26T21:30:00Z"}'
+  _disp_reply "$2" "2026-09-26T21:00:00Z" "informational" "$1"
+  jq -nc --arg id "$3" --arg t "$1" '{id:$id, author:{login:"donpetry-bot", __typename:"User"},
+    body:("Fixed it.\n<!-- dev-lead:comment-disposition id=" + $t + " disposition=fixed sha=c03ecdaea49cb873ca29ac0ca905c2d92ecbd3ce -->"),
+    isMinimized:false, minimizedReason:null, createdAt:"2026-09-26T22:00:00Z"}'
+}
+
+# _succeed_fix_bot_comment: turn the disposition pass into a SUCCESSFUL
+# fix-bot-comment pass that changes nothing (engine exits 0, nothing to commit),
+# so it reaches the no-changes terminal-marker branch. PR comments go to
+# $COMMENTLOG.
+_succeed_fix_bot_comment() {
+  cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
+  cp "$STUB_ENGINES_DIR/stub-gemini" "$STUB_BIN_DIR/gemini"
+  chmod +x "$STUB_BIN_DIR/claude" "$STUB_BIN_DIR/gemini"
+  export INTENT_TYPE="fix-bot-comment"
+  export COMMENT_BODY="Walkthrough" COMMENT_NODE_ID="IC_ORIG"
+  export COMMENTLOG="$BATS_TEST_TMPDIR/comments.log"
+  # The dispatched comment reads back RESOLVED, so the #2017 gate lets the
+  # terminal marker post (the #2037 downgrade is what is under test).
+  export NODE_RESOLVED=1
+  : > "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a failed unminimize on the re-verify path fails the pass; later candidates are still processed; no no-changes/applied marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2) <(_reverify_fixed_pair IC_B R3 R4))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  # The failure is not swallowed: the pass ends non-zero.
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG after a failed post-edit re-verification"* ]]
+  [[ "$output" == *"resolve_dispositioned_comments: failed to unminimize"* ]]
+  # The loop did not stop at the failure: IC_B, after IC_ORIG, was re-opened.
+  grep -Eq 'unminimizeComment.*id=IC_B' "$MINLOG"
+  # No success terminal marker, so the comment is retried; a partial one instead.
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
+  grep -q 'intent=fix-bot-comment status=partial' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a successful unminimize on the re-verify path still posts the no-changes marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 0 ]
+  grep -Eq 'unminimizeComment.*id=IC_ORIG' "$MINLOG"
+  grep -q 'intent=fix-bot-comment status=no-changes' "$COMMENTLOG"
+  ! grep -q 'status=partial' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): once the unminimize re-opens the target, fix-bot-comment posts no terminal marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export NODE_REOPENS=1
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  grep -Eq 'unminimizeComment.*id=IC_ORIG' "$MINLOG"
+  # The target is open and awaits a verified disposition: no terminal marker.
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a failed re-open (edited after its latest disposition) fails the pass even with no other candidate" {
+  local nodes
+  nodes=$(jq -sc '.' \
+    <(_resolved_bot_comment "2026-09-26T22:00:00Z") \
+    <(_disp_reply "R1" "2026-09-26T21:00:00Z" "informational" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG (edited after its latest disposition)"* ]]
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): on a FAILED pass a failed unminimize keeps the engine's exit code" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  # Engine failed → rc=1. The resolver's own failure is reported, not exited on.
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG after a failed post-edit re-verification"* ]]
+  [[ "$output" == *"resolve_dispositioned_comments: failed to unminimize"* ]]
+}
+
+# ── open review threads are paginated and fail closed (#2056) ─────────────────
+# PR #1953: 66 threads, the one open Codex P1 at position 66. The unpaginated
+# reviewThreads(first:50) read never saw it, so the pass "addressed 0 threads".
+
+@test "#2056: both OPEN_THREADS_JSON call sites use the shared paginated helper" {
+  ! grep -q 'reviewThreads(first:50)' "$FIX_REVIEWS_SCRIPT"
+  grep -q 'source "$(dirname "$0")/lib/open-review-threads.sh"' "$FIX_REVIEWS_SCRIPT"
+  [ "$(grep -c 'OPEN_THREADS_JSON=$(ort_fetch_open_threads' "$FIX_REVIEWS_SCRIPT")" -eq 2 ]
+}
+
+# _threads_fixture_gh <threads_json_file> — cursor-aware gh stub serving the
+# fixture's threads 100 per page (cursor = numeric offset); everything else is
+# the same benign surface the other harness tests use.
+_threads_fixture_gh() {
+  local fixture="$1"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"reviewThreads(first:"*"after:"*)
+    cursor=""
+    while [ \$# -gt 0 ]; do
+      case "\$2" in cursor=*) cursor="\${2#cursor=}" ;; esac
+      shift
+    done
+    jq -c --argjson off "\${cursor:-0}" '
+      . as \$all | (\$all[\$off:\$off+100]) as \$p | (\$off + (\$p|length)) as \$e
+      | {data:{repository:{pullRequest:{reviewThreads:{
+          pageInfo:{hasNextPage:(\$e < (\$all|length)), endCursor:(\$e|tostring)},
+          nodes:\$p}}}}}' "$fixture"
+    ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc"},"auto_merge":null}' ;;
+  *"issues/"*"comments"*) echo '[]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+_assert_open_thread_past_first_page_reaches_prompt() {
+  local intent="$1" tmpdir fixture capture
+  tmpdir="$(mktemp -d)"
+  fixture="$(mktemp)"
+  capture="$(mktemp)"
+  rm -f /tmp/dev-lead-session-output.txt
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+
+  # 166 threads, only #166 unresolved — past both the old 50-thread window and
+  # the first 100-thread page.
+  jq -n '[range(1; 167) as $i | {id: ("PRRT_" + ($i|tostring)), isResolved: ($i != 166),
+          isOutdated: false, line: $i, path: "scripts/canary_report.sh",
+          comments: {nodes: [{body: ("finding " + ($i|tostring)),
+                              author: {login: "chatgpt-codex-connector", __typename: "Bot"}}]}}]' > "$fixture"
+  _threads_fixture_gh "$fixture"
+  cat > "$STUB_BIN_DIR/claude" <<STUB
+#!/usr/bin/env bash
+cat > "$capture"
+echo "No changes needed."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=$intent DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=1953 HEAD_SHA=abc REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='chatgpt-codex-connector[bot]'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  local captured
+  captured="$(cat "$capture")"
+  rm -rf "$tmpdir"
+  rm -f "$fixture" "$capture"
+
+  [[ "$captured" == *'"PRRT_166"'* ]]
+  [[ "$captured" != *'"PRRT_165"'* ]]
+}
+
+@test "#2056: fix-reviews sees an open thread past the first page of review threads" {
+  _assert_open_thread_past_first_page_reaches_prompt fix-reviews
+}
+
+@test "#2056: review-changes sees an open thread past the first page of review threads" {
+  _assert_open_thread_past_first_page_reaches_prompt review-changes
+}
+
+_assert_thread_fetch_failure_fails_closed() {
+  local intent="$1"
+  # The open-thread query fails; every other call is benign.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"reviewThreads(first:"*"after:"*) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' ;;
+  *"api"*"repos/"*"issues/"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export INTENT_TYPE="$intent" DEV_LEAD_DRY_RUN="true"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not read open review threads"* ]]
+  # The engine never ran on a list it could not read.
+  [[ "$output" != *"would run engine"* ]]
+}
+
+@test "#2056: fix-reviews fails closed when the open-thread fetch fails (not an empty list)" {
+  _assert_thread_fetch_failure_fails_closed fix-reviews
+}
+
+@test "#2056: review-changes fails closed when the open-thread fetch fails (not an empty list)" {
+  _assert_thread_fetch_failure_fails_closed review-changes
+}
+
+# ── #2004: a `fixed` disposition is verified by the cited commit's DIFF CONTENT ──
+# On PR #1977 a `fixed` disposition cited 89f46597, the commit that INTRODUCED the
+# finding (`--emit-workflow-only`), not e7e7008b, which removed it. The old rule
+# ("the sha was produced by THIS pass") rejected it with no signal, and dev-lead
+# never re-answered its own disposition, so the PR blocked forever. These drive
+# REAL successful fix-reviews passes (engine exits 0 with no changes) against a
+# real git repo:
+#   A  introduces the token (dated BEFORE the finding)
+#   B  an unrelated later commit with a non-empty diff
+#   C  removes the token (the real fix)
+# origin/main sits at the initial commit, so A/B/C are PR-branch commits.
+
+# _2004_commit <name> <iso-date> <shell> — commit in $T2004_REPO at a fixed date.
+_2004_commit() {
+  (cd "$T2004_REPO" && eval "$3" && git add -A \
+    && GIT_COMMITTER_DATE="$2" GIT_AUTHOR_DATE="$2" \
+       git -c user.email=t@test -c user.name=T commit -q -m "$1")
+  git -C "$T2004_REPO" rev-parse HEAD
+}
+
+# _setup_2004 — the repo (init + A + B; C is added by _2004_land_fix) and stubs.
+_setup_2004() {
+  T2004_REPO="$BATS_TEST_TMPDIR/repo2004"
+  export MINLOG="$BATS_TEST_TMPDIR/minimize.log" POSTLOG="$BATS_TEST_TMPDIR/posts.log"
+  : > "$MINLOG"; : > "$POSTLOG"
+  mkdir -p "$T2004_REPO/scripts"
+  git -C "$T2004_REPO" init -q
+  printf '#!/usr/bin/env bash\n# modes:\n' > "$T2004_REPO/scripts/template_stub_drift.sh"
+  echo "hello" > "$T2004_REPO/other.txt"
+  git -C "$T2004_REPO" add .
+  GIT_COMMITTER_DATE="2026-10-01T09:00:00Z" git -C "$T2004_REPO" -c user.email=t@test -c user.name=T commit -q -m init
+  git -C "$T2004_REPO" update-ref refs/remotes/origin/main "$(git -C "$T2004_REPO" rev-parse HEAD)"
+  SHA_A=$(_2004_commit "feat: drift modes" "2026-10-01T10:00:00Z" \
+    "printf '#  --emit-workflow-only REFERENCE_MANIFEST\n' >> scripts/template_stub_drift.sh")
+  SHA_B=$(_2004_commit "chore: unrelated" "2026-10-01T13:00:00Z" "echo world > other.txt")
+
+  # The engine succeeds and changes nothing: a no-changes pass.
+  printf '#!/usr/bin/env bash\necho "Nothing to change."\nexit 0\n' > "$STUB_BIN_DIR/claude"
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"minimizeComment"*)
+    echo "$ARGS" >> "$MINLOG"
+    printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
+  *"IssueComment{body}"*)
+    jq -c --arg id "${ARGS##*id=}" '{data:{node:{body:(first(.[] | select(.id == $id)) | .body)}}}' "$NODES_FILE"; exit 0 ;;
+  *"on IssueComment"*)
+    printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
+  *"reviewThreads"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; exit 0 ;;
+  *"pageInfo"*"comments"*|*"comments"*"pageInfo"*)
+    printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":'"$(cat "$NODES_FILE")"'}}}}}'; exit 0 ;;
+  *"graphql"*)
+    printf '%s' '{"data":{}}'; exit 0 ;;
+  *"pr view"*)
+    printf '%s' '{"state":"OPEN","headRefName":"testbranch"}'; exit 0 ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "$ARGS" >> "$POSTLOG"; exit 0 ;;
+  *"issue comment"*) exit 0 ;;
+  *"check-runs"*) echo '{"check_runs":[]}'; exit 0 ;;
+  *"statuses"*) echo '[]'; exit 0 ;;
+  *"api"*"issues/"*) echo "[]"; exit 0 ;;
+  *"api"*) echo "{}"; exit 0 ;;
+  *) echo "{}"; exit 0 ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export NODES_FILE="$BATS_TEST_TMPDIR/nodes.json"
+}
+
+# _2004_land_fix — commit C, which removes the token (the e7e7008b shape).
+_2004_land_fix() {
+  SHA_C=$(_2004_commit "fix(reviews): address review comments" "2026-10-01T14:00:00Z" \
+    "sed -i 's/--emit-workflow-only/--emit-workflow/' scripts/template_stub_drift.sh")
+}
+
+# _2004_nodes <finding-body> <reply-json>... — the PR's issue comments.
+_2004_nodes() {
+  local body="$1"; shift
+  jq -sc '.' \
+    <(jq -nc --arg b "$body" '{id:"IC_FIND", author:{login:"codeant-ai", __typename:"Bot"},
+        body:$b, isMinimized:false, minimizedReason:null, createdAt:"2026-10-01T12:00:00Z", lastEditedAt:null}') \
+    "$@" > "$NODES_FILE"
+}
+
+# _2004_fixed_reply <reply-id> <createdAt> <sha>
+_2004_fixed_reply() {
+  jq -nc --arg id "$1" --arg c "$2" \
+    --arg body "Fixed the comment.
+<!-- dev-lead:comment-disposition id=IC_FIND disposition=fixed sha=$3 -->" \
+    '{id:$id, author:{login:"donpetry-bot", __typename:"User"}, body:$body, isMinimized:false, minimizedReason:null, createdAt:$c}'
+}
+
+_2004_FINDING='**Nitpick:** this comment names a nonexistent `--emit-workflow-only` mode.'
+
+_run_2004() {
+  run bash -c "
+    cd '$T2004_REPO'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=\$(git rev-parse HEAD) REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export BOT_USER=donpetry-bot MINLOG='$MINLOG' POSTLOG='$POSTLOG' NODES_FILE='$NODES_FILE'
+    unset COPILOT_GITHUB_TOKEN
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+}
+
+@test "#2004 AC4(a): a \`fixed\` disposition citing the INTRODUCING commit is rejected, loudly" {
+  _setup_2004
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_A")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  [[ "$output" == *"::warning::comment IC_FIND: \`fixed\` disposition citing ${SHA_A} did not verify (fixed-unverified:content-adds-token)"* ]]
+  # No commit on the branch removes the token yet, so nothing is re-answered.
+  ! grep -q 'comment-disposition' "$POSTLOG"
+}
+
+@test "#2004 AC4(b): an UNRELATED later commit with a non-empty diff is rejected" {
+  _setup_2004
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_B")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  [[ "$output" == *"fixed-unverified:content-no-token-removed"* ]]
+}
+
+@test "#2004 AC4(c): the correct ANCESTOR commit (removes the token) verifies and minimizes on the first pass" {
+  _setup_2004
+  _2004_land_fix
+  # One more commit on top, so the cited fix is an ancestor, not the head.
+  _2004_commit "chore: later" "2026-10-01T15:00:00Z" "echo again > other.txt" >/dev/null
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T14:30:00Z" "$SHA_C")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  grep -Eq 'classifier:RESOLVED.*id=IC_FIND' "$MINLOG"
+  [[ "$output" == *"content-removes-token"* ]]
+  [[ "$output" != *"fixed-unverified"* ]]
+  # Verified as cited: no corrected reply.
+  ! grep -q 'comment-disposition' "$POSTLOG"
+}
+
+@test "#2004 AC4(d): a REBASED sha (no longer on the head) yields not-on-head through the real resolver" {
+  _setup_2004
+  _2004_land_fix
+  local old_c="$SHA_C"
+  # Rewrite C (as a rebase would): the cited sha is no longer reachable from head.
+  (cd "$T2004_REPO" && GIT_COMMITTER_DATE="2026-10-01T14:10:00Z" \
+    git -c user.email=t@test -c user.name=T commit -q --amend -m "fix(reviews): rebased")
+  local new_c
+  new_c=$(git -C "$T2004_REPO" rev-parse HEAD)
+  [ "$old_c" != "$new_c" ]
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T14:30:00Z" "$old_c")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"citing ${old_c} did not verify (fixed-unverified:not-on-head)"* ]]
+  # The harness re-answers with the rebased commit, which carries the same fix.
+  grep -q "sha=${new_c}" "$POSTLOG"
+  ! grep -q "sha=${old_c}" "$POSTLOG"
+}
+
+@test "#2004 AC4(e): a real SECOND pass re-answers the unverified disposition with the correct sha and minimizes" {
+  _setup_2004
+  _2004_nodes "$_2004_FINDING" <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_A")
+
+  # Pass 1: the cited sha is the introducing commit and no fix exists yet.
+  _run_2004
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"fixed-unverified:content-adds-token"* ]]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  ! grep -q 'comment-disposition' "$POSTLOG"
+
+  # The fix lands; the same unverified disposition is still the only reply.
+  _2004_land_fix
+  _run_2004
+  [ "$status" -eq 0 ]
+  # AC3: the prior disposition is NOT treated as settled — exactly one corrected
+  # reply is posted, citing the commit whose diff removes the token.
+  [ "$(grep -c 'comment-disposition id=IC_FIND disposition=fixed' "$POSTLOG")" -eq 1 ]
+  grep -q "sha=${SHA_C}" "$POSTLOG"
+  grep -q -- "--emit-workflow-only" "$POSTLOG"
+  # The original comment is minimized RESOLVED; the wrong reply goes OUTDATED.
+  grep -Eq 'classifier:RESOLVED.*id=IC_FIND' "$MINLOG"
+  grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
+}
+
+@test "#2004: a finding with no distinctive token fails closed for a commit not from this pass" {
+  _setup_2004
+  _2004_nodes "Please double-check the null path." <(_2004_fixed_reply R1 "2026-10-01T13:30:00Z" "$SHA_B")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  ! grep -q 'IC_FIND' "$MINLOG"
+  [[ "$output" == *"tokenless-not-this-pass"* ]]
+}
+
+@test "#2004: unverified \`fixed\` replies never stack — superseded ones go OUTDATED, nothing resolves" {
+  _setup_2004
+  _2004_nodes "$_2004_FINDING" \
+    <(_2004_fixed_reply R1 "2026-10-01T13:10:00Z" "$SHA_A") \
+    <(_2004_fixed_reply R2 "2026-10-01T13:20:00Z" "$SHA_B")
+  _run_2004
+
+  [ "$status" -eq 0 ]
+  ! grep -Eq 'classifier:RESOLVED' "$MINLOG"
+  grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
+  ! grep -Eq 'id=R2' "$MINLOG"
+  ! grep -q 'comment-disposition' "$POSTLOG"
+}
+
+# The fix-bot-comment idempotency snippet, executed (#2004 / #1992). A re-fire may
+# re-answer an UNVERIFIED `fixed` (its comment is still open) exactly where the
+# harness re-checks it. A RESOLVED comment's `fixed` and any non-`fixed`
+# disposition still suppress a second reply, so replies never stack.
+# _fbc_snippet <meta-node-json> <comment-nodes-json> — runs the prompt's bash block.
+_fbc_snippet() {
+  local snip="$BATS_TEST_TMPDIR/snippet.sh"
+  awk '/^   ```bash$/{f=1; next} f && /^   ```$/{exit} f' "$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md" \
+    | sed -e 's/^   //' -e "s/\${COMMENT_NODE_ID}/IC_NOTE/g" -e "s/\${ACTOR}/codeant-ai[bot]/g" > "$snip"
+  echo 'echo WOULD_POST' >> "$snip"
+  printf '%s' "$1" > "$BATS_TEST_TMPDIR/meta.json"
+  printf '%s' "$2" > "$BATS_TEST_TMPDIR/cnodes.json"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"node(id"*) printf '{"data":{"node":%s}}' "\$(cat '$BATS_TEST_TMPDIR/meta.json')" ;;
+  *"comments(last"*) printf '{"data":{"repository":{"pullRequest":{"comments":{"nodes":%s}}}}}' "\$(cat '$BATS_TEST_TMPDIR/cnodes.json')" ;;
+  *) echo '{}' ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  run env REPO=petry-projects/.github-private PR_NUMBER=54 BOT_USER=donpetry-bot PATH="$STUB_BIN_DIR:$PATH" bash "$snip"
+}
+
+_fbc_reply() {  # $1=disposition-tail $2=createdAt
+  jq -nc --arg b "Earlier answer.
+<!-- dev-lead:comment-disposition id=IC_NOTE disposition=$1 -->" --arg c "$2" \
+    '[{author:{login:"donpetry-bot"}, body:$b, isMinimized:false, createdAt:$c}]'
+}
+
+@test "#2004: fix-bot-comment re-answers an UNVERIFIED \`fixed\` (its comment is still open)" {
+  _fbc_snippet '{"author":{"login":"codeant-ai"},"isMinimized":false,"minimizedReason":null,"lastEditedAt":null}' \
+    "$(_fbc_reply "fixed sha=89f465979ae823b527a3f06b643c4679195dba4e" "2026-10-01T13:00:00Z")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WOULD_POST"* ]]
+}
+
+@test "#2004: fix-bot-comment never re-answers a VERIFIED \`fixed\` (its comment is RESOLVED)" {
+  _fbc_snippet '{"author":{"login":"codeant-ai"},"isMinimized":true,"minimizedReason":"RESOLVED","lastEditedAt":"2026-10-01T12:30:00Z"}' \
+    "$(_fbc_reply "fixed sha=e7e7008b00000000000000000000000000000000" "2026-10-01T13:00:00Z")"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"WOULD_POST"* ]]
+  [[ "$output" == *"already has your disposition reply"* ]]
+}
+
+@test "#2004: fix-bot-comment still never stacks a second non-\`fixed\` disposition (#1992)" {
+  _fbc_snippet '{"author":{"login":"codeant-ai"},"isMinimized":false,"minimizedReason":null,"lastEditedAt":null}' \
+    "$(_fbc_reply "informational" "2026-10-01T13:00:00Z")"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"WOULD_POST"* ]]
+}
+
+@test "#2004: the prompts require citing the commit whose diff removes the finding" {
+  local p
+  for p in fix-reviews fix-bot-comment; do
+    grep -q "fixed-unverified" "$SCRIPT_DIR/prompts/dev-lead/$p.md"
+    grep -q "git log -S" "$SCRIPT_DIR/prompts/dev-lead/$p.md"
+    grep -qi "never cite the commit that introduced" "$SCRIPT_DIR/prompts/dev-lead/$p.md" \
+      || grep -q "never the one that introduced it" "$SCRIPT_DIR/prompts/dev-lead/$p.md"
+  done
+  # The old "this pass produced the sha" rule for issue-comment `fixed` is gone.
+  ! grep -q "the harness rejects a \`fixed\` sha from an earlier pass" "$SCRIPT_DIR/prompts/dev-lead/fix-reviews.md"
+  ! grep -q "only verifies a \`fixed\` sha from the pass that cites it" "$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md"
 }

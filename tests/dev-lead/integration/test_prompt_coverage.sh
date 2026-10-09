@@ -118,12 +118,14 @@ done
 
 echo ""
 echo "Checking OPEN_THREADS_JSON queries expose author.__typename..."
+# The reviewThreads query lives in the shared paginated fetch lib (#2056); the
+# driver sources it. Count author selections across both files.
 DRIVER="$(dirname "$0")/../../../scripts/dev-lead-fix-reviews.sh"
-THREADS_HELPER="$(dirname "$0")/../../../scripts/lib/open-review-threads.sh"
-author_sel_total=$(cat "$DRIVER" "$THREADS_HELPER" 2>/dev/null | tr -d '[:space:]' | grep -oE 'comments\(first:[0-9]+\)\{(pageInfo\{hasNextPage\})?nodes\{bodyauthor\{' | wc -l || true)
-author_sel_typename=$(cat "$DRIVER" "$THREADS_HELPER" 2>/dev/null | tr -d '[:space:]' | grep -oE 'comments\(first:[0-9]+\)\{(pageInfo\{hasNextPage\})?nodes\{bodyauthor\{login__typename\}\}' | wc -l || true)
+THREADS_LIB="$(dirname "$0")/../../../scripts/lib/open-review-threads.sh"
+author_sel_total=$(cat "$DRIVER" "$THREADS_LIB" 2>/dev/null | grep -c 'comments(first:5) { nodes { body author {' || true)
+author_sel_typename=$(cat "$DRIVER" "$THREADS_LIB" 2>/dev/null | grep -c 'comments(first:5) { nodes { body author { login __typename } }' || true)
 if [ "$author_sel_total" -eq 0 ]; then
-  echo "  FAIL: no OPEN_THREADS_JSON author selection found in $(basename "$DRIVER") or $(basename "$THREADS_HELPER")"
+  echo "  FAIL: no OPEN_THREADS_JSON author selection found in $(basename "$DRIVER") or $(basename "$THREADS_LIB")"
   FAILED=1
 elif [ "$author_sel_total" -ne "$author_sel_typename" ]; then
   echo "  FAIL: $((author_sel_total - author_sel_typename)) of $author_sel_total OPEN_THREADS_JSON build(s) omit author.__typename"

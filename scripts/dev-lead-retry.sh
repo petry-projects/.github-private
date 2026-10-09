@@ -119,6 +119,10 @@ DISPATCH_GUARD_WINDOW_SEC="${DISPATCH_GUARD_WINDOW_SEC:-600}"
 # auto-rebase-retry.sh convention: total attempts (initial + retries) before the
 # issue is escalated to a human and skipped here.
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
+HISTORY_UNAVAILABLE_MAX_RETRIES="${HISTORY_UNAVAILABLE_MAX_RETRIES:-3}"
+[[ "$HISTORY_UNAVAILABLE_MAX_RETRIES" =~ ^[0-9]+$ ]] || HISTORY_UNAVAILABLE_MAX_RETRIES=3
+PARTIAL_MAX_RETRIES="${PARTIAL_MAX_RETRIES:-3}"
+[[ "$PARTIAL_MAX_RETRIES" =~ ^[0-9]+$ ]] || PARTIAL_MAX_RETRIES=3
 DEV_LEAD_LABEL="${DEV_LEAD_LABEL:-dev-lead}"
 NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
 
@@ -461,7 +465,7 @@ scan_pr_for_rate_limits() {
   # status=blocked (non-quota PR blockers). Matching both keeps re-dispatch behaviour
   # unchanged and leaves pre-#1568 status=rate-limited blocked markers parseable.
   for intent_type in $RETRYABLE_REVIEW_INTENTS; do
-    local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(rate-limited|blocked)"
+    local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(rate-limited|blocked|history-unavailable|partial)"
     if echo "$comments_json" | jq -e --arg pat "$reviews_pattern" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
       local reset_time
       reset_time=$(echo "$comments_json" | jq -r \
@@ -475,6 +479,19 @@ scan_pr_for_rate_limits() {
         continue
       fi
 
+      # Bound infrastructure-failure retries: a remote that cannot be deepened
+      # posts a history-unavailable marker per run, with no reset time. After
+      # HISTORY_UNAVAILABLE_MAX_RETRIES markers on this SHA, hold instead of
+      # dispatching again. These runs are separate from rebase-conflict
+      # exhaustion; a new head SHA starts a fresh count.
+      local history_count
+      history_count=$(echo "$comments_json" | jq -r --arg hpat "${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=history-unavailable" \
+        '[.[] | select(test($hpat))] | length' 2>/dev/null || echo 0)
+      if [[ "$history_count" =~ ^[0-9]+$ ]] && [ "$history_count" -ge "$HISTORY_UNAVAILABLE_MAX_RETRIES" ]; then
+        echo "  [skip] ${intent_type} history-unavailable ${history_count}x for PR ${pr_number} SHA ${head_sha:0:8} — holding (infrastructure failure, retry limit ${HISTORY_UNAVAILABLE_MAX_RETRIES})" >&2
+        continue
+      fi
+
       # Normalize legacy intent aliases to their canonical names before checking
       # terminal markers and dispatching. "human-pr" was renamed to "review-changes";
       # dev-lead-intent.sh rewrites human-pr → review-changes, so the retried run
@@ -485,9 +502,43 @@ scan_pr_for_rate_limits() {
       [ "$dispatch_intent" = "human-pr" ] && dispatch_intent="review-changes"
 
       # Skip if a terminal marker was already posted (prior retry ran to completion)
-      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed)"
-      if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
+      # Check this BEFORE the partial count so a newer terminal marker prevents
+      # hold/escalation, even if there are partial markers after an older terminal.
+      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed|unrelated-histories)"
+      # A terminal marker older than a later status=history-unavailable or
+      # status=partial marker is stale (the pass failed, or could not re-open a
+      # comment, after it), so it must not mask the retry. Comments are
+      # chronological; compare positions.
+      local history_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=history-unavailable"
+      local partial_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=partial"
+      if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" --arg hpat "$history_pattern" --arg ppat "$partial_pattern" '
+          to_entries as $e
+          | ([$e[] | select(.value | test($pat)) | .key] | max) as $t
+          | ([$e[] | select(.value | test($hpat)) | .key] | max) as $h
+          | ([$e[] | select(.value | test($ppat)) | .key] | max) as $p
+          | $t != null and ($h == null or $h < $t) and ($p == null or $p < $t)' >/dev/null 2>&1; then
         echo "  [skip] ${intent_type} already has terminal result for PR ${pr_number} SHA ${head_sha:0:8}" >&2
+        continue
+      fi
+
+      # Bound persistent partial results (a comment that cannot be re-opened posts
+      # a partial marker every pass): hold after PARTIAL_MAX_RETRIES on this SHA
+      # instead of re-running the engine. A new head SHA starts a fresh count.
+      local done_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes)"
+      local partial_count
+      # Only count partial markers positioned after the latest completed marker,
+      # so a completed pass (e.g. human-triggered) resets the retry budget.
+      partial_count=$(echo "$comments_json" | jq -r \
+        --arg ppat "$partial_pattern" --arg tpat "$done_pattern" \
+        'to_entries as $e
+         | ([$e[] | select(.value | test($tpat)) | .key] | max // -1) as $t
+         | [$e[] | select(.key > $t and (.value | test($ppat)))] | length' 2>/dev/null || echo 0)
+      if [[ "$partial_count" =~ ^[0-9]+$ ]] && [ "$partial_count" -ge "$PARTIAL_MAX_RETRIES" ]; then
+        echo "::warning::${intent_type} partial ${partial_count}x for PR ${pr_number} SHA ${head_sha:0:8} — holding for a human (persistent failure, retry limit ${PARTIAL_MAX_RETRIES})" >&2
+        # Hold the PR for the rest of the scan so the #2008 stale-disposition
+        # dispatch below cannot re-run the engine, and escalate to a human.
+        held=1
+        pr_automation_escalate "$pr_number" "$repo" >&2 || true
         continue
       fi
 
