@@ -203,6 +203,8 @@ jobs:
             tests/test_pr_review_force_review_wiring.bats \
             tests/test_review_one_pr_nonrequired_gate.bats \
             tests/test_review_one_pr_force_re_review.bats \
+            tests/test_review_one_pr_escalation_hold.bats \
+            tests/test_review_one_pr_self_dismissed_reeval.bats \
             tests/test_review_one_pr_metadata_rearm.bats \
             tests/test_review_one_pr_claim_observe.bats \
             tests/test_pr_metadata_digest.bats \
