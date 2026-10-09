@@ -522,6 +522,16 @@ JSONL
   [[ "$output" == *'| 2 | `gemini-3.8-flash` | unknown | 1 | 1 / unknown | 11 / unknown | 1 / unknown | 0 |'* ]]
 }
 
+@test "export_gemini_records: hands every gemini record (not claude) to the tier report (#2041)" {
+  local d; d="$(_gq_dir)"
+  run export_gemini_records "$d"
+  rm -rf "$d"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c .)" = "5" ]
+  [[ "$output" == *'"kind":"gemini_key_cooldown"'* ]]
+  [[ "$output" != *"claude"* ]]
+}
+
 @test "render_gemini_quota: no-op when no record carries a gemini key index" {
   local d; d="$(mktemp -d)"
   printf '%s\n' '{"ts":"2026-06-01T10:00:00Z","engine":"gemini","model":"gemini-3.8-flash","input_tokens":1,"output_tokens":1,"repo":"r"}' > "$d/run.jsonl"
