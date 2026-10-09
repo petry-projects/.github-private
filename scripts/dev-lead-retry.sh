@@ -200,7 +200,7 @@ budget_hold_from_record() {
       missing="${missing:-$w}"
       continue
     fi
-    jq -en --argjson p "$pct" '$p >= 100' >/dev/null 2>&1 || continue
+    [ "$pct" -ge 100 ] 2>/dev/null || continue
     epoch=$(budget_hold_reset_epoch "$reset")
     if ! [[ "$epoch" =~ ^[0-9]+$ ]]; then
       missing="${missing:-$w}"
@@ -227,7 +227,8 @@ budget_hold_init() {
   BUDGET_HOLD_WINDOW=""
   local log rc=0 record state now verdict age_text reason=""
   now=$(get_now_epoch)
-  if ! log=$(mktemp); then
+  log=$(mktemp) || rc=$?
+  if [ "$rc" -ne 0 ]; then
     echo "retry-cron: budget hold fail-open (temp file unavailable), retrying as usual"
     return 0
   fi
@@ -264,7 +265,8 @@ budget_hold_init() {
       echo "retry-cron: session and weekly windows exhausted, holding retries until ${BUDGET_HOLD_UNTIL} (poll ${age_text} old)"
       ;;
     hold\ *)
-      BUDGET_HOLD_WINDOW=$(cut -d' ' -f2 <<< "$verdict")
+      BUDGET_HOLD_WINDOW="${verdict#* }"
+      BUDGET_HOLD_WINDOW="${BUDGET_HOLD_WINDOW%% *}"
       BUDGET_HOLD_UNTIL="${verdict##* }"
       echo "retry-cron: ${BUDGET_HOLD_WINDOW} window exhausted, holding retries until ${BUDGET_HOLD_UNTIL} (poll ${age_text} old)"
       ;;
@@ -628,9 +630,9 @@ scan_pr_for_rate_limits() {
 
       # Budget hold (#2139): only when the newest hold marker is a quota one.
       local hold_status
-      hold_status=$(echo "$comments_json" | jq -r --arg pat "$reviews_pattern" \
+      hold_status=$(jq -r --arg pat "$reviews_pattern" \
         '[.[] | select(test($pat))] | last | capture("status=(?<s>[a-z-]+)") | .s // ""' \
-        2>/dev/null || true)
+        <<< "$comments_json" 2>/dev/null || true)
       if [ "$hold_status" = "rate-limited" ] && budget_hold_active; then
         echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} held by the budget poller until ${BUDGET_HOLD_UNTIL}" >&2
         held=1
