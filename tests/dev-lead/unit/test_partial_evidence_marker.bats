@@ -80,3 +80,25 @@ GH
   [[ "$output" == *"head-age-timeout"* ]]
   rm -rf "$ghdir" "$statefile"
 }
+
+# ── DRY_RUN: no GitHub writes ────────────────────────────────────────────────
+# Without PARTIAL_EVIDENCE_STATE_FILE the gate posts the marker itself. A DRY_RUN
+# run must not: it logs the would-be post and makes no gh call.
+
+@test "Partial-evidence: DRY_RUN=true posts nothing on the non-deferred path" {
+  local ghdir; ghdir="$(mktemp -d)"
+  cat > "$ghdir/gh" <<GH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ghdir/calls"
+exit 0
+GH
+  chmod +x "$ghdir/gh"
+  PATH="$ghdir:$PATH" DRY_RUN=true PARTIAL_EVIDENCE_STATE_FILE="" \
+    PR_URL="https://github.com/o/r/pull/1" PR_HEAD_SHA="deadbeef" PR_SNAPSHOT='{}' \
+    run _record_partial_evidence 2 3 "head-age-timeout"
+  local calls; calls=$(cat "$ghdir/calls" 2>/dev/null || true)
+  rm -rf "$ghdir"
+  [ "$status" -eq 0 ]
+  [ -z "$calls" ]
+  [[ "$output" == *"DRY_RUN: would post partial-evidence marker"* ]]
+}
