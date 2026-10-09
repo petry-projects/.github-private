@@ -1313,6 +1313,55 @@ resolve_deferred_bot_threads() {
       continue
     fi
 
+    # Check for a no-change disposition before checking for required disposition or deferral (#2079 AC1).
+    # A maintainer's "no change needed" verdict can resolve the thread without a deferral.
+    local nochange_disposition nochange_rc
+    nochange_disposition=$(acv_latest_nochange_disposition "$comments_json") && nochange_rc=0 || nochange_rc=$?
+    if [ "${nochange_rc:-0}" -eq 0 ] && [ -n "$nochange_disposition" ]; then
+      # A no-change disposition was found. Re-read the thread immediately before resolution.
+      local fresh_json fresh_resolved fresh_comments
+      fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null) || fresh_json=""
+      fresh_resolved=$(printf '%s' "$fresh_json" | jq -r \
+        'if .data.node.isResolved == null then "unknown"
+         elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+      if [ "$fresh_resolved" != "false" ]; then
+        echo "::notice::skipping thread ${id} — already resolved during no-change check"
+        continue
+      fi
+      fresh_comments=$(printf '%s' "$fresh_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+      if [ "$fresh_comments" != "$comments_json" ]; then
+        echo "::notice::skipping thread ${id} — thread changed during no-change disposition check; leaving unresolved"
+        continue
+      fi
+      # Reject if a newer required disposition exists (a REQUIRED overrides NO-CHANGE).
+      local req_rc req_ts
+      req_ts=$(acv_latest_maintainer_disposition "$fresh_comments" "__no-such-account__" "skip-nochange") && req_rc=0 || req_rc=$?
+      if [ "${req_rc:-0}" -eq 2 ] || { [ "${req_rc:-0}" -eq 0 ] && [[ ! "$req_ts" < "$nochange_disposition" ]]; }; then
+        echo "::notice::skipping thread ${id} — a required maintainer disposition blocks the no-change verdict; leaving unresolved (#2079)"
+        continue
+      fi
+      # Reject if any bot comment postdates the no-change verdict (a newer bot finding overrides it).
+      local newer_bot
+      newer_bot=$(printf '%s' "$fresh_comments" | jq -r --arg t "$nochange_disposition" \
+        'map(select(((.author.__typename // "") == "Bot" or ((.author.login // "") | endswith("[bot]")))
+                    and (((.createdAt // "") == "") or (.createdAt > $t)))) | length' 2>/dev/null || echo "1")
+      if [ "$newer_bot" != "0" ]; then
+        echo "::notice::skipping thread ${id} — a bot comment postdates the no-change disposition; leaving unresolved (#2079)"
+        continue
+      fi
+      if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+          -f id="$id" >/dev/null 2>&1; then
+        resolved_count=$((resolved_count + 1))
+        echo "::notice::resolved deferred bot thread ${id} due to no-change disposition (${nochange_disposition})"
+      else
+        echo "::warning::failed to resolve deferred bot thread ${id} despite no-change disposition"
+      fi
+      continue
+    elif [ "${nochange_rc:-0}" -eq 2 ]; then
+      echo "::notice::skipping thread ${id} — a no-change disposition could not be parsed; leaving unresolved (fail closed) (#2079)"
+      continue
+    fi
+
     # Pass a sentinel instead of ${bot_user}: in production BOT_USER is the same
     # account the human maintainer uses, so excluding by login would hide the
     # maintainer's own "required" disposition. The marker (our deferral reply carries
