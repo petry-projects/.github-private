@@ -723,6 +723,14 @@ list_unresolved_bot_thread_ids() {
       echo "::error::failed to enumerate review threads for PR #${PR_NUMBER}" >&2
       return 1
     }
+    if ! printf '%s' "$page_response" | jq -e '
+        ((.errors // []) | length) == 0
+        and ((.data?.repository?.pullRequest?.reviewThreads?.nodes? | type) == "array")
+        and ((.data.repository.pullRequest.reviewThreads.pageInfo?.hasNextPage? | type) == "boolean")' \
+        >/dev/null 2>&1; then
+      echo "::error::review-thread page for PR #${PR_NUMBER} returned an error or malformed response" >&2
+      return 1
+    fi
     page_ids=$(printf '%s' "$page_response" | jq -r \
       '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
        | map(select(.isResolved == false
@@ -1141,7 +1149,7 @@ resolve_deferred_bot_threads() {
     node(id:$id){
       ... on PullRequestReviewThread {
         isResolved
-        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} body createdAt databaseId}}
+        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} body createdAt lastEditedAt fullDatabaseId}}
       }
     }
   }'
@@ -1194,6 +1202,20 @@ resolve_deferred_bot_threads() {
       continue
     fi
 
+    # A finding edited after our deferral was not the finding we deferred (#2008):
+    # leave it for the next pass. An unreadable edit time fails closed the same way.
+    local edited_after
+    edited_after=$(printf '%s' "$comments_json" | jq -r --argjson i "$reply_idx" '
+      .[0] as $o | (.[$i].createdAt // "") as $r
+      | if ($o | type) != "object" or ($o | has("lastEditedAt") | not) or $r == "" then "unknown"
+        elif $o.lastEditedAt == null then "no"
+        elif ($o.lastEditedAt | type) != "string" then "unknown"
+        elif $o.lastEditedAt > $r then "yes" else "no" end' 2>/dev/null || echo "unknown")
+    if [ "$edited_after" != "no" ]; then
+      echo "::notice::skipping thread ${id} — the bot finding was edited after our deferral (or its edit time is unreadable); leaving unresolved (#2045)"
+      continue
+    fi
+
     post_rc=0
     post_reason=$(acv_post_marker_clear "$comments_json" "$reply_idx" "$bot_user") || post_rc=$?
     if [ "$post_rc" -ne 0 ]; then
@@ -1211,7 +1233,15 @@ resolve_deferred_bot_threads() {
       continue
     fi
 
-    origin_db_id=$(printf '%s' "$comments_json" | jq -r '.[0].databaseId // ""' 2>/dev/null || echo "")
+    # fullDatabaseId (BigInt, a JSON string): comment ids now exceed the 32-bit
+    # Int that `databaseId` returns. Without a readable id the tracker cannot be
+    # matched by its `#discussion_r<id>` link, so the thread is a failure.
+    origin_db_id=$(printf '%s' "$comments_json" | jq -r '.[0].fullDatabaseId // "" | tostring' 2>/dev/null || echo "")
+    if ! [[ "$origin_db_id" =~ ^[1-9][0-9]*$ ]]; then
+      echo "::warning::could not read the originating comment id of review thread ${id} while checking deferrals"
+      failed_count=$((failed_count + 1))
+      continue
+    fi
     local verdict_rc=0
     verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
     if [ "$verdict_rc" -ne 0 ]; then
@@ -2933,8 +2963,10 @@ clear_not_applied_markers() {
   local ids id
   # No error masking: a failing gh api|jq must abort loudly rather than silently
   # skip the clear, which would leave a stale non-convergence count behind.
+  # Explicit `|| return 1`: callers invoke this on the left of `||`, where errexit
+  # does not apply.
   ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" \
-    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | .[].id')
+    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | .[].id') || return 1
   # Split safely into an array (IFS scoped to read) so no glob metacharacter in
   # the id list undergoes pathname expansion.
   local -a ids_arr=()
@@ -2942,7 +2974,7 @@ clear_not_applied_markers() {
     IFS=$'\n' read -r -d '' -a ids_arr <<< "$ids" || true
   fi
   for id in "${ids_arr[@]}"; do
-    gh api -X DELETE "repos/${REPO}/issues/comments/${id}"
+    gh api -X DELETE "repos/${REPO}/issues/comments/${id}" || return 1
   done
 }
 
@@ -3017,7 +3049,7 @@ finalize_review_application() {
 
   case "$verdict" in
     applied)
-      clear_not_applied_markers "$intent"
+      clear_not_applied_markers "$intent" || return 1
       local summary="Changes committed and pushed."
       [ -n "$enumerated" ] && summary="Changes committed and pushed. Requested items addressed:
 ${enumerated}"
@@ -3027,7 +3059,7 @@ ${enumerated}"
       # Progress was made (some named region was touched), so the run of
       # consecutive zero-progress passes is broken — reset the not-applied
       # counter so old cycles cannot trigger premature escalation (#1567).
-      clear_not_applied_markers "$intent"
+      clear_not_applied_markers "$intent" || return 1
       # The requested changes are not fully applied — do not let this pass become
       # auto-mergeable.
       _REVIEW_INCOMPLETE=1
@@ -3152,6 +3184,11 @@ case "$INTENT_TYPE" in
       if [ "$deferred_rc" -ne 0 ]; then
         rc=1
         echo "::warning::fix-reviews: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
+        # dev-lead-retry.sh re-dispatches only on a retry marker; a merely absent
+        # terminal is never retried. Guard aborts (3/4) are flagged for a human.
+        if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
+          post_reviews_rate_limited "fix-reviews" "resolve-failed"
+        fi
       fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
@@ -3413,6 +3450,9 @@ case "$INTENT_TYPE" in
       if [ "$deferred_rc" -ne 0 ]; then
         rc=1
         echo "::warning::review-changes: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
+        # dev-lead-retry.sh re-dispatches only on a retry marker; a merely absent
+        # terminal is never retried.
+        post_reviews_rate_limited "review-changes" "resolve-failed"
       fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve

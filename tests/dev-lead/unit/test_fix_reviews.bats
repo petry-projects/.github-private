@@ -1756,6 +1756,7 @@ _2045_run_case() {
   cat > "$STUB_BIN_DIR/gh" << GHEOF
 #!/usr/bin/env bash
 ARGS="\$*"
+echo "\$ARGS" >> "$BATS_TEST_TMPDIR/gh-calls"
 case "\$ARGS" in
   *"resolveReviewThread"*)
     echo "\$*" >> "$mutations_file"
@@ -1825,8 +1826,8 @@ _2045_LINK='https://github.com/petry-projects/.github-private/pull/54#discussion
 # Thread comments: the Codex finding, then our deferral reply carrying $1 as body.
 _2045_comments() {
   jq -cn --arg reply "$1" '[
-    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: emit_token_record writes no duration_ms.",createdAt:"2026-10-01T09:00:00Z",databaseId:2401234567},
-    {author:{login:"donpetry-bot",__typename:"User"},body:$reply,createdAt:"2026-10-01T10:00:00Z",databaseId:2401239999}
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: emit_token_record writes no duration_ms.",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:$reply,createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
   ]'
 }
 
@@ -1877,7 +1878,7 @@ _2045_open_issue() {
 }
 
 @test "resolve_deferred_bot_threads (#2045): thread with no reply from us does not abort under set -e" {
-  export DEFER_THREAD_COMMENTS='[{"author":{"login":"chatgpt-codex-connector","__typename":"Bot"},"body":"P2: finding","createdAt":"2026-10-01T09:00:00Z","databaseId":2401234567}]'
+  export DEFER_THREAD_COMMENTS='[{"author":{"login":"chatgpt-codex-connector","__typename":"Bot"},"body":"P2: finding","createdAt":"2026-10-01T09:00:00Z","fullDatabaseId":"2401234567","lastEditedAt":null}]'
   export DEFER_ISSUE_JSON="$(_2045_open_issue)"
   _2045_run_case
   [ "$_HARNESS_STATUS" -eq 0 ]
@@ -1937,6 +1938,53 @@ _2045_open_issue() {
   [ "$status" -eq 1 ]
 }
 
+@test "resolve_deferred_bot_threads (#2045): a failed resolution posts a retry marker (resolve-failed)" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","state":"open","body":"Deferred review findings (none linked)"}'
+  export DEFER_ISSUE_COMMENTS_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  # dev-lead-retry.sh re-dispatches only on a retry marker; an absent terminal is never retried.
+  grep -q "status=rate-limited reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+}
+
+@test "resolve_deferred_bot_threads (#2045): the deferral is matched by fullDatabaseId (ids exceed 32-bit Int)" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  grep -q "fullDatabaseId" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -qE "[^l]databaseId" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): an unreadable originating comment id -> stays open and counts as failure" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"could not read the originating comment id"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a bot finding edited after the deferral -> stays open (#2008)" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P1: a different, edited finding.",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:"2026-10-01T11:00:00Z"},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"edited after our deferral"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
 @test "resolve_deferred_bot_threads (#2045): more than one marker -> stays open" {
   export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->
 <!-- dev-lead:deferred ref=#2050 -->')"
@@ -1951,8 +1999,8 @@ _2045_open_issue() {
 @test "resolve_deferred_bot_threads (#2045): a maintainer (marker-less human) thread is never resolved" {
   export DEFER_ORIGIN_TYPENAME=User
   export DEFER_THREAD_COMMENTS="$(jq -cn '[
-    {author:{login:"don-petry",__typename:"User"},body:"Please add duration_ms.",createdAt:"2026-10-01T09:00:00Z",databaseId:2401234567},
-    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",databaseId:2401239999}
+    {author:{login:"don-petry",__typename:"User"},body:"Please add duration_ms.",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
   ]')"
   export DEFER_ISSUE_JSON="$(_2045_open_issue)"
   _2045_run_case
@@ -1963,9 +2011,9 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): a maintainer comment after the deferral -> stays open" {
   export DEFER_THREAD_COMMENTS="$(jq -cn '[
-    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",databaseId:2401234567},
-    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",databaseId:2401239999},
-    {author:{login:"don-petry",__typename:"User"},body:"No — this is REQUIRED before merge.",createdAt:"2026-10-01T11:00:00Z",databaseId:2401240000}
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null},
+    {author:{login:"don-petry",__typename:"User"},body:"No — this is REQUIRED before merge.",createdAt:"2026-10-01T11:00:00Z",fullDatabaseId:"2401240000",lastEditedAt:null}
   ]')"
   export DEFER_ISSUE_JSON="$(_2045_open_issue)"
   _2045_run_case
@@ -1976,9 +2024,9 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): a standing maintainer 'required' disposition withholds resolution" {
   export DEFER_THREAD_COMMENTS="$(jq -cn '[
-    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",databaseId:2401234567},
-    {author:{login:"don-petry",__typename:"User"},body:"ACCEPTED — required before merge.",createdAt:"2026-10-01T09:30:00Z",databaseId:2401235000},
-    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",databaseId:2401239999}
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"don-petry",__typename:"User"},body:"ACCEPTED — required before merge.",createdAt:"2026-10-01T09:30:00Z",fullDatabaseId:"2401235000",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
   ]')"
   export DEFER_ISSUE_JSON="$(_2045_open_issue)"
   _2045_run_case
@@ -1990,9 +2038,9 @@ _2045_open_issue() {
 
 @test "resolve_deferred_bot_threads (#2045): a later our-account reply without the marker supersedes the deferral" {
   export DEFER_THREAD_COMMENTS="$(jq -cn '[
-    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",databaseId:2401234567},
-    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",databaseId:2401239999},
-    {author:{login:"donpetry-bot",__typename:"User"},body:"On reflection, looking again.",createdAt:"2026-10-01T11:00:00Z",databaseId:2401240000}
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"On reflection, looking again.",createdAt:"2026-10-01T11:00:00Z",fullDatabaseId:"2401240000",lastEditedAt:null}
   ]')"
   export DEFER_ISSUE_JSON="$(_2045_open_issue)"
   _2045_run_case
