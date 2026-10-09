@@ -671,36 +671,49 @@ _chosen() { jq -r '.artifact' "$DL_DEST"; }
 # ---------------------------------------------------------------------------
 
 @test "workflow (#2160 AC1): exactly the two cron slots, no workflow_dispatch, unchanged read-only permissions" {
-  run grep -cE '^[[:space:]]+- cron:' "$WORKFLOW"
-  [ "$output" = "2" ]
-  grep -qE "^[[:space:]]+- cron: '17 \* \* \* \*'" "$WORKFLOW"
-  grep -qE "^[[:space:]]+- cron: '47 \* \* \* \*'" "$WORKFLOW"
+  run yq '.on.schedule[].cron' "$WORKFLOW"
+  [ "${lines[0]}" = "17 * * * *" ]
+  [ "${lines[1]}" = "47 * * * *" ]
+  [ "${#lines[@]}" -eq 2 ]
   # The only trigger key under `on:` is schedule (no dispatch, push, PR, ...).
-  run awk '/^on:/{f=1; next} f && /^[^[:space:]#]/{exit} f && /^  [a-z_]+:/{sub(/:.*/, ""); gsub(/[[:space:]]/, ""); print}' "$WORKFLOW"
+  run yq '.on | keys | join(",")' "$WORKFLOW"
   [ "$output" = "schedule" ]
-  run grep -nE '^[[:space:]]*workflow_dispatch:' "$WORKFLOW"
-  [ "$status" -eq 1 ]
   # The permissions block is exactly the two read scopes it had before.
-  run awk '/^permissions:/{f=1; next} f && /^[^[:space:]#]/{exit} f && /^[[:space:]]+[a-z-]+:/{sub(/#.*/, ""); gsub(/[[:space:]]/, ""); print}' "$WORKFLOW"
-  [ "$output" = "$(printf 'contents:read\nactions:read')" ]
+  run yq '.permissions | to_entries | map(.key + ":" + .value) | join(",")' "$WORKFLOW"
+  [ "$output" = "contents:read,actions:read" ]
   # No job-level permissions widen it, and no write scope anywhere.
-  [ "$(grep -cE '^[[:space:]]*permissions:' "$WORKFLOW")" = "1" ]
-  run grep -nE ':[[:space:]]*write([[:space:]]|$)|write-all' "$WORKFLOW"
-  [ "$status" -eq 1 ]
+  run yq '[.jobs[] | select(has("permissions"))] | length' "$WORKFLOW"
+  [ "$output" = "0" ]
+  run yq '[.. | select(tag == "!!str" and (. == "write" or . == "write-all"))] | length' "$WORKFLOW"
+  [ "$output" = "0" ]
   # Still the existing secret only.
   [ "$(grep -oE 'secrets\.[A-Z_]+' "$WORKFLOW" | sort -u)" = "secrets.CLAUDE_CODE_OAUTH_TOKEN" ]
 }
 
 @test "workflow (#2160): the firing cron expression is forwarded to the poll step" {
-  grep -qE 'BUDGET_POLLER_CRON:[[:space:]]*\$\{\{[[:space:]]*github\.event\.schedule[[:space:]]*\}\}' "$WORKFLOW"
+  run yq '[.. | select(tag == "!!map" and has("env")) | .env.BUDGET_POLLER_CRON | select(. != null)] | .[0]' "$WORKFLOW"
+  [[ "$output" == *'${{ github.event.schedule }}'* ]]
 }
 
 @test "expected runs per day (#2160) matches the workflow's cron slots x 24" {
   source "$POLLER_LIB"
   local slots
-  slots="$(grep -cE "^[[:space:]]+- cron: '[0-9]{1,2} \* \* \* \*'" "$WORKFLOW")"
+  slots="$(yq '.on.schedule | length' "$WORKFLOW")"
   [ "$BUDGET_POLLER_EXPECTED_RUNS_PER_DAY" -eq $((slots * 24)) ]
   [ "$BUDGET_POLLER_EXPECTED_RUNS_PER_DAY" -eq 48 ]
+}
+
+@test "fleet section (#2160): median start delay averages the two middle values for an even sample" {
+  source "$POLLER_LIB"
+  local d
+  for d in 600 1200 1800 3600; do
+    jq -cn --argjson e "$((NOW_EPOCH - d))" --argjson d "$d" \
+      '{epoch:$e, poll:"ok", http_status:200, start_delay_s:$d, line:"telemetry read OK"}' >> "$BUDGET_POLLER_LOG"
+  done
+  run bp_fleet_section "$BUDGET_POLLER_LOG" "$NOW_EPOCH"
+  [ "$status" -eq 0 ]
+  # Median of 600,1200,1800,3600 = (1200+1800)/2 = 1500s = 25m (not the upper 1800s = 30m).
+  [[ "$output" == *"median start delay 25m"* ]]
 }
 
 @test "bp_stale_hours (#2160 AC2): the default is 6h and BUDGET_POLLER_STALE_HOURS still overrides it" {
