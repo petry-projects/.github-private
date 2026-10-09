@@ -186,3 +186,12 @@ description = "Suppress test fixture API key patterns in test_engine_gemini_keys
 condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_engine_gemini_keys\.bats$''']
 regexes = ['''secret-key''']
+
+[[allowlists]]
+description = "Suppress test fixture fake API keys in test_gemini_tier_view.bats (Gemini tier view and redaction tests)"
+condition = "AND"
+paths = ['''^tests/dev-lead/unit/test_gemini_tier_view\.bats$''']
+regexes = [
+  '''fake-secret''',
+  '''AIza[0-9A-Za-z_-]{39}''',
+]
