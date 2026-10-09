@@ -5,14 +5,15 @@
 # agentic review/merge duty MUST NOT be able to block the PR that fixes its own
 # breakage. The structural property that guarantees this for `.github-private`'s
 # dev/merge duty is that `dev-lead.yml` — although this repo sits in ring `next`
-# — pins its dev-lead reusable to a **stable-tier** channel (`@dev-lead/v1-stable`).
-# A broken `next` therefore cannot, by construction, gate its own fix.
+# — pins its dev-lead reusable to a **promoted** channel (ring<N> or stable;
+# `@dev-lead/v139-ring0` since #2091). A broken `next` therefore cannot, by
+# construction, gate its own fix, and a bad promoted tier is rolled back by a tag move.
 #
 # This is currently a documented-but-untested property: nothing stops a
 # well-meaning "fix the ring drift flagged by pinned-version-report" PR from
 # repinning dev-lead to `@dev-lead/v1-next` and silently restoring the
 # self-hosting circular dependency. This test asserts it stays pinned to a
-# stable tier, parsing the tier from the stub's `uses:` pin (never a hardcoded
+# promoted tier, parsing the tier from the stub's `uses:` pin (never a hardcoded
 # version), so cutting a new release does not break it.
 #
 # All assertions are PURE: helper unit tests use fixture stubs, and the live
@@ -199,19 +200,36 @@ setup() {
 # ---------------------------------------------------------------------------
 # LIVE regression guard (AC #1) — the actual property this issue exists to
 # preserve: the committed dev-lead self-review-duty stub resolves to a
-# stable-tier channel. This is what fails if a future PR repins it to `next`.
+# promoted channel. This is what fails if a future PR repins it to `next`.
 # ---------------------------------------------------------------------------
 
-@test "LIVE: .github/workflows/dev-lead.yml resolves to a stable-tier channel" {
+@test "promoted tier: ring<N> and stable pass; next, @main and a SHA fail" {
+  run src_is_promoted_tier "dev-lead/v139-ring0"; [ "$status" -eq 0 ]
+  run src_is_promoted_tier "dev-lead/v2-ring1"; [ "$status" -eq 0 ]
+  run src_is_promoted_tier "dev-lead/v1-stable"; [ "$status" -eq 0 ]
+  run src_is_promoted_tier "dev-lead/stable"; [ "$status" -eq 0 ]
+  run src_is_promoted_tier "dev-lead/v1-next"; [ "$status" -ne 0 ]
+  run src_is_promoted_tier "main"; [ "$status" -ne 0 ]
+  run src_is_promoted_tier "abcdef1234567890abcdef1234567890abcdef12"; [ "$status" -ne 0 ]
+}
+
+@test "assert: a ring0 stub passes (promoted, rolled back by a tag move)" {
+  run src_assert_self_review_stable "${FIXTURES}/stub-ring0.yml" "dev-lead.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pins a promoted channel"* ]]
+}
+
+@test "LIVE: .github/workflows/dev-lead.yml resolves to a promoted channel" {
   run src_assert_self_review_stable "${REPO_ROOT}/.github/workflows/dev-lead.yml" ".github/workflows/dev-lead.yml"
   [ "$status" -eq 0 ]
 }
 
-@test "LIVE: dev-lead.yml's parsed ref is specifically a stable tier" {
+@test "LIVE: dev-lead.yml's parsed ref is specifically a promoted tier, never next" {
   ref="$(src_stub_uses_ref "${REPO_ROOT}/.github/workflows/dev-lead.yml")"
-  run src_channel_tier "$ref"
+  run src_is_promoted_tier "$ref"
   [ "$status" -eq 0 ]
-  [ "$output" = "stable" ]
+  run src_channel_tier "$ref"
+  [ "$output" != "next" ]
 }
 
 # ---------------------------------------------------------------------------
