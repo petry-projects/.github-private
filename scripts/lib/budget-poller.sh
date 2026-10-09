@@ -30,6 +30,12 @@
 #   would_pause, decision_window, decision_pct — the legible dry-run outcome
 #   burn_session_pph, burn_weekly_all_pph, burn_basis — percentage points per hour
 #                                vs the previous OK record (logged only, no gate)
+#   trigger_event, trigger_cron — what started the run ($GITHUB_EVENT_NAME and
+#                                the cron that fired, github.event.schedule), else null
+#   scheduled_for, scheduled_epoch, start_delay_s
+#                              — the slot an hourly `M * * * *` cron was meant to run
+#                                for (the latest :M at or before the poll) and the
+#                                poll's delay past it; null for any other cron (#2160)
 #   dry_run                    — always true
 #   line                       — the greppable liveness / degraded line
 #
@@ -40,8 +46,13 @@
 # Sourced (`# shellcheck source=scripts/lib/budget-poller.sh`); runs nothing at
 # source time and calls `set` on nothing.
 
-# Hours after the last OK record before the fleet monitor warns (AC #4).
-BUDGET_POLLER_STALE_HOURS_DEFAULT=3
+# Hours after the last OK record before the fleet monitor warns (AC #4). 6, not
+# 3: GitHub delivers only ~40% of scheduled ticks in this repo, so a 3h gap is
+# routine (#2160). The weekly window moves slowly, and a stale record fails open.
+BUDGET_POLLER_STALE_HOURS_DEFAULT=6
+
+# Scheduled runs a day the workflow asks for: two hourly cron slots (:17, :47).
+BUDGET_POLLER_EXPECTED_RUNS_PER_DAY=48
 
 # Artifact name the workflow uploads and the fleet monitor reads.
 BUDGET_POLLER_ARTIFACT="${BUDGET_POLLER_ARTIFACT:-budget-poller-log}"
@@ -112,11 +123,13 @@ bp_last_record() {
 #   1 now_epoch  2 http_status  3 retry_after  4 session_pct  5 weekly_pct
 #   6 session_resets_at  7 weekly_resets_at  8 session_decision
 #   9 glide_decision  10 glide_config_enabled  11 reason_override  12 prev_ok_record
+#   13 trigger_event  14 trigger_cron  (optional, #2160)
 # Empty strings mean "absent" (null in the record).
 # ---------------------------------------------------------------------------
 bp_build_record() {
   local now="$1" http="$2" retry="$3" s_pct="$4" w_pct="$5" s_reset="$6" w_reset="$7"
   local s_dec="$8" g_dec="$9" g_enabled="${10}" reason_override="${11}" prev="${12:-}"
+  local t_event="${13:-}" t_cron="${14:-}"
   [ -n "$prev" ] && jq -e 'type == "object"' <<<"$prev" >/dev/null 2>&1 || prev='null'
   # A malformed clock must not abort the record (`--argjson` would fail under set -e).
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
@@ -128,6 +141,7 @@ bp_build_record() {
     --arg s_reset "$s_reset" --arg w_reset "$w_reset" \
     --arg s_dec "$s_dec" --arg g_dec "$g_dec" \
     --arg g_enabled "$g_enabled" --arg reason_override "$reason_override" \
+    --arg t_event "$t_event" --arg t_cron "$t_cron" \
     --argjson prev "$prev" '
     def num($s): if ($s | test("^[0-9]+$")) then ($s | tonumber) else null end;
     def str($s): if $s == "" then null else $s end;
@@ -141,6 +155,14 @@ bp_build_record() {
       elif $cur < $prev[$pk] then null
       else ((($cur - $prev[$pk]) / (($now - $prev.epoch) / 3600)) * 100 | round) / 100
       end;
+    # The slot an hourly "M * * * *" cron was meant to run for: the latest :M at
+    # or before $now. A delay over an hour aliases onto a later slot, so it is
+    # a lower bound. Empty (null at the call site) for any other cron shape.
+    def scheduled($cron):
+      ($cron | capture("^(?<m>[0-9]{1,2}) \\* \\* \\* \\*$")? | .m | tonumber) as $m
+      | select($m <= 59)
+      | ($now - ($now % 3600) + $m * 60) as $s
+      | if $s > $now then $s - 3600 else $s end;
 
     (num($http) // 0) as $status
     | num($s_pct) as $sp | num($w_pct) as $wp
@@ -162,6 +184,7 @@ bp_build_record() {
         else null end ) as $dpct
     | burn($sp; $sr; "session_pct"; "session_resets_at") as $bs
     | burn($wp; $wr; "weekly_all_pct"; "weekly_all_resets_at") as $bw
+    | (scheduled($t_cron) // null) as $sched
     | {
         ts: ($now | todate),
         epoch: $now,
@@ -183,6 +206,11 @@ bp_build_record() {
         burn_session_pph: $bs,
         burn_weekly_all_pph: $bw,
         burn_basis: (if $prev == null then "first-poll" else "previous-record" end),
+        trigger_event: str($t_event),
+        trigger_cron: str($t_cron),
+        scheduled_for: (if $sched == null then null else ($sched | todate) end),
+        scheduled_epoch: $sched,
+        start_delay_s: (if $sched == null then null else $now - $sched end),
         dry_run: true,
         line: ( if $poll == "ok"
                 then "telemetry read OK, session=\($sp)% weekly_all=\($wp)%"
@@ -213,7 +241,7 @@ bp_decision_text() {
 
 # ---------------------------------------------------------------------------
 # bp_append_record <log_file> <record> [max_records] — append and keep only the
-# newest <max_records> lines (default 720 = 30 days hourly).
+# newest <max_records> lines (default 720 ≈ 15 days at two slots an hour).
 # ---------------------------------------------------------------------------
 bp_append_record() {
   local log="$1" record="$2" max="${3:-720}" tmp
@@ -281,8 +309,9 @@ bp_staleness_warning() {
 
 # ---------------------------------------------------------------------------
 # bp_fleet_section <log_file> <now_epoch> — markdown block for the fleet-monitor
-# report: last OK age (STALE flag past the window), the latest record's line and
-# HTTP status, the dry-run decision (window + percent), and the burn rate.
+# report: last OK age (STALE flag past the window), scheduled delivery over the
+# last 24h, the latest record's line and HTTP status, the dry-run decision
+# (window + percent), and the burn rate.
 # ---------------------------------------------------------------------------
 bp_fleet_section() {
   local log="$1" now="$2" state hours latest
@@ -305,6 +334,7 @@ bp_fleet_section() {
         "$(bp_age_text "${state#fresh }")" "$hours"
       ;;
   esac
+  bp_delivery_line "$log" "$now"
   if [ -n "$latest" ]; then
     jq -r '"- **Latest record:** `\(.line // "n/a")` (HTTP status \(.http_status // "n/a"), \(.ts // "n/a"))"' \
       <<<"$latest" 2>/dev/null || true
@@ -314,6 +344,29 @@ bp_fleet_section() {
       "- **Burn rate:** session \(r(.burn_session_pph)), weekly_all \(r(.burn_weekly_all_pph))"' \
       <<<"$latest" 2>/dev/null || true
   fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# bp_delivery_line <log_file> <now_epoch> — markdown bullet: runs received in
+# the 24h before <now_epoch> (every record, OK or degraded, is one run) against
+# $BUDGET_POLLER_EXPECTED_RUNS_PER_DAY, plus the median start delay of those
+# records that carry one (#2160). Older records without the field still count.
+# ---------------------------------------------------------------------------
+bp_delivery_line() {
+  local log="$1" now="$2"
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  { [ -n "$log" ] && [ -s "$log" ] && cat "$log"; } 2>/dev/null \
+    | jq -rRs --argjson now "$now" --argjson exp "$BUDGET_POLLER_EXPECTED_RUNS_PER_DAY" '
+      [ split("\n")[] | fromjson? | select(type == "object" and (.epoch | type) == "number"
+          and .epoch > ($now - 86400) and .epoch <= $now) ] as $r
+      | ($r | length) as $n
+      | ([ $r[].start_delay_s | select(type == "number") ] | sort) as $d
+      | "- **Scheduled delivery (last 24h):** \($n) of \($exp) expected runs received"
+        + " (\(($n * 100 / $exp) | floor)%)"
+        + (if ($d | length) > 0
+           then "; median start delay \(($d[($d | length) / 2 | floor] / 60) | floor)m"
+           else "" end)' 2>/dev/null || true
   return 0
 }
 
