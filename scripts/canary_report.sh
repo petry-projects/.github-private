@@ -31,32 +31,37 @@
 # token_report.sh uses). Records whose model has no price on their date are
 # COUNTED and REPORTED as unpriced — never silently dropped, never treated as $0.
 #
-# ── Sample selection (maintainer defaults, #1951 comment 2026-09-26) ──────────
-#   Candidate (canary): distinct pr-review PRs on pr-review/v1-next whose deep-tier
-#   record carries model=<candidate>. First --candidate-max-prs (10) distinct PRs
-#   in time order at/after --since (the canary window start). A deep-tier call that
-#   fell back to another model is listed separately and counts toward neither arm.
+# ── Sample selection ──────────────────────────────────────────────────────────
+#   Candidate (canary): distinct pr-review PRs whose deep-tier record carries
+#   model=<candidate-model>. First --candidate-max-prs (10) distinct PRs in time
+#   order at/after --since (the canary window start). A deep-tier call that fell
+#   back to another model is listed separately and counts toward neither arm.
 #
-#   Incumbent (baseline): tier=deep, model=<incumbent> records from the 14 days
-#   before the canary cut — --baseline-since 2026-09-11T14:07Z /
-#   --baseline-until 2026-09-25T14:07Z by default.
+#   Incumbent (baseline): tier=deep, model=<incumbent-model> records from the
+#   baseline window. By default that is --baseline-days (14) ending at --since;
+#   --baseline-since / --baseline-until override it explicitly.
+#
+#   --candidate and --incumbent are REQUIRED (also CANARY_CANDIDATE /
+#   CANARY_INCUMBENT): no model ID is hard-coded in this script. The pass/fail bars
+#   and sample floors are flags (--cost-bar, --cache-bar, --latency-bar, --min-prs,
+#   --min-invocations; flag wins over the CANARY_* env var) with the defaults above.
 #
 #   Latency is only scored on records inside these windows (candidate at/after
-#   --since; incumbent inside the baseline window), so pre-#1949 records with no
+#   --since; incumbent inside the baseline window), so records with no
 #   duration_ms surface as INSUFFICIENT latency rather than a false PASS.
 #
 # ── Baseline expiry — snapshot both arms before the baseline is gone ──────────
-#   token-usage artifacts are retained 30 days (pr-review.yml upload step). The
-#   last Opus 4.8 deep-tier records predate the 2026-09-25 14:07Z canary cut and
-#   EXPIRE around 2026-10-25. Snapshot a directory holding BOTH arms BEFORE then:
+#   token-usage artifacts are retained 30 days (pr-review.yml upload step). Snapshot
+#   a directory holding BOTH arms BEFORE the incumbent baseline expires:
 #
 #     GH_TOKEN=<pat> bash scripts/canary_report.sh \
-#       --collect-only --dir ./canary-snapshot --since 2026-09-11T14:07Z
+#       --collect-only --dir ./canary-snapshot --since <canary-start> \
+#       --baseline-days 14 --candidate <candidate-model> --incumbent <incumbent-model>
 #
-#   --collect-only has NO artifact upper bound, so one --since at the baseline start
-#   captures the expiring incumbent baseline AND every candidate record uploaded since
-#   — both arms land in one directory (a snapshot bounded at the cut would hold zero
-#   candidate records and could only score INSUFFICIENT, #1953). Re-run the same
+#   --collect-only has NO artifact upper bound, so one collection from the baseline
+#   start captures the expiring incumbent baseline AND every candidate record uploaded
+#   since — both arms land in one directory (a snapshot bounded at the cut would hold
+#   zero candidate records and could only score INSUFFICIENT, #1953). Re-run the same
 #   command any time to TOP UP the snapshot as more canary PRs accrue (collect-only
 #   appends into --dir; it never overwrites). Score offline with --dir ./canary-snapshot;
 #   the window cutoffs are applied at scoring time on each record's timestamp, so the
@@ -71,9 +76,12 @@
 # COST CAP: read-only over existing artifacts. It makes NO model calls.
 #
 # Usage:
-#   GH_TOKEN=<pat> bash scripts/canary_report.sh --since 2026-09-25T14:07Z
-#   bash scripts/canary_report.sh --dir ./canary-snapshot
-#   bash scripts/canary_report.sh --model-ab-dir ./model-ab-tokens
+#   GH_TOKEN=<pat> bash scripts/canary_report.sh --candidate <candidate-model> \
+#     --incumbent <incumbent-model> --since <canary-start-iso>
+#   bash scripts/canary_report.sh --candidate <candidate-model> \
+#     --incumbent <incumbent-model> --dir ./canary-snapshot
+#   bash scripts/canary_report.sh --candidate <candidate-model> \
+#     --incumbent <incumbent-model> --model-ab-dir ./model-ab-tokens   # controlled only
 
 set -euo pipefail
 
@@ -185,7 +193,7 @@ canary_annotate() {
   # (render_canary_report then fails closed with the operational exit code) rather
   # than be silently discarded or coerced to placeholder labels / zero counts, which
   # could let the surviving rows score a bogus PASS on partial evidence. Recognized
-  # non-token audit kinds (finding_verification, lsp_cold_start — see
+  # non-token audit kinds (finding_verification, lsp_cold_start, gemini_key_cooldown — see
   # scripts/lib/token-metrics.sh; keep in sync) are legitimately skipped, not scored.
   # duration_ms stays optional: real emit_token_record output carries none yet, so a
   # missing/null duration is "", not invalid.
@@ -199,7 +207,7 @@ canary_annotate() {
         if type != "object" then "invalid"
         else
           (.kind // "token_usage") as $k
-          | if ($k == "finding_verification" or $k == "lsp_cold_start") then empty
+          | if ($k == "finding_verification" or $k == "lsp_cold_start" or $k == "gemini_key_cooldown") then empty
             elif $k == "token_usage" then
               # ts must be a canonical, valid UTC instant (a "2026-09-26garbage" string
               # would sort in-window lexically); token counts must be non-negative
@@ -210,7 +218,8 @@ canary_annotate() {
                    and (.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
                    and ((.ts | try (fromdateiso8601 | todateiso8601) catch null) == .ts)
                    and (.workflow | type) == "string"
-                   and (.tier | type) == "string" and (.model | type) == "string"
+                   and (.tier | type) == "string"
+                   and (.model | type) == "string" and (.model | length) > 0
                    and (.input_tokens | cnt) and (.cache_read_tokens | cnt)
                    and (.cache_creation_tokens | cnt) and (.output_tokens | cnt)
                    and ((.duration_ms == null) or ((.duration_ms | type) == "number" and .duration_ms >= 0)))
@@ -302,7 +311,9 @@ _canary_arm_metrics() {
     {
       inv++
       ctx = $9
-      if (ctx != "" && !(ctx in seen)) { seen[ctx] = 1; prs++ }
+      # Only canonical PR URLs are PR observations; other context strings (job IDs,
+      # telemetry drift) must not inflate the distinct-PR count.
+      if (ctx ~ /^https:\/\/github[.]com\/[^\/]+\/[^\/]+\/pull\/[0-9]+$/ && !(ctx in seen)) { seen[ctx] = 1; prs++ }
       if ($13 == 1) {
         priced++
         costs[priced] = $11 + 0; total_cost += $11 + 0
@@ -347,14 +358,14 @@ render_canary_report() {
   local dir="$1"
   local candidate incumbent workflow tier since until b_since b_until
   local max_prs min_prs min_inv cost_bar cache_bar latency_bar label mode
-  candidate="${CANARY_CANDIDATE:-claude-opus-5-5}"  # model-pin-ok: maintainer default for testing this pure scorer (#1951)
-  incumbent="${CANARY_INCUMBENT:-claude-opus-4-8}"  # model-pin-ok: maintainer default for testing this pure scorer (#1951)
+  candidate="${CANARY_CANDIDATE-}"
+  incumbent="${CANARY_INCUMBENT-}"
   workflow="${CANARY_WORKFLOW:-pr-review}"
   tier="${CANARY_TIER:-deep}"
   since="${CANARY_SINCE-}"
   until="${CANARY_UNTIL-}"
-  b_since="${CANARY_BASELINE_SINCE-2026-09-11T14:07Z}"
-  b_until="${CANARY_BASELINE_UNTIL-2026-09-25T14:07Z}"
+  b_since="${CANARY_BASELINE_SINCE-}"
+  b_until="${CANARY_BASELINE_UNTIL-}"
   max_prs="${CANARY_MAX_PRS-10}"
   min_prs="${CANARY_MIN_PRS-5}"
   min_inv="${CANARY_MIN_INVOCATIONS-5}"
@@ -363,6 +374,29 @@ render_canary_report() {
   latency_bar="${CANARY_LATENCY_BAR-0.20}"
   label="${CANARY_LABEL-Canary go/no-go — real PRs}"
   mode="${CANARY_MODE-real}"
+
+  if [ -z "$candidate" ] || [ -z "$incumbent" ]; then
+    echo "ERROR: both a candidate and an incumbent model are required (--candidate / --incumbent)." >&2
+    return 3
+  fi
+  case "$mode" in
+    real|controlled) ;;
+    *) echo "ERROR: CANARY_MODE must be 'real' or 'controlled' (got '${mode}')." >&2; return 3 ;;
+  esac
+  # Bars are fractions in [0,1]; sample floors / cap are integers. A malformed value
+  # would be coerced to zero by awk/[ ] and could turn a thin sample into a PASS.
+  local _b
+  for _b in "$cost_bar" "$cache_bar" "$latency_bar"; do
+    if ! awk -v v="$_b" 'BEGIN { exit !(v ~ /^[0-9]+(\.[0-9]+)?$/ && v + 0 <= 1) }'; then
+      echo "ERROR: bars must be numbers between 0 and 1 (got '${_b}')." >&2
+      return 3
+    fi
+  done
+  for _b in "$min_prs" "$min_inv" "$max_prs"; do
+    case "${_b#-}" in
+      ''|*[!0-9]*) echo "ERROR: --min-prs/--min-invocations/--candidate-max-prs must be integers (got '${_b}')." >&2; return 3 ;;
+    esac
+  done
 
   # Identical candidate/incumbent IDs make the two arms the same model over different
   # time windows — workload drift alone could then PASS. A misconfiguration, not a verdict.
@@ -421,7 +455,7 @@ render_canary_report() {
       -v s="$i_since" -v u="$i_until" \
     '(wf == "" || $2 == wf) && (tier == "" || $3 == tier) && $4 == m {
        if (s != "" && $1 < s) next
-       if (u != "" && $1 > u) next
+       if (u != "" && $1 >= u) next
        print
      }' "$enriched" > "$inc_file"
 
@@ -450,7 +484,7 @@ render_canary_report() {
   # (earliest ts per context). Real mode only; a non-positive cap disables it.
   if [ "$mode" = "real" ] && [ "$max_prs" -gt 0 ]; then
     local allowed capped
-    allowed="$(awk -F'\t' '$9 != "" { if (!($9 in first) || $1 < first[$9]) first[$9] = $1 }
+    allowed="$(awk -F'\t' '$9 ~ /^https:\/\/github[.]com\/[^\/]+\/[^\/]+\/pull\/[0-9]+$/ { if (!($9 in first) || $1 < first[$9]) first[$9] = $1 }
                  END { for (k in first) printf "%s\t%s\n", first[k], k }' "$cand_file" \
                | sort -t$'\t' -k1,1 | awk -F'\t' -v n="$max_prs" 'NR <= n { print $2 }')"
     # Only apply the cap when at least one candidate record carries a context to
@@ -519,7 +553,7 @@ render_canary_report() {
   # duration counts can come from retries of a single PR.
   local c_dur_prs=0
   if [ "$mode" = "real" ]; then
-    c_dur_prs="$(awk -F'\t' '$10 != "" && $9 != "" && !($9 in s) { s[$9] = 1; n++ } END { print n + 0 }' "$cand_file")"
+    c_dur_prs="$(awk -F'\t' '$10 != "" && $9 ~ /^https:\/\/github[.]com\/[^\/]+\/[^\/]+\/pull\/[0-9]+$/ && !($9 in s) { s[$9] = 1; n++ } END { print n + 0 }' "$cand_file")"
   fi
   if [ "$base_insuff" -eq 1 ] || [ "$c_durc" -lt "$min_inv" ] || [ "$i_durc" -lt "$min_inv" ] \
      || { [ "$mode" = "real" ] && [ "$c_dur_prs" -lt "$min_prs" ]; }; then
@@ -576,6 +610,16 @@ render_canary_report() {
   printf '| Latency / duration_ms (≥ %s better) | %s | %s | %s | %s |\n\n' \
     "$(_fmt_pct "$latency_bar")" "$(_fmt_ms "$c_mdur")" "$(_fmt_ms "$i_mdur")" \
     "$( [ "$lat_red" = "-999" ] && printf 'n/a' || _fmt_pct "$lat_red" )" "$latency_status"
+
+  if [ "$latency_status" = "INSUFFICIENT" ]; then
+    local lat_note=""
+    [ "$c_durc" -lt "$min_inv" ] && lat_note="candidate (${c_durc} of ${min_inv} required duration_ms values)"
+    if [ "$i_durc" -lt "$min_inv" ]; then
+      [ -n "$lat_note" ] && lat_note="${lat_note} and "
+      lat_note="${lat_note}incumbent (${i_durc} of ${min_inv} required duration_ms values)"
+    fi
+    [ -n "$lat_note" ] && printf 'Latency INSUFFICIENT: too few duration_ms values on the %s arm.\n\n' "$lat_note"
+  fi
 
   # Fallback deep-tier calls (excluded from both arms) — listed, never merged.
   local fb_rows
@@ -692,18 +736,20 @@ _usage() {
 
 main() {
   local repo="petry-projects/.github-private"
-  local candidate="claude-opus-5-5" incumbent="claude-opus-4-8"  # model-pin-ok: maintainer defaults for testing this standalone utility (#1951)
+  local candidate="${CANARY_CANDIDATE-}" incumbent="${CANARY_INCUMBENT-}"
   local workflow="pr-review" tier="deep"
   local since="" until=""
-  local b_since="2026-09-11T14:07Z" b_until="2026-09-25T14:07Z"
+  local b_since="" b_until="" b_days="14"
   local max_prs="10"
+  local min_prs="${CANARY_MIN_PRS-5}" min_inv="${CANARY_MIN_INVOCATIONS-5}"
+  local cost_bar="${CANARY_COST_BAR-0.20}" cache_bar="${CANARY_CACHE_BAR-0.50}" latency_bar="${CANARY_LATENCY_BAR-0.20}"
   local dir="" model_ab_dir="" collect_only="false"
 
   while [ "$#" -gt 0 ]; do
     # A value-taking option with no value is an operational error (64), not a
     # `set -u` abort (exit 1), which the workflow would read as a FAIL verdict.
     case "$1" in
-      --repo|--candidate|--incumbent|--workflow|--tier|--since|--until|--baseline-since|--baseline-until|--candidate-max-prs|--dir|--model-ab-dir)
+      --repo|--candidate|--incumbent|--workflow|--tier|--since|--until|--baseline-since|--baseline-until|--baseline-days|--candidate-max-prs|--min-prs|--min-invocations|--cost-bar|--cache-bar|--latency-bar|--dir|--model-ab-dir)
         if [ "$#" -lt 2 ]; then echo "ERROR: $1 requires a value." >&2; return 64; fi ;;
     esac
     case "$1" in
@@ -716,7 +762,13 @@ main() {
       --until)           until="$2"; shift 2 ;;
       --baseline-since)  b_since="$2"; shift 2 ;;
       --baseline-until)  b_until="$2"; shift 2 ;;
+      --baseline-days)   b_days="$2"; shift 2 ;;
       --candidate-max-prs) max_prs="$2"; shift 2 ;;
+      --min-prs)         min_prs="$2"; shift 2 ;;
+      --min-invocations) min_inv="$2"; shift 2 ;;
+      --cost-bar)        cost_bar="$2"; shift 2 ;;
+      --cache-bar)       cache_bar="$2"; shift 2 ;;
+      --latency-bar)     latency_bar="$2"; shift 2 ;;
       --dir)             dir="$2"; shift 2 ;;
       --model-ab-dir)    model_ab_dir="$2"; shift 2 ;;
       --collect-only)    collect_only="true"; shift ;;
@@ -725,10 +777,19 @@ main() {
     esac
   done
 
-  if [ "$candidate" = "$incumbent" ]; then
+  if [ "$collect_only" != "true" ] && { [ -z "$candidate" ] || [ -z "$incumbent" ]; }; then
+    echo "ERROR: --candidate <candidate-model> and --incumbent <incumbent-model> are required." >&2
+    echo "Usage: canary_report.sh --candidate <model> --incumbent <model> [--since ISO] [--dir PATH] (see --help)" >&2
+    return 3
+  fi
+  if [ "$candidate" = "$incumbent" ] && [ -n "$candidate" ]; then
     echo "ERROR: --candidate and --incumbent must differ (both '${candidate}')." >&2
     return 64
   fi
+  case "$b_days" in
+    ''|*[!0-9]*) echo "ERROR: --baseline-days must be a positive integer (got '${b_days}')." >&2; return 64 ;;
+  esac
+  [ "$b_days" -gt 0 ] || { echo "ERROR: --baseline-days must be a positive integer." >&2; return 64; }
 
   # Canonicalize every ISO bound to UTC seconds precision up front so the collector
   # (jq) and the renderer (awk) compare bounds and record timestamps consistently. A
@@ -755,17 +816,24 @@ main() {
   # omitted, default the candidate lower bound to it so pre-canary candidate
   # records never enter the candidate arm, even though collection still spans the
   # full baseline window below (an empty lower bound would admit them — #1953).
+  # Derive the baseline window when not given explicitly: --baseline-days ending at
+  # --since (or at --baseline-until when only that is given).
+  if [ -z "$b_until" ]; then b_until="$since"; fi
+  if [ -z "$b_since" ] && [ -n "$b_until" ]; then
+    b_since="$(date -u -d "${b_until/Z/} UTC - ${b_days} days" +%Y-%m-%dT%H:%M:%SZ)" \
+      || { echo "ERROR: could not derive the baseline window." >&2; return 64; }
+  fi
   [ -z "$since" ] && since="$b_until"
 
   # An explicitly supplied local input directory must exist and be readable. A
   # misspelled/unreadable path would otherwise glob to zero rows and render an
   # ordinary INSUFFICIENT, making a bad path indistinguishable from empty evidence.
   # (--collect-only creates --dir, so this check is scoped to the scoring paths.)
-  if [ "$collect_only" != "true" ] && [ -n "$dir" ] && [ ! -d "$dir" ]; then
+  if [ "$collect_only" != "true" ] && [ -n "$dir" ] && { [ ! -d "$dir" ] || [ ! -r "$dir" ] || [ ! -x "$dir" ]; }; then
     echo "ERROR: --dir path does not exist or is not a readable directory: $dir" >&2
     return 66
   fi
-  if [ -n "$model_ab_dir" ] && [ ! -d "$model_ab_dir" ]; then
+  if [ -n "$model_ab_dir" ] && { [ ! -d "$model_ab_dir" ] || [ ! -r "$model_ab_dir" ] || [ ! -x "$model_ab_dir" ]; }; then
     echo "ERROR: --model-ab-dir path does not exist or is not a readable directory: $model_ab_dir" >&2
     return 66
   fi
@@ -774,7 +842,8 @@ main() {
   export CANARY_WORKFLOW="$workflow" CANARY_TIER="$tier"
   export CANARY_SINCE="$since" CANARY_UNTIL="$until"
   export CANARY_BASELINE_SINCE="$b_since" CANARY_BASELINE_UNTIL="$b_until"
-  export CANARY_MAX_PRS="$max_prs"
+  export CANARY_MAX_PRS="$max_prs" CANARY_MIN_PRS="$min_prs" CANARY_MIN_INVOCATIONS="$min_inv"
+  export CANARY_COST_BAR="$cost_bar" CANARY_CACHE_BAR="$cache_bar" CANARY_LATENCY_BAR="$latency_bar"
 
   # Collection lower bound: the download starts at the earlier of the candidate and
   # baseline window starts so a single collection feeds both arms. There is no upper
@@ -782,7 +851,9 @@ main() {
   # (--until) is applied later on each record's .ts by the renderer, so calls uploaded
   # just after the cutoff are not lost (#1953).
   local scored_dir="" own_tmp="" col_since count
-  col_since="$b_since"; [[ -n "$since" && "$since" < "$b_since" ]] && col_since="$since"
+  col_since="$b_since"
+  if [ -z "$col_since" ] || { [ -n "$since" ] && [[ "$since" < "$col_since" ]]; }; then col_since="$since"; fi
+  [ -n "$col_since" ] || col_since="1970-01-01T00:00:00Z"
 
   # --collect-only snapshots artifacts to a persistent directory and exits without
   # scoring; it REQUIRES --dir. A temp dir would be wiped by the EXIT trap before
@@ -806,6 +877,8 @@ main() {
   # windowed download into a temp dir cleaned up on EXIT.
   if [ -n "$dir" ]; then
     scored_dir="$dir"
+  elif [ -n "$model_ab_dir" ]; then
+    : # controlled-only invocation: no live collection or credentials needed
   else
     own_tmp="$(mktemp -d)" || { echo "ERROR: failed to create temporary directory" >&2; return 3; }
     # shellcheck disable=SC2064

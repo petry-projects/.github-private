@@ -13,8 +13,14 @@ setup() {
   # Neutralise the maintainer-default time windows so the fixtures below are
   # scored purely on their model split (window filtering is a main()-level concern
   # exercised via its own knobs). Each test may override these.
-  export CANARY_CANDIDATE="claude-opus-5-5"
-  export CANARY_INCUMBENT="claude-opus-4-8"
+  CAND="model-new"
+  INC="model-old"
+  # Synthetic, dated fixture price table so no real model ID is needed.
+  PRICING_TABLE="$DIR/fixture-pricing.tsv"
+  printf 'model-old\t2025-11-01\t15\t1.5\t18.75\t75\nmodel-new\t2026-09-10\t5\t0.5\t6.25\t25\n' > "$PRICING_TABLE"
+  export PRICING_TABLE
+  export CANARY_CANDIDATE="$CAND"
+  export CANARY_INCUMBENT="$INC"
   export CANARY_WORKFLOW="pr-review"
   export CANARY_TIER="deep"
   export CANARY_SINCE=""
@@ -36,15 +42,15 @@ mkrec() {
     "$ts" "$wf" "$tier" "$model" "$inp" "$cr" "$cw" "$out" "$ctx" "$durfield" >> "$file"
 }
 
-# Five candidate PRs (opus-5-5) that clear every bar vs five incumbent
-# invocations (opus-4-8). Token usage identical per call so the deltas are the
+# Five candidate PRs (model-new) that clear every bar vs five incumbent
+# invocations (model-old). Token usage identical per call so the deltas are the
 # pure price difference; candidate durations are 30% faster.
 seed_pass() {
   local i
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
   done
 }
@@ -80,9 +86,9 @@ seed_pass() {
   local i
   for i in 1 2 3 4 5; do
     # Higher candidate output makes per-invocation cost exceed the incumbent.
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
-      1000 1000 0 300 "https://github.com/petry-projects/.github-private/pull/${i}" 700
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
+      1000 1000 0 1000 "https://github.com/petry-projects/.github-private/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
   done
   run render_canary_report "$DIR"
@@ -96,9 +102,9 @@ seed_pass() {
   for i in 1 2 3 4 5; do
     # Candidate reads a lot more cache: cache-read cost reduction falls below 50%
     # while per-invocation cost still clears its 20% bar.
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       900 2000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
   done
   run render_canary_report "$DIR"
@@ -111,9 +117,9 @@ seed_pass() {
 @test "render_canary_report: candidate not 20% faster → latency FAIL, exit 1" {
   local i
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 1000
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
   done
   run render_canary_report "$DIR"
@@ -130,11 +136,11 @@ seed_pass() {
 @test "render_canary_report: fewer than 5 distinct candidate PRs → INSUFFICIENT, exit 2" {
   local i
   for i in 1 2 3 4; do
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
   done
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
   done
   run render_canary_report "$DIR"
@@ -151,9 +157,9 @@ seed_pass() {
   for i in 1 2 3 4 5; do
     local cdur="" idur=""
     [ "$i" -eq 1 ] && { cdur=700; idur=1000; }
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" "$cdur"
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" "$idur"
   done
   run render_canary_report "$DIR"
@@ -188,24 +194,24 @@ seed_pass() {
   # by the baseline window — so it must surface in the fallback table rather than
   # vanish, or candidate records could PASS while hiding a non-candidate rollout.
   seed_pass
-  # An incumbent (opus-4-8) call inside the candidate window (at/after 2026-09-25).
+  # An incumbent (model-old) call inside the candidate window (at/after 2026-09-25).
   export CANARY_SINCE="2026-09-25T00:00:00Z"
   export CANARY_BASELINE_SINCE="2026-09-19T00:00:00Z"
   export CANARY_BASELINE_UNTIL="2026-09-25T00:00:00Z"
-  mkrec "$FILE" "2026-09-26T12:00:00Z" pr-review deep claude-opus-4-8 \
+  mkrec "$FILE" "2026-09-26T12:00:00Z" pr-review deep model-old \
     1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/777" 900
   run render_canary_report "$DIR"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Deep-tier fallback calls (excluded from both arms)"* ]]
-  [[ "$output" == *"| \`claude-opus-4-8\` | 1 |"* ]]
+  [[ "$output" == *"| \`model-old\` | 1 |"* ]]
 }
 
 @test "render_canary_report: no non-null duration on either arm → latency INSUFFICIENT (never PASS), exit 2" {
   local i
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" ""
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" ""
   done
   run render_canary_report "$DIR"
@@ -225,15 +231,15 @@ seed_pass() {
   local i
   for i in 1 2 3 4 5; do
     # A model with no row in model-pricing.tsv → unpriced, but still a real call.
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
   done
-  # Add two unpriced candidate calls on new PRs (dated before opus-5-5 pricing began).
-  mkrec "$FILE" "2026-09-01T10:00:00Z" pr-review deep claude-opus-5-5 \
+  # Add two unpriced candidate calls on new PRs (dated before model-new pricing began).
+  mkrec "$FILE" "2026-09-01T10:00:00Z" pr-review deep model-new \
     1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/91" 700
-  mkrec "$FILE" "2026-09-01T10:01:00Z" pr-review deep claude-opus-5-5 \
+  mkrec "$FILE" "2026-09-01T10:01:00Z" pr-review deep model-new \
     1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/92" 700
   run render_canary_report "$DIR"
   # 7 candidate invocations total; 2 of them unpriced but still counted.
@@ -243,17 +249,17 @@ seed_pass() {
 
 @test "render_canary_report: a partially unpriced INCUMBENT arm blocks a cost/cache PASS" {
   # Both arms clear the bars on their priced records, but one incumbent call is
-  # unpriced (dated before opus-4-* pricing took effect). An unpriced incumbent must
+  # unpriced (dated before model-old pricing took effect). An unpriced incumbent must
   # make cost/cache INSUFFICIENT — never a PASS against only the priced subset.
   local i
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
   done
-  # One unpriced incumbent call (opus-4-8 predates its 2025-11-01 pricing row).
-  mkrec "$FILE" "2025-10-01T10:00:00Z" pr-review deep claude-opus-4-8 \
+  # One unpriced incumbent call (model-old predates its 2025-11-01 pricing row).
+  mkrec "$FILE" "2025-10-01T10:00:00Z" pr-review deep model-old \
     1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/199" 1000
   run render_canary_report "$DIR"
   [ "$status" -eq 2 ]
@@ -274,9 +280,9 @@ seed_pass() {
   # model alone — otherwise --model-ab-dir is permanently INSUFFICIENT.
   local i
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage model-new \
       1000 1000 0 100 "" 700
-    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage model-old \
       1000 1000 0 100 "" 1000
   done
   CANARY_MODE=controlled run render_canary_report "$DIR"
@@ -294,9 +300,9 @@ seed_pass() {
   # keeps the pr-review/deep predicates, so both arms are empty → INSUFFICIENT.
   local i
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage model-new \
       1000 1000 0 100 "" 700
-    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage model-old \
       1000 1000 0 100 "" 1000
   done
   run render_canary_report "$DIR"
@@ -326,7 +332,7 @@ seed_pass() {
   # output_tokens) makes the sample partial, so scoring aborts with the operational
   # code rather than scoring only the surviving rows into a bogus verdict (#1953).
   seed_pass
-  printf '{"ts":"2026-09-26T10:09:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-5-5","input_tokens":1000,"cache_read_tokens":1000,"cache_creation_tokens":0,"context":"https://github.com/petry-projects/.github-private/pull/9"}\n' > "$DIR/partial.jsonl"
+  printf '{"ts":"2026-09-26T10:09:00Z","workflow":"pr-review","tier":"deep","model":"model-new","input_tokens":1000,"cache_read_tokens":1000,"cache_creation_tokens":0,"context":"https://github.com/petry-projects/.github-private/pull/9"}\n' > "$DIR/partial.jsonl"
   run render_canary_report "$DIR"
   [ "$status" -eq 3 ]
   [[ "$output" != *"**Overall verdict:** PASS"* ]]
@@ -381,7 +387,7 @@ seed_pass() {
 
 @test "render_canary_report: a negative token count aborts scoring (exit 3)" {
   seed_pass
-  mkrec "$FILE" "2026-09-26T10:09:00Z" pr-review deep claude-opus-5-5 \
+  mkrec "$FILE" "2026-09-26T10:09:00Z" pr-review deep model-new \
     1000 1000 -1000 100 "https://github.com/petry-projects/.github-private/pull/9" 700
   run render_canary_report "$DIR"
   [ "$status" -eq 3 ]
@@ -389,7 +395,7 @@ seed_pass() {
 
 @test "render_canary_report: a malformed record timestamp aborts scoring (exit 3)" {
   seed_pass
-  mkrec "$FILE" "2026-09-26garbage" pr-review deep claude-opus-5-5 \
+  mkrec "$FILE" "2026-09-26garbage" pr-review deep model-new \
     1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/9" 700
   run render_canary_report "$DIR"
   [ "$status" -eq 3 ]
@@ -397,14 +403,14 @@ seed_pass() {
 
 @test "render_canary_report: identical candidate and incumbent is an operational error (exit 3)" {
   seed_pass
-  CANARY_INCUMBENT="claude-opus-5-5" run render_canary_report "$DIR"
+  CANARY_INCUMBENT="$CAND" run render_canary_report "$DIR"
   [ "$status" -eq 3 ]
 }
 
 @test "render_canary_report: a non-numeric price rate is unpriced, never a zero rate" {
   seed_pass
   local tbl="$DIR/pricing.tsv"
-  printf 'claude-opus-4-8\t2025-01-01\t15\t1.5\t18.75\t75\nclaude-opus-5-5\t2025-01-01\tbad\t0\t0\t0\n' > "$tbl"
+  printf 'model-old\t2025-01-01\t15\t1.5\t18.75\t75\nmodel-new\t2025-01-01\tbad\t0\t0\t0\n' > "$tbl"
   PRICING_TABLE="$tbl" run render_canary_report "$DIR"
   [ "$status" -eq 2 ]
   [[ "$output" == *"- candidate unpriced records: 5"* ]]
@@ -414,13 +420,13 @@ seed_pass() {
   # Five PRs exist, but only one carries durations (five retries) → latency INSUFFICIENT.
   local i
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" ""
-    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
   done
   for i in 1 2 3 4 5; do
-    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" pr-review deep claude-opus-5-5 \
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" pr-review deep model-new \
       1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/1" 700
   done
   run render_canary_report "$DIR"
@@ -430,8 +436,152 @@ seed_pass() {
 
 @test "render_canary_report: candidate records with no context are dropped once the cap applies" {
   seed_pass
-  mkrec "$FILE" "2026-09-26T12:00:00Z" pr-review deep claude-opus-5-5 1000 1000 0 100 "" 700
+  mkrec "$FILE" "2026-09-26T12:00:00Z" pr-review deep model-new 1000 1000 0 100 "" 700
   run render_canary_report "$DIR"
   [ "$status" -eq 0 ]
   [[ "$output" == *"- candidate invocations: 5"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Genericity (#1951 AC7-AC11), threshold validation, and review hardening
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: missing candidate or incumbent is an operational error (exit 3)" {
+  seed_pass
+  CANARY_CANDIDATE="" run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+  CANARY_INCUMBENT="" run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "main: missing --candidate/--incumbent exits 3 with a usage message" {
+  unset CANARY_CANDIDATE CANARY_INCUMBENT
+  run main --dir "$DIR"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"--candidate"* ]]
+  run main --dir "$DIR" --candidate model-new
+  [ "$status" -eq 3 ]
+}
+
+@test "main: non-Anthropic model names are scored like any other" {
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep gpt-x 1000 1000 0 100 "https://github.com/o/r/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep gem-y 1000 1000 0 100 "https://github.com/o/r/pull/10${i}" 1000
+  done
+  printf 'gem-y\t2025-01-01\t15\t1.5\t18.75\t75\ngpt-x\t2025-01-01\t5\t0.5\t6.25\t25\n' > "$DIR/p2.tsv"
+  PRICING_TABLE="$DIR/p2.tsv" run main --dir "$DIR" --candidate gpt-x --incumbent gem-y --since 2026-09-25T00:00Z
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gpt-x"* ]]
+}
+
+@test "main: baseline window is derived from --baseline-days ending at --since" {
+  seed_pass
+  # Incumbent records are 2026-09-20; with --since 2026-09-25 a 3-day baseline
+  # (09-22..09-25) excludes them, a 7-day baseline (09-18..09-25) includes them.
+  run main --dir "$DIR" --candidate model-new --incumbent model-old --since 2026-09-25T00:00Z --baseline-days 3
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- incumbent invocations: 0"* ]]
+  run main --dir "$DIR" --candidate model-new --incumbent model-old --since 2026-09-25T00:00Z --baseline-days 7
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- incumbent invocations: 5"* ]]
+}
+
+@test "main: explicit --baseline-since/--baseline-until override the derived window" {
+  seed_pass
+  run main --dir "$DIR" --candidate model-new --incumbent model-old --since 2026-09-25T00:00Z \
+    --baseline-since 2026-09-19T00:00Z --baseline-until 2026-09-21T00:00Z
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- incumbent invocations: 5"* ]]
+}
+
+@test "main: a threshold flag wins over its CANARY_* env var" {
+  seed_pass
+  # Env bar of 0.99 would FAIL cost; the flag lowers it back to 0.20 → PASS.
+  CANARY_COST_BAR=0.99 run main --dir "$DIR" --candidate model-new --incumbent model-old --cost-bar 0.20
+  [ "$status" -eq 0 ]
+  CANARY_COST_BAR=0.99 run main --dir "$DIR" --candidate model-new --incumbent model-old
+  [ "$status" -eq 1 ]
+  run main --dir "$DIR" --candidate model-new --incumbent model-old --min-prs 6
+  [ "$status" -eq 2 ]
+}
+
+@test "render_canary_report: malformed or out-of-range thresholds are an operational error (exit 3)" {
+  seed_pass
+  CANARY_MIN_PRS=oops CANARY_COST_BAR=oops run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+  CANARY_COST_BAR=1.5 run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+  CANARY_MIN_INVOCATIONS=x run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "render_canary_report: latency INSUFFICIENT names the arm lacking duration_ms" {
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new \
+      1000 1000 0 100 "https://github.com/o/r/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old \
+      1000 1000 0 100 "https://github.com/o/r/pull/10${i}" ""
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"too few duration_ms values on the incumbent"* ]]
+  [[ "$output" != *"the candidate"* ]]
+}
+
+@test "render_canary_report: an unknown CANARY_MODE is an operational error (exit 3)" {
+  seed_pass
+  CANARY_MODE=rela run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "render_canary_report: non-PR candidate contexts are not counted as distinct PRs" {
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep model-new 1000 1000 0 100 "job-${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep model-old 1000 1000 0 100 "https://github.com/o/r/pull/10${i}" 1000
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- candidate distinct PRs: 0"* ]]
+}
+
+@test "render_canary_report: a token record with an empty model aborts scoring (exit 3)" {
+  seed_pass
+  mkrec "$FILE" "2026-09-26T10:09:00Z" pr-review deep "" 1000 1000 0 100 "https://github.com/o/r/pull/9" 700
+  run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "render_canary_report: gemini_key_cooldown audit records are skipped, not invalid" {
+  seed_pass
+  printf '{"kind":"gemini_key_cooldown","ts":"2026-09-26T10:00:00Z","key":"k1"}\n' >> "$FILE"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
+}
+
+@test "render_canary_report: an incumbent record exactly at the baseline end is excluded" {
+  seed_pass
+  mkrec "$FILE" "2026-09-25T00:00:00Z" pr-review deep model-old 1000 1000 0 100 "https://github.com/o/r/pull/500" 1000
+  CANARY_BASELINE_SINCE="2026-09-19T00:00:00Z" CANARY_BASELINE_UNTIL="2026-09-25T00:00:00Z" run render_canary_report "$DIR"
+  [[ "$output" == *"- incumbent invocations: 5"* ]]
+}
+
+@test "main: --model-ab-dir alone scores the controlled section without live collection" {
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage model-new 1000 1000 0 100 "" 700
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage model-old 1000 1000 0 100 "" 1000
+  done
+  unset GH_TOKEN
+  run main --candidate model-new --incumbent model-old --model-ab-dir "$DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Controlled comparison"* ]]
+}
+
+@test "main: an unreadable --dir is an operational error (exit 66)" {
+  [ "$(id -u)" -ne 0 ] || skip "root can read any directory"
+  chmod 000 "$DIR"
+  run main --dir "$DIR" --candidate model-new --incumbent model-old
+  chmod 755 "$DIR"
+  [ "$status" -eq 66 ]
 }
