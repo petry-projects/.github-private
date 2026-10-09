@@ -137,6 +137,7 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   dlpb_backfill_pr_body "$PR_NUMBER" "$REPO" || true
 fi
 
+# build_and_run <template_name>: loads a prompt template, substitutes variables, and runs the agent.
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
@@ -2295,6 +2296,7 @@ ${retry_msg}"
   fi
 }
 
+# handle_rate_limit <intent>: posts a rate-limited marker and exits when all engines hit rate limits.
 handle_rate_limit() {
   local intent="$1"
   echo "::warning::All engines rate-limited for intent=${intent} — posting rate-limited marker"
