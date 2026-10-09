@@ -213,8 +213,14 @@ bcr_fetch_pr_comments() {
     echo "  [warn] bot-comment retry: could not create a temp file for PR $2 comments" >&2
     return 1
   }
-  _bcr_fetch_pr_comments_into "$1" "$2" "$pages_file"
-  rc=$?
+  # A subshell with its own EXIT trap removes the temp file (it holds fetched
+  # comment bodies) even on interruption, without touching the caller's traps;
+  # `|| rc=$?` keeps errexit from skipping the status capture.
+  rc=0
+  (
+    trap 'rm -f "$pages_file"' EXIT
+    _bcr_fetch_pr_comments_into "$1" "$2" "$pages_file"
+  ) || rc=$?
   rm -f "$pages_file"
   return "$rc"
 }
@@ -225,7 +231,6 @@ bcr_fetch_pr_comments() {
 _bcr_fetch_pr_comments_into() {
   local repo="$1" pr="$2" pages_file="$3"
   local warn="  [warn] bot-comment retry: PR ${pr} comments in ${repo}:"
-  local repo="$1" pr="$2"
   # shellcheck disable=SC2016  # $owner/$repo/$pr/$cursor are GraphQL variables
   local query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
     repository(owner:$owner,name:$repo){
@@ -237,7 +242,7 @@ _bcr_fetch_pr_comments_into() {
       }
     }
   }'
-  local cursor="" has_next="true" page
+  local cursor="" prev_cursor="" has_next="true" page
   local cursor_args=()
   while [ "$has_next" = "true" ]; do
     page=$(gh api graphql -f query="$query" -F owner="${repo%%/*}" -F repo="${repo##*/}" \
@@ -262,6 +267,11 @@ _bcr_fetch_pr_comments_into() {
     if [ "$has_next" = "true" ] && [ -z "$cursor" ]; then
       echo "${warn} invalid pagination info (no endCursor)" >&2; return 1
     fi
+    # A cursor that did not advance would re-fetch the same page forever.
+    if [ "$has_next" = "true" ] && [ "$cursor" = "$prev_cursor" ]; then
+      echo "${warn} invalid pagination info (endCursor did not advance)" >&2; return 1
+    fi
+    prev_cursor="$cursor"
     cursor_args=(-f "cursor=${cursor}")
   done
   # Concatenate the pages from the file — never via jq arguments (#2072).

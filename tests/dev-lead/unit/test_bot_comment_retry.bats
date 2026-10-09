@@ -307,7 +307,7 @@ $(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z a
 @test "bcr_fetch_pr_comments: a GraphQL response carrying errors fails closed" {
   gh() { printf '%s' '{"errors":[{"message":"rate limited"}],"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; }
   run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
   [[ "$stderr" == *"GraphQL errors"* ]]
 }
@@ -315,7 +315,7 @@ $(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z a
 @test "bcr_fetch_pr_comments: hasNextPage true without a cursor fails closed" {
   gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":null},"nodes":[]}}}}}'; }
   run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
   [[ "$stderr" == *"pagination"* ]]
 }
@@ -323,7 +323,7 @@ $(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z a
 @test "bcr_fetch_pr_comments: a non-boolean hasNextPage fails closed" {
   gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"endCursor":null},"nodes":[]}}}}}'; }
   run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
   [[ "$stderr" == *"pagination"* ]]
 }
@@ -333,7 +333,7 @@ $(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z a
 @test "bcr_fetch_pr_comments: a failed API call fails closed with a fetch reason" {
   gh() { return 1; }
   run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
   [[ "$stderr" == *"API request failed"* ]]
 }
@@ -341,10 +341,33 @@ $(_ours '<!-- dev-lead-bot-comment-retry id=IC_cr version=2026-10-01T23:05:43Z a
 @test "bcr_fetch_pr_comments: an unparseable page fails closed with a parse reason" {
   gh() { printf '%s' '<html>502 Bad Gateway</html>'; }
   run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [ -z "$output" ]
   [[ "$stderr" == *"unparseable"* ]]
   [[ "$stderr" != *"API request failed"* ]]
+}
+
+# A page that reports more pages but repeats the cursor it was fetched with
+# would loop on the same page forever; it fails closed instead.
+@test "bcr_fetch_pr_comments: a repeated non-empty endCursor fails closed" {
+  gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"same"},"nodes":[]}}}}}'; }
+  run --separate-stderr bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"did not advance"* ]]
+}
+
+# The temp file holds fetched comment bodies; it is removed on success and failure.
+@test "bcr_fetch_pr_comments: leaves no temp file behind" {
+  export TMPDIR="$BATS_TEST_TMPDIR/tmp"
+  mkdir -p "$TMPDIR"
+  gh() { printf '%s' '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; }
+  run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 0 ]
+  gh() { return 1; }
+  run bcr_fetch_pr_comments "petry-projects/.github-private" 2009
+  [ "$status" -eq 1 ]
+  [ -z "$(ls -A "$TMPDIR")" ]
 }
 
 # #2072: PR #1953's comment history grew past the per-argument size limit and the
