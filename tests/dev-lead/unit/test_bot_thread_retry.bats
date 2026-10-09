@@ -381,6 +381,28 @@ _comments_page() {
   ! grep -q -- '--method POST' "$GH_LOG"
 }
 
+@test "sweep: a dispatch guard posted by a non-automation commenter is ignored" {
+  export THREADS_RESPONSE COMMENTS_RESPONSE
+  THREADS_RESPONSE="$(_threads_page "$(_thread PRRT_cubic cubic-dev-ai)")"
+  COMMENTS_RESPONSE="$(_comments_page \
+    "$(_ours '<!-- dev-lead-dispatch-guard sha=abc at=2026-10-02T00:58:00Z -->' 2026-10-02T00:58:00Z NONE some-user)")"
+  _setup_sweep
+  run scan_pr_for_unreplied_bot_threads "petry-projects/.github-private" 1953
+  [ "${lines[-1]}" = "1" ]
+  [ "$(grep -c '/dispatches' "$GH_LOG")" -eq 1 ]
+}
+
+@test "has_dispatch_guard: any in-window guard counts; a far-future guard never does" {
+  _setup_sweep
+  # An older out-of-window guard listed first must not hide a recent one.
+  run has_dispatch_guard '["<!-- dev-lead-dispatch-guard sha=abc at=2026-10-01T00:00:00Z -->","<!-- dev-lead-dispatch-guard sha=abc at=2026-10-02T00:58:00Z -->"]' abc
+  [ "$status" -eq 0 ]
+  run has_dispatch_guard '["<!-- dev-lead-dispatch-guard sha=abc at=2099-01-01T00:00:00Z -->"]' abc
+  [ "$status" -eq 1 ]
+  run has_dispatch_guard '["<!-- dev-lead-dispatch-guard sha=abc at=2026-10-01T00:00:00Z -->"]' abc
+  [ "$status" -eq 1 ]
+}
+
 @test "sweep: a concurrent scan's earlier marker wins — this scan withdraws and does not dispatch" {
   export THREADS_RESPONSE MARKER_LISTING
   THREADS_RESPONSE="$(_threads_page "$(_thread PRRT_cubic cubic-dev-ai)")"

@@ -154,16 +154,18 @@ is_reset_in_future() {
 # DISPATCH_GUARD_WINDOW_SEC seconds, indicating a concurrent caller already
 # claimed dispatch for this PR and the current caller should skip.
 has_dispatch_guard() {
-  local comments_json="$1" sha="$2" guard_time guard_epoch now_epoch age
-  guard_time=$(echo "$comments_json" | jq -r \
-    --arg pat "${DISPATCH_GUARD_PREFIX}${sha}" \
-    '[.[] | select(. | test($pat))] | .[0] | capture("at=(?<t>[0-9T:Z-]+)") | .t // ""' \
-    2>/dev/null || true)
-  [ -z "$guard_time" ] && return 1
-  guard_epoch=$(date -u -d "$guard_time" +%s 2>/dev/null || echo 0)
+  local comments_json="$1" sha="$2" now_epoch window
   now_epoch=$(get_now_epoch)
-  age=$(( now_epoch - guard_epoch ))
-  [ "$age" -lt "${DISPATCH_GUARD_WINDOW_SEC:-600}" ]
+  window="${DISPATCH_GUARD_WINDOW_SEC:-600}"
+  [[ "$window" =~ ^[0-9]+$ ]] || window=600
+  # ANY matching guard counts (not just the first), and only one dated inside
+  # [now - window, now]: a far-future `at=` must never hold retries off (#2046).
+  echo "$comments_json" | jq -e \
+    --arg pat "${DISPATCH_GUARD_PREFIX}${sha}" --argjson now "$now_epoch" --argjson win "$window" '
+    [ .[] | strings | select(test($pat))
+      | (capture("at=(?<t>[0-9T:Z-]+)")? | .t | try fromdateiso8601 catch null)
+      | select(. != null) | ($now - .) | select(. >= 0 and . < $win) ]
+    | length > 0' >/dev/null 2>&1
 }
 
 # post_dispatch_guard <repo> <pr_number> <sha>
@@ -708,7 +710,11 @@ scan_pr_for_undispositioned_bot_comments() {
   # A run another path queued moments ago for this head (dev-lead-resume.sh or the
   # rate-limit sweep posts the guard first) is still pending in the per-PR lane; a
   # second dispatch now would supersede it (#2046). Defer to it.
-  if has_dispatch_guard "$(jq -c '[.[].body // empty]' <<< "$comments" 2>/dev/null || echo '[]')" "$head_sha"; then
+  # Only a guard our own automation posted counts, so a PR commenter cannot pause it.
+  if has_dispatch_guard "$(jq -c --arg a "$(bcr_automation_logins)" '
+        ($a | split(",") | map(sub("\\[bot\\]$"; ""))) as $L
+        | [ .[] | objects | select(((.author.login // "") | sub("\\[bot\\]$"; "")) as $l | $L | index($l) != null)
+            | .body // empty ]' <<< "$comments" 2>/dev/null || echo '[]')" "$head_sha"; then
     echo "  [skip] bot-comment retry: PR ${pr_number} SHA ${head_sha:0:8} has a recent dispatch guard — not superseding it" >&2
     echo "0"; return 0
   fi
@@ -934,7 +940,11 @@ scan_pr_for_unreplied_bot_threads() {
   # A run another path queued moments ago for this head (dev-lead-resume.sh or the
   # rate-limit sweep posts the guard first) is still pending in the per-PR lane; a
   # second dispatch now would supersede it (#2046). Defer to it.
-  if has_dispatch_guard "$(jq -c '[.[].body // empty]' <<< "$comments" 2>/dev/null || echo '[]')" "$head_sha"; then
+  # Only a guard our own automation posted counts, so a PR commenter cannot pause it.
+  if has_dispatch_guard "$(jq -c --arg a "$(bcr_automation_logins)" '
+        ($a | split(",") | map(sub("\\[bot\\]$"; ""))) as $L
+        | [ .[] | objects | select(((.author.login // "") | sub("\\[bot\\]$"; "")) as $l | $L | index($l) != null)
+            | .body // empty ]' <<< "$comments" 2>/dev/null || echo '[]')" "$head_sha"; then
     echo "  [skip] bot-thread retry: PR ${pr_number} SHA ${head_sha:0:8} has a recent dispatch guard — not superseding it" >&2
     echo "0"; return 0
   fi
@@ -978,6 +988,7 @@ scan_pr_for_unreplied_bot_threads() {
   # Spliced into the marker body below.
   if [[ ! "$ids" =~ ^[-A-Za-z0-9_+/=,]+$ ]] || [[ ! "$attempt" =~ ^[0-9]+$ ]]; then
     echo "  [warn] bot-thread retry: unexpected thread ids/attempt on PR ${pr_number} — not dispatching" >&2
+    post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
     echo "0"; return 0
   fi
   now_iso="${NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
@@ -991,10 +1002,12 @@ scan_pr_for_unreplied_bot_threads() {
          -f body="$(btr_retry_marker "$ids" "$attempt" "$now_iso")" \
          --jq '.id // empty' 2>/dev/null); then
       echo "  [warn] bot-thread retry: could not record the retry marker on PR ${pr_number} — not dispatching (dedup unavailable)" >&2
+      post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
       echo "0"; return 0
     fi
     if [[ ! "$marker_id" =~ ^[0-9]+$ ]]; then
       echo "  [warn] bot-thread retry: the retry marker's id on PR ${pr_number} is unreadable — not dispatching (fail closed)" >&2
+      post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
       echo "0"; return 0
     fi
     # Two concurrent scans can both have seen no pending marker. The earliest
@@ -1020,6 +1033,7 @@ scan_pr_for_unreplied_bot_threads() {
       2>/dev/null); then
       echo "  [warn] bot-thread retry: could not re-read retry markers on PR ${pr_number} — withdrawing and not dispatching (fail closed)" >&2
       withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
       echo "0"; return 0
     fi
     first_marker=$(printf '%s\n' "$listing" | jq -rs --argjson now "$now_epoch" --argjson pending "$pending" '
@@ -1029,6 +1043,7 @@ scan_pr_for_unreplied_bot_threads() {
     if [ -z "$first_marker" ]; then
       echo "  ::warning::bot-thread retry: the retry marker on PR ${pr_number} was posted by an identity the retry dedup does not trust (expected one of: ${automation}) — withdrawing and not dispatching" >&2
       withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
       echo "0"; return 0
     fi
     if [ "$first_marker" != "$marker_id" ]; then
@@ -1039,6 +1054,7 @@ scan_pr_for_unreplied_bot_threads() {
   fi
   if ! dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "fix-reviews"; then
     withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+    post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
     echo "0"; return 0
   fi
   echo "1"
