@@ -255,7 +255,7 @@ ttg_scan_pass() {
   done <<<"$numstat"
   diff=""
   if (( ${#mb_tests[@]} > 0 )); then
-    diff=$(git --literal-pathspecs diff --no-renames --unified=0 "$base" -- "${mb_tests[@]}" 2>/dev/null) || { echo "unknown"; return 2; }
+    diff=$(git -c core.quotePath=false --literal-pathspecs diff --no-renames --unified=0 "$base" -- "${mb_tests[@]}" 2>/dev/null) || { echo "unknown"; return 2; }
   fi
   msgs=$(git log --format=%B "${base}..${head}" 2>/dev/null || true)
   skips=$(ttg_count_added_skips "$diff")

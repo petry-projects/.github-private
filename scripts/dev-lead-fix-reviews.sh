@@ -2760,7 +2760,15 @@ commit_and_push() {
       fix-reviews|fix-bot-comment|review-changes|human-pr)
         local ttg_out ttg_rc=0 ttg_files ttg_mb=""
         if ttg_pass_touches_tests "${RESOLUTION_BASE_SHA:-}"; then
-          ttg_mb=$(ttg_resolve_merge_base "${BASE_REF:-main}" "${RESOLUTION_BASE_SHA:-}" "${HEAD_REF:-}") || ttg_mb=""
+          # Several intents default BASE_REF to `main` before the PR is read, so ask
+          # the API for the PR's real target; an unreadable base leaves ttg_mb empty.
+          local ttg_base=""
+          if [ -n "${PR_NUMBER:-}" ] && [ -n "${REPO:-}" ]; then
+            ttg_base=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.base.ref // empty' 2>/dev/null) || ttg_base=""
+          fi
+          if [ -n "$ttg_base" ]; then
+            ttg_mb=$(ttg_resolve_merge_base "$ttg_base" "${RESOLUTION_BASE_SHA:-}" "${HEAD_REF:-}") || ttg_mb=""
+          fi
         fi
         ttg_out=$(ttg_scan_pass "${RESOLUTION_BASE_SHA:-}" HEAD "$ttg_mb") || ttg_rc=$?
         ttg_files=$(printf '%s\n' "$ttg_out" | sed '1d' | paste -sd ',' - | sed 's/,/, /g')

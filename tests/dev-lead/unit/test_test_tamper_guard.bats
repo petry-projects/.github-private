@@ -387,3 +387,16 @@ _mk_remote() {
   run ttg_resolve_merge_base main "$BASE" feat
   [[ "$status" -ne 0 ]]
 }
+
+@test "ttg_scan_pass: a skip added to a non-ASCII test path at the merge base still counts" {
+  _mk_repo
+  mkdir -p src
+  printf 'it "x" do\n  expect(1).to eq 1\nend\n' > "src/café_spec.rb"
+  git add -A; git commit -q -m "base spec"
+  BASE="$(git rev-parse HEAD)"; MB="$BASE"
+  sed -i 's/^it "x" do$/it "x" do\n  skip "flaky"/' "src/café_spec.rb"
+  git commit -q -am "fix(reviews): address review comments"
+  run ttg_scan_pass "$BASE" HEAD "$MB"
+  [[ "$status" -eq 1 ]]
+  [[ "$(printf '%s' "$output" | head -1)" == "tampered" ]]
+}
