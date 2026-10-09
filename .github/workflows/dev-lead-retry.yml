@@ -53,8 +53,11 @@ on:
         type: string
 
 # contents: write is required to create repository_dispatch events.
+# actions: read downloads the budget poller's `budget-poller-log` artifact (#2139).
+# No Claude credential here: the poller holds it; this workflow reads its output.
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: dev-lead-retry
