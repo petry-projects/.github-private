@@ -100,8 +100,11 @@ qa_lead_paths_have_control_char() {
   local json="${1:-[]}"
   # explode -> codepoints; any < 32 is a C0 control character. (jq's regex
   # engine does not honour \uXXXX escapes, so match on codepoints, not a class.)
-  jq -e 'any(.[]?; explode | any(.[]; . < 32))' \
-    <<< "$json" >/dev/null 2>&1
+  if jq -e 'any(.[]?; explode | any(.[]; . < 32))' \
+      <<< "$json" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 # qa_lead_file_list_complete <received_count> <declared_count>
@@ -113,5 +116,8 @@ qa_lead_paths_have_control_char() {
 #   partial data (#1697 review). Boundary: 3000/3000 is complete, 3000/3001 is not.
 qa_lead_file_list_complete() {
   local received="${1:-0}" declared="${2:-0}"
-  [ "$received" -ge "$declared" ]
+  if [ "$received" -ge "$declared" ]; then
+    return 0
+  fi
+  return 1
 }
