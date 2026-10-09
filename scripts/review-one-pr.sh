@@ -93,6 +93,11 @@ source "$SCRIPT_DIR/lib/finding-verification.sh"
 # shellcheck source=lib/pr-metadata-digest.sh
 source "$SCRIPT_DIR/lib/pr-metadata-digest.sh"
 
+# Recognises an approval at the head that pr-review's own gate dismissed (#1933):
+# a "pending re-evaluation" state the same-SHA idempotency no-op must not stand on.
+# shellcheck source=lib/self-dismissed-approval.sh
+source "$SCRIPT_DIR/lib/self-dismissed-approval.sh"
+
 # Per-PR review-claim primitive (issue #1589, slice 1 — OBSERVE-ONLY). Provides
 # the claim key = (head SHA, metadata digest), the claim marker format, and
 # concurrent_claim_present so the #1551 same-SHA re-review race is observable
@@ -497,13 +502,20 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
       # one fix-bot-comment pass (by comment node id), only for registered-bot
       # comments with no covering disposition, and never one already pending.
       # It never minimizes anything — the gate is unchanged. Best-effort.
+      # When it dispatched nothing, the same deduplicated scan for unreplied bot
+      # review threads runs next (#2046). It shares the cron's claim marker, so
+      # the two never both dispatch.
       if [ "${DRY_RUN:-false}" != "true" ] && [ -n "$_OWNER_REPO" ] \
          && [[ "$PR_URL" =~ /pull/([0-9]+) ]]; then
         _bcr_pr="${BASH_REMATCH[1]}"
         _bcr_log=$( (
           # shellcheck source=dev-lead-retry.sh
           source "$SCRIPT_DIR/dev-lead-retry.sh"
-          scan_pr_for_undispositioned_bot_comments "$_OWNER_REPO" "$_bcr_pr"
+          _bcr_n=$(scan_pr_for_undispositioned_bot_comments "$_OWNER_REPO" "$_bcr_pr")
+          echo "$_bcr_n"
+          if [ "${_bcr_n:-0}" = "0" ]; then
+            scan_pr_for_unreplied_bot_threads "$_OWNER_REPO" "$_bcr_pr"
+          fi
         ) 2>&1 ) || true
         printf '%s\n' "$_bcr_log" | sed 's/^/    [bot-comment-retry] /'
       fi
@@ -658,9 +670,25 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA
        && [[ "$LATEST_MARKER_BODY" =~ decision=fix-requested ]]; then
     VERDICT_AT_HEAD=true
   fi
+  # #1933: an approval verdict at head that pr-review's OWN gate later dismissed
+  # (#1813 comment disposition, #1415 maintainer thread) is "pending
+  # re-evaluation", not "reviewed". Every gate above has just passed on this run,
+  # so the condition that caused the dismissal has cleared: re-run the full
+  # cascade (gates stay armed — this never re-posts an approval by itself). A
+  # human's dismissal, the #1596 accepted-defect dismissal, or an unreadable
+  # timeline keeps the no-op (lib/self-dismissed-approval.sh fails closed).
+  SELF_DISMISSED_REEVAL=false
+  approved_at_head_re="<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]]+decision=approved([^[:alnum:]_]|$)"
+  if [ "${FORCE_REVIEW:-false}" != "true" ] && [[ "$LATEST_MARKER_BODY" =~ $approved_at_head_re ]] \
+     && [[ "$PR_URL" =~ /pull/([0-9]+) ]] \
+     && sda_check_pr "$_OWNER_REPO" "${BASH_REMATCH[1]}" "$PR_HEAD_SHA" "${BOT_USER:-donpetry-bot}"; then
+    SELF_DISMISSED_REEVAL=true
+  fi
   if [ "${FORCE_REVIEW:-false}" = "true" ] \
      || { [ "${FORCE_RE_REVIEW:-false}" = "true" ] && [ "$VERDICT_AT_HEAD" != "true" ]; }; then
     echo "    force-review: prior marker $PR_HEAD_SHA matches head, but FORCE_REVIEW/FORCE_RE_REVIEW=true — re-running cascade (idempotency bypass)"
+  elif [ "$SELF_DISMISSED_REEVAL" = "true" ]; then
+    echo "    re-review: pr-review's approval at $PR_HEAD_SHA was dismissed by its own gate, and every gate now passes — re-evaluating at the same head (#1933)"
   else
     # Metadata-digest re-arm (#1551). A metadata-only fix-request stamps
     # `meta=<digest>` (body + closingIssuesReferences + labels) into its marker.

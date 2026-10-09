@@ -289,6 +289,29 @@ _scan_with_markers() {
   run scan_pr_for_rate_limits "petry-projects/.github-private" 2000
 }
 
+@test "retry(#2089): a dev-lead:hands-off PR with a reset hold neither guards nor dispatches" {
+  gh() {
+    case "$*" in
+      *"/pulls/2000"*) echo '{"state":"open","head":{"sha":"abc"},"labels":[{"name":"dev-lead:hands-off"}]}' ;;
+      *"/comments"*) echo '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=rate-limited reason=rate-limited reset=2026-06-18T23:00:00Z -->"]' ;;
+      *) echo '[]' ;;
+    esac
+  }
+  # The REAL resume gate (from lib/pr-automation-budget.sh) — not the stub the
+  # other scans use — so the hold-label suppression itself is under test.
+  # shellcheck source=/dev/null
+  source "$(dirname "$RETRY_SCRIPT")/lib/pr-automation-budget.sh"
+  post_dispatch_guard() { echo "GUARD" >&2; }
+  fetch_pr_comment_nodes() { echo '[{"id":"IC_cr"}]'; }
+  stale_disposition_needs_dispatch() { return 0; }
+  dispatch_reviews_retry() { echo "DISPATCH intent=$4" >&2; }
+  run scan_pr_for_rate_limits "petry-projects/.github-private" 2000
+  [ "${lines[-1]}" = "0" ]
+  [[ "$output" != *"DISPATCH"* ]]
+  [[ "$output" != *"GUARD"* ]]
+  [[ "$output" == *"carries dev-lead:hands-off"* ]]
+}
+
 @test "retry: history-unavailable marker AFTER an older terminal failed marker still dispatches" {
   _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=failed -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->"]'
   [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
@@ -309,6 +332,57 @@ _scan_with_markers() {
   local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=history-unavailable -->'
   _scan_with_markers "[\"$m\",\"$m\"]"
   [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
+}
+
+@test "retry: partial marker AFTER an older terminal no-changes marker still dispatches" {
+  _scan_with_markers '["<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=no-changes -->","<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->"]'
+  [[ "$output" == *"DISPATCH intent=fix-reviews"* ]]
+}
+
+@test "retry: repeated partial markers hit the retry limit and stop dispatching" {
+  local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->'
+  _scan_with_markers "[\"$m\",\"$m\",\"$m\"]"
+  [[ "$output" != *"DISPATCH"* ]]
+}
+
+@test "retry: partial retry limit holds the PR, escalates, and blocks the stale-disposition dispatch" {
+  local m='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->'
+  export MARKERS_JSON="[\"$m\",\"$m\",\"$m\"]"
+  gh() {
+    case "$*" in
+      *"/pulls/2000"*) echo '{"state":"open","head":{"sha":"abc"},"labels":[]}' ;;
+      *"/comments"*) echo "$MARKERS_JSON" ;;
+      *) echo '[]' ;;
+    esac
+  }
+  pr_resume_suppressed() { return 1; }
+  post_dispatch_guard() { :; }
+  pr_automation_escalate() { echo "ESCALATE $1" >&2; }
+  # The stale-disposition path would dispatch if the hold did not apply.
+  fetch_pr_comment_nodes() { echo '[{"id":"x"}]'; }
+  stale_disposition_needs_dispatch() { return 0; }
+  dispatch_reviews_retry() { echo "DISPATCH intent=$4" >&2; }
+  run scan_pr_for_rate_limits "petry-projects/.github-private" 2000
+  [[ "$output" != *"DISPATCH"* ]]
+  [[ "$output" == *"ESCALATE 2000"* ]]
+}
+
+@test "retry: partial markers before a later applied marker do not hold or escalate" {
+  local p='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->'
+  local a='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=applied -->'
+  pr_automation_escalate() { echo "ESCALATE $1" >&2; }
+  _scan_with_markers "[\"$p\",\"$p\",\"$p\",\"$a\"]"
+  [[ "$output" != *"DISPATCH"* ]]
+  [[ "$output" != *"ESCALATE"* ]]
+}
+
+@test "retry: partial markers before a later no-changes marker do not hold or escalate" {
+  local p='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=partial -->'
+  local nc='<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=no-changes -->'
+  pr_automation_escalate() { echo "ESCALATE $1" >&2; }
+  _scan_with_markers "[\"$p\",\"$p\",\"$p\",\"$nc\"]"
+  [[ "$output" != *"DISPATCH"* ]]
+  [[ "$output" != *"ESCALATE"* ]]
 }
 
 @test "retry: unrelated-histories after history-unavailable is terminal" {

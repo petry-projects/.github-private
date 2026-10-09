@@ -29,6 +29,10 @@ source "$(dirname "$0")/lib/test-regression-guard.sh"
 # machine-checkable claim the harness verifies before minimizing the original
 # comment RESOLVED.
 source "$(dirname "$0")/lib/comment-disposition-verify.sh"
+# Review-thread deferral verifier (#2045): the thread-side sibling of the
+# `out-of-scope` disposition. A bot thread deferred to an open tracking issue that
+# links it is resolved by resolve_deferred_bot_threads.
+source "$(dirname "$0")/lib/deferred-thread-verify.sh"
 # The issue-comment gate — sourced for its agent-marker regex
 # ($_MAINTAINER_GATE_AGENT_MARKERS), so resolve_dispositioned_comments excludes
 # our own disposition/ack/note replies with the SAME discriminator the gate uses
@@ -131,6 +135,7 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   dlpb_backfill_pr_body "$PR_NUMBER" "$REPO" || true
 fi
 
+# build_and_run <template_name>: loads a prompt template, substitutes variables, and runs the agent.
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
@@ -190,6 +195,27 @@ build_and_run() {
 # never break out of the marker.
 post_reviews_terminal() {
   local intent="$1" status="${2:-applied}" summary="${3:-}"
+  # #2037: a comment the resolver failed to unminimize stays RESOLVED without a
+  # verified disposition. An applied/no-changes marker would record the pass as a
+  # success, and the retry cron and the #2008 stale-edit dedup would then skip it.
+  # Downgrade to partial, which neither counts as done. The cron does not
+  # re-dispatch a partial marker itself (that would loop on a persistent unminimize
+  # failure); the next pass for this PR re-attempts the comment.
+  if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+    case "$status" in
+      applied|no-changes)
+        status="partial"
+        local msg="**Not complete:** a dispositioned PR comment could not be re-opened (unminimize failed), so it stays resolved without a verified disposition. It needs another dev-lead pass."
+        if [ -n "$summary" ]; then
+          summary="${summary}
+
+${msg}"
+        else
+          summary="$msg"
+        fi
+        ;;
+    esac
+  fi
   local sha_part="" comment_part="" read_part=""
   [ -n "${HEAD_SHA:-}" ] && sha_part=" sha=${HEAD_SHA}"
   if [ "$intent" = "fix-bot-comment" ] && [[ "${COMMENT_NODE_ID:-}" =~ ^[-A-Za-z0-9_+/=]+$ ]]; then
@@ -669,6 +695,71 @@ resolve_bot_outdated_threads() {
   echo "::notice::resolve_bot_outdated_threads: resolved ${resolved_count} outdated bot thread(s) on PR #${PR_NUMBER}"
 }
 
+# list_unresolved_bot_thread_ids: prints the ids of PR_NUMBER's unresolved review
+# threads whose ORIGINATING comment is from a bot (__typename Bot, or a login with
+# the [bot] suffix), one per line. Candidates only — callers re-read each thread
+# before resolving it. Paginated via cursor (GraphQL 100/page max). Shared by
+# resolve_addressed_bot_threads and resolve_deferred_bot_threads.
+list_unresolved_bot_thread_ids() {
+  local ids=""
+  local cursor="" prev_cursor="" has_next_page="true" page_response page_ids
+  local cursor_args=()
+  local bot_threads_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{
+            id isResolved
+            origin: comments(first:1){nodes{author{login __typename}}}
+          }
+        }
+      }
+    }
+  }'
+  while [ "$has_next_page" = "true" ]; do
+    prev_cursor="$cursor"
+    page_response=$(gh api graphql -f query="$bot_threads_query" \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      "${cursor_args[@]}" 2>/dev/null) || {
+      echo "::error::failed to enumerate review threads for PR #${PR_NUMBER}" >&2
+      return 1
+    }
+    if ! printf '%s' "$page_response" | jq -e '
+        ((.errors // []) | length) == 0
+        and ((.data?.repository?.pullRequest?.reviewThreads?.nodes? | type) == "array")
+        and ((.data.repository.pullRequest.reviewThreads.pageInfo?.hasNextPage? | type) == "boolean")
+        and (.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage == false
+             or ((.data.repository.pullRequest.reviewThreads.pageInfo.endCursor? | type) == "string"
+                 and (.data.repository.pullRequest.reviewThreads.pageInfo.endCursor | length) > 0))' \
+        >/dev/null 2>&1; then
+      echo "::error::review-thread page for PR #${PR_NUMBER} returned an error or malformed response" >&2
+      return 1
+    fi
+    page_ids=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
+       | map(select(.isResolved == false
+                    and (((.origin.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                         or ((.origin.nodes?[0]?.author?.__typename // "") == "Bot"))))
+       | .[] | .id' 2>/dev/null || true)
+    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
+    has_next_page=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+      2>/dev/null || echo "false")
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+      2>/dev/null || echo "")
+    [ -z "$cursor" ] && has_next_page="false"
+    # A cursor that does not advance would re-read the same page forever.
+    if [ "$has_next_page" = "true" ] && [ "$cursor" = "$prev_cursor" ]; then
+      echo "::error::review-thread pagination for PR #${PR_NUMBER} did not advance (endCursor unchanged)" >&2
+      return 1
+    fi
+    cursor_args=("-f" "cursor=${cursor}")
+  done
+  printf '%s\n' "$ids" | sed '/^[[:space:]]*$/d'
+}
+
 # resolve_addressed_bot_threads: resolves bot-originated review threads that dev-lead
 # has already ADDRESSED in-thread but left unresolved (#1547). Every pr-quality ruleset
 # sets required_review_thread_resolution:true, so such a thread — replied-to with
@@ -723,42 +814,13 @@ resolve_addressed_bot_threads() {
   # resolution (#codeant-623) and (b) resolve a thread a maintainer has since
   # replied to (#codeant-666). The authorizing state is re-read per candidate via a
   # fresh node(id) fetch taken immediately before the mutation below.
-  local ids=""
-  local cursor="" has_next_page="true" page_response page_ids
-  local cursor_args=()
-  local addressed_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
-    repository(owner:$owner,name:$repo){
-      pullRequest(number:$pr){
-        reviewThreads(first:100,after:$cursor){
-          pageInfo{hasNextPage endCursor}
-          nodes{
-            id isResolved
-            origin: comments(first:1){nodes{author{login __typename}}}
-          }
-        }
-      }
-    }
-  }'
-  while [ "$has_next_page" = "true" ]; do
-    page_response=$(gh api graphql -f query="$addressed_query" \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      "${cursor_args[@]}" 2>/dev/null || echo "{}")
-    page_ids=$(printf '%s' "$page_response" | jq -r \
-      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
-       | map(select(.isResolved == false
-                    and (((.origin.nodes?[0]?.author?.login // "") | endswith("[bot]"))
-                         or ((.origin.nodes?[0]?.author?.__typename // "") == "Bot"))))
-       | .[] | .id' 2>/dev/null || true)
-    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
-    has_next_page=$(printf '%s' "$page_response" | jq -r \
-      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
-      2>/dev/null || echo "false")
-    cursor=$(printf '%s' "$page_response" | jq -r \
-      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
-      2>/dev/null || echo "")
-    [ -z "$cursor" ] && has_next_page="false"
-    cursor_args=("-f" "cursor=${cursor}")
-  done
+  local ids
+  # A failed enumeration (e.g. a later pagination page) must not read as "no
+  # candidates": propagate it so the caller records the pass as failed.
+  ids=$(list_unresolved_bot_thread_ids) || {
+    echo "::error::resolve_addressed_bot_threads: could not enumerate review threads on PR #${PR_NUMBER}"
+    return 1
+  }
 
   if [ -z "$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no addressed unresolved bot threads on PR #${PR_NUMBER}"
@@ -1008,6 +1070,264 @@ rdc_find_fixing_commit() {
   return 1
 }
 
+# resolve_deferred_bot_threads: resolves bot-originated review threads whose finding
+# dev-lead judged valid but OUT OF SCOPE and deferred to a tracking issue (#2045) —
+# the review-thread sibling of the issue-comment `out-of-scope` disposition (#1813).
+# Before this, a deferral was a marker-less skip note, so the thread stayed
+# unresolved forever under required_review_thread_resolution (PR #1953: five Codex
+# threads, hand-resolved by a maintainer).
+#
+# A thread is resolved only when ALL of these hold on a fresh re-read:
+#   - it is unresolved and bot-originated (never a maintainer thread, #1415);
+#   - OUR account's latest reply carries exactly one
+#     `<!-- dev-lead:deferred ref=#<n> -->` (dtv_parse_deferral);
+#   - nothing unaddressed landed after that reply (acv_post_marker_clear, #1735);
+#   - no marker-less maintainer asserted a "required" disposition anywhere in the
+#     thread (acv_latest_maintainer_disposition). A deferral fixes nothing, so it
+#     can never overrule one, older or newer; an unparseable one fails closed;
+#   - #<n> is an open issue (not a PR) whose body or comments link this thread
+#     (dtv_verify_tracking_issue).
+# Any failed check leaves the thread open (fail closed).
+#
+# A deferral produces no commit, so callers run this OUTSIDE the #1617 head-advance
+# resolution gate — on commit and no-commit passes alike.
+# _dtv_fetch_and_verify_tracker <ref> <thread_id> <origin_db_id>: fetches the
+# tracking issue and its comments fresh and runs dtv_verify_tracking_issue on them.
+# Echoes the verdict and returns its status; an unreadable issue fails closed.
+_dtv_fetch_and_verify_tracker() {
+  local ref="$1" thread_id="$2" origin_db_id="$3"
+  local issue_json issue_comments
+  local issue_err
+  issue_err=$(mktemp 2>/dev/null) || issue_err="/dev/null"
+  if ! issue_json=$(gh api "repos/${REPO}/issues/${ref}" 2>"$issue_err"); then
+    # Only a genuine 404 means the issue is missing. Any other failure (5xx, rate
+    # limit, network) fails closed as unreadable so the caller counts it.
+    # gh writes the error body to stdout (captured in issue_json) and the status to stderr.
+    # Require the explicit status (stderr `(HTTP 404)`) or the exact error object
+    # (`{"message":"Not Found"}`); arbitrary "Not Found" text must not downgrade.
+    if ! { grep -qE '\(HTTP 404\)' "$issue_err" 2>/dev/null \
+           || printf '%s' "$issue_json" | jq -e 'type == "object" and .message == "Not Found" and ((.status // "404") | tostring) == "404"' >/dev/null 2>&1; }; then
+      [ "$issue_err" != "/dev/null" ] && rm -f "$issue_err"
+      echo "issue-unreadable"
+      return 2
+    fi
+    issue_json=""
+  fi
+  [ "$issue_err" != "/dev/null" ] && rm -f "$issue_err"
+  # A failed page must not read as "no comments" (that would surface as no-mention
+  # and skip the thread without counting a failure): fail closed as unreadable.
+  local raw_comments
+  if [ -z "$issue_json" ]; then
+    # Confirmed nonexistent issue (404): the verifier reports `missing`; no comments to fetch.
+    dtv_verify_tracking_issue "" "[]" "$thread_id" "$origin_db_id" "$REPO" "$PR_NUMBER"
+    return
+  fi
+  raw_comments=$(gh api --paginate "repos/${REPO}/issues/${ref}/comments?per_page=100" 2>/dev/null) || {
+    echo "comments-unreadable"
+    return 2
+  }
+  issue_comments=$(printf '%s' "$raw_comments" | jq -cs 'add // []' 2>/dev/null) || {
+    echo "comments-unreadable"
+    return 2
+  }
+  dtv_verify_tracking_issue "$issue_json" "$issue_comments" "$thread_id" "$origin_db_id" "$REPO" "$PR_NUMBER"
+}
+
+resolve_deferred_bot_threads() {
+  local intent="$1"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would resolve deferred review threads from bot reviewers on PR #${PR_NUMBER}"
+    return 0
+  fi
+  if [ -z "${PR_NUMBER:-}" ]; then
+    echo "::notice::resolve_deferred_bot_threads: PR_NUMBER not set for intent=${intent} — skipping"
+    return 0
+  fi
+
+  local bot_user="${BOT_USER:-donpetry-bot}"
+  local ids
+  ids=$(list_unresolved_bot_thread_ids) || {
+    echo "::error::resolve_deferred_bot_threads: could not enumerate review threads on PR #${PR_NUMBER}"
+    return 1
+  }
+  if [ -z "$ids" ]; then
+    echo "::notice::no unresolved bot threads to check for deferrals on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  local node_query='query($id:ID!){
+    node(id:$id){
+      ... on PullRequestReviewThread {
+        isResolved
+        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} body createdAt lastEditedAt fullDatabaseId}}
+      }
+    }
+  }'
+
+  # ok | more (a second page of comments) | unknown (errors or a malformed connection).
+  local snapshot_state_jq='if ((.errors // []) | length) > 0 then "unknown"
+    elif (.data.node.comments.nodes | type) != "array" then "unknown"
+    elif (.data.node.comments.pageInfo.hasNextPage | type) != "boolean" then "unknown"
+    elif .data.node.comments.pageInfo.hasNextPage then "more" else "ok" end'
+  local resolved_count=0 failed_count=0
+  local id node_json cur_resolved comments_json origin_bot reply_idx reply_body
+  local ref parse_rc post_reason post_rc disp_rc origin_db_id
+  local verdict
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    # An unreadable candidate snapshot is a resolver failure, not "not resolvable":
+    # a verified deferral may remain merge-blocking and a terminal marker may already
+    # suppress retry, so surface it via failed_count.
+    node_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null) || node_json=""
+    cur_resolved=$(printf '%s' "$node_json" | jq -r \
+      'if .data.node.isResolved == null then "unknown"
+       elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+    if [ "$cur_resolved" = "unknown" ]; then
+      echo "::warning::could not read review thread ${id} while checking deferrals"
+      failed_count=$((failed_count + 1))
+      continue
+    fi
+    [ "$cur_resolved" = "false" ] || continue
+    # A partial snapshot (GraphQL errors, or a comments connection without a nodes
+    # array or boolean pagination) is unreadable, not "no deferral": counting it as
+    # empty would let the caller post a terminal over an unevaluated thread.
+    local page_state
+    page_state=$(printf '%s' "$node_json" | jq -r "$snapshot_state_jq" 2>/dev/null || echo unknown)
+    if [ "$page_state" = "unknown" ]; then
+      echo "::warning::partial snapshot of review thread ${id} while checking deferrals"
+      failed_count=$((failed_count + 1))
+      continue
+    fi
+    # Fail closed on a thread longer than one page: later replies could supersede
+    # the deferral and we would not see them.
+    if [ "$page_state" = "more" ]; then
+      echo "::notice::skipping thread ${id} — more than 100 comments; leaving unresolved (#2045)"
+      continue
+    fi
+    comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes' 2>/dev/null || echo "[]")
+
+    # Re-check the bot origin on the fresh read: a maintainer thread is never ours
+    # to resolve (#1415), even if the enumeration snapshot said otherwise.
+    origin_bot=$(printf '%s' "$comments_json" | jq -r \
+      '.[0].author as $a | if (($a.__typename // "") == "Bot") or (($a.login // "") | endswith("[bot]"))
+       then "yes" else "no" end' 2>/dev/null || echo "no")
+    [ "$origin_bot" = "yes" ] || continue
+
+    # Expected nonzero returns are captured via `||` so `set -e` never aborts the pass.
+    reply_idx=$(dtv_latest_own_reply_index "$comments_json" "$bot_user") || continue
+    [ -n "$reply_idx" ] || continue
+    reply_body=$(printf '%s' "$comments_json" | jq -r --argjson i "$reply_idx" '.[$i].body // ""' 2>/dev/null || echo "")
+    parse_rc=0
+    ref=$(dtv_parse_deferral "$reply_body") || parse_rc=$?
+    if [ "$parse_rc" -ne 0 ]; then
+      # Most threads simply carry no deferral. A malformed deferral attempt is a
+      # failure, not a skip: the thread stays merge-blocking, so no terminal may be
+      # posted over it and the pass must stay retryable.
+      if [ "$ref" != "no-deferral" ]; then
+        echo "::warning::thread ${id} — deferral marker not verifiable (${ref}); leaving unresolved (#2045)"
+        failed_count=$((failed_count + 1))
+      fi
+      continue
+    fi
+
+    # A finding edited after our deferral was not the finding we deferred (#2008):
+    # leave it for the next pass. An unreadable edit time fails closed the same way.
+    local edited_after
+    edited_after=$(printf '%s' "$comments_json" | jq -r --argjson i "$reply_idx" '
+      .[0] as $o | (.[$i].createdAt // "") as $r
+      | if ($o | type) != "object" or ($o | has("lastEditedAt") | not) or $r == "" then "unknown"
+        elif $o.lastEditedAt == null then "no"
+        elif ($o.lastEditedAt | type) != "string" then "unknown"
+        elif $o.lastEditedAt > $r then "yes" else "no" end' 2>/dev/null || echo "unknown")
+    if [ "$edited_after" = "yes" ]; then
+      echo "::notice::skipping thread ${id} — the bot finding was edited after our deferral; leaving unresolved (#2045)"
+      continue
+    elif [ "$edited_after" != "no" ]; then
+      # Unreadable is a resolver failure, not a skip: a terminal marker must not
+      # be posted over a thread we could not evaluate.
+      echo "::warning::could not read the edit time of review thread ${id} while checking deferrals"
+      failed_count=$((failed_count + 1))
+      continue
+    fi
+
+    post_rc=0
+    post_reason=$(acv_post_marker_clear "$comments_json" "$reply_idx" "$bot_user") || post_rc=$?
+    if [ "$post_rc" -ne 0 ]; then
+      echo "::notice::skipping thread ${id} — an unaddressed comment landed after our deferral (${post_reason}); leaving unresolved (#2045)"
+      continue
+    fi
+
+    # Pass a sentinel instead of ${bot_user}: in production BOT_USER is the same
+    # account the human maintainer uses, so excluding by login would hide the
+    # maintainer's own "required" disposition. The marker (our deferral reply carries
+    # `<!-- dev-lead:deferred`) is what tells our comments apart.
+    acv_latest_maintainer_disposition "$comments_json" "__no-such-account__" >/dev/null && disp_rc=0 || disp_rc=$?
+    if [ "$disp_rc" -ne 1 ]; then
+      echo "::notice::skipping thread ${id} — a maintainer disposition is present (or unparseable); a deferral cannot overrule it; leaving unresolved (#2045)"
+      continue
+    fi
+
+    # fullDatabaseId (BigInt, a JSON string): comment ids now exceed the 32-bit
+    # Int that `databaseId` returns. Without a readable id the tracker cannot be
+    # matched by its `#discussion_r<id>` link, so the thread is a failure.
+    origin_db_id=$(printf '%s' "$comments_json" | jq -r '.[0].fullDatabaseId // "" | tostring' 2>/dev/null || echo "")
+    if ! [[ "$origin_db_id" =~ ^[1-9][0-9]*$ ]]; then
+      echo "::warning::could not read the originating comment id of review thread ${id} while checking deferrals"
+      failed_count=$((failed_count + 1))
+      continue
+    fi
+    local verdict_rc=0
+    verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
+    if [ "$verdict_rc" -ne 0 ]; then
+      { [ "$verdict" = "comments-unreadable" ] || [ "$verdict" = "issue-unreadable" ]; } && failed_count=$((failed_count + 1))
+      echo "::notice::skipping thread ${id} — tracking issue #${ref} cannot back the deferral (${verdict}); leaving unresolved (#2045)"
+      continue
+    fi
+
+    # Re-fetch and re-verify the tracking issue immediately before the mutation: it
+    # may have been closed, converted, or edited to drop the thread link meanwhile.
+    verdict_rc=0
+    verdict=$(_dtv_fetch_and_verify_tracker "$ref" "$id" "$origin_db_id") || verdict_rc=$?
+    if [ "$verdict_rc" -ne 0 ]; then
+      { [ "$verdict" = "comments-unreadable" ] || [ "$verdict" = "issue-unreadable" ]; } && failed_count=$((failed_count + 1))
+      echo "::notice::skipping thread ${id} — tracking issue #${ref} no longer backs the deferral (${verdict}); leaving unresolved (#2045)"
+      continue
+    fi
+
+    # The tracking-issue calls above took time: as the LAST read before the mutation,
+    # re-read the thread and require it to be unchanged (still unresolved, same
+    # comments) so a reply that landed meanwhile is never overridden.
+    local fresh_json fresh_comments
+    fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null) || fresh_json=""
+    if [ "$(printf '%s' "$fresh_json" | jq -r 'if .data.node.isResolved == null then "unknown" else "ok" end' 2>/dev/null || echo unknown)" = "unknown" ] \
+       || [ "$(printf '%s' "$fresh_json" | jq -r "$snapshot_state_jq" 2>/dev/null || echo unknown)" = "unknown" ]; then
+      echo "::warning::could not re-read review thread ${id} before resolving its deferral"
+      failed_count=$((failed_count + 1))
+      continue
+    fi
+    fresh_comments=$(printf '%s' "$fresh_json" | jq -c \
+      'if .data.node.isResolved == false and .data.node.comments.pageInfo.hasNextPage == false
+       then .data.node.comments.nodes else "changed" end' 2>/dev/null || echo '"changed"')
+    if [ "$fresh_comments" != "$comments_json" ]; then
+      echo "::notice::skipping thread ${id} — thread changed while verifying the tracking issue; leaving unresolved (#2045)"
+      continue
+    fi
+
+    resolve_resp=$(gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+        -f id="$id" 2>/dev/null) || resolve_resp=""
+    if [ "$(printf '%s' "$resolve_resp" | jq -r '.data.resolveReviewThread.thread.isResolved // false' 2>/dev/null)" = "true" ]; then
+      resolved_count=$((resolved_count + 1))
+      echo "::notice::resolved deferred bot thread ${id} (tracked in #${ref})"
+    else
+      echo "::warning::failed to resolve deferred bot thread ${id}"
+      failed_count=$((failed_count + 1))
+    fi
+  done <<< "$ids"
+  echo "::notice::resolve_deferred_bot_threads: resolved ${resolved_count} deferred bot thread(s) on PR #${PR_NUMBER}"
+  # A verified deferral whose resolve mutation failed must not read as success.
+  [ "$failed_count" -eq 0 ]
+}
+
 # resolve_dispositioned_comments: the issue-comment sibling of
 # resolve_addressed_bot_threads (#1813). A PR *issue comment* (from `gh pr comment`
 # or the GitHub main comment box) creates no review thread, so it is invisible to
@@ -1142,6 +1462,10 @@ resolve_dispositioned_comments() {
   #       like any other: on success the stale reply goes OUTDATED, on failure the
   #       comment is unminimized (fail closed).
   local reopen_ids reverify_ids rid
+  # #2037: set on any unminimize failure. Such a comment stays RESOLVED and the
+  # gate clears it, so the pass must not end as a success. Every candidate is
+  # still processed, then the function returns non-zero.
+  local unminimize_failed=0
   reopen_ids=$(maintainer_gate_reopen_candidates "$all_comments" "$bot_user" 2>/dev/null \
     | jq -r '.[]?' 2>/dev/null || true)
   while IFS= read -r rid; do
@@ -1150,7 +1474,8 @@ resolve_dispositioned_comments() {
         -f id="$rid" >/dev/null 2>&1; then
       echo "::notice::unminimized comment ${rid} — edited after its latest disposition (or its disposition cannot cover a finding-bearing body); it needs a fresh disposition (#2008)"
     else
-      echo "::warning::failed to unminimize comment ${rid} (edited after its latest disposition); the maintainer-comment gate still blocks on it (#2008)"
+      echo "::warning::failed to unminimize comment ${rid} (edited after its latest disposition); it stays RESOLVED (#2008, #2037)"
+      unminimize_failed=1
     fi
   done <<< "$reopen_ids"
   reverify_ids=$(printf '%s' "$all_comments" | jq -r --arg reopen "$reopen_ids" '
@@ -1169,6 +1494,7 @@ resolve_dispositioned_comments() {
 
   if [ -z "$(printf '%s' "$candidate_ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no undispositioned PR issue comments on PR #${PR_NUMBER}"
+    _rdc_unminimize_status "$unminimize_failed" || return 1
     return 0
   fi
 
@@ -1259,6 +1585,7 @@ resolve_dispositioned_comments() {
           echo "::notice::unminimized comment ${cid} — unreadable edit/disposition timestamp (#2008)"
         else
           echo "::warning::failed to unminimize comment ${cid} with an unreadable edit/disposition timestamp (#2008)"
+          unminimize_failed=1
         fi
         continue
       fi
@@ -1299,9 +1626,11 @@ resolve_dispositioned_comments() {
           echo "::notice::skipping comment ${cid} — a \`fixed\` disposition is not certified on a failed pass (its commit may not have been pushed); leaving open (#1992)"
           if [ "$reverify" = "true" ]; then
             # Already RESOLVED with a stale body: fail closed by re-opening it.
-            gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
-              -f id="$cid" >/dev/null 2>&1 \
-              || echo "::error::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)" >&2
+            if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                -f id="$cid" >/dev/null 2>&1; then
+              echo "::error::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)" >&2
+              unminimize_failed=1
+            fi
           fi
           continue
         fi
@@ -1339,9 +1668,11 @@ resolve_dispositioned_comments() {
             echo "::warning::comment ${cid}: its body changed or could not be re-read since it was captured; no correction posted, it stays open for a disposition of the current body (#2004)"
             if [ "$reverify" = "true" ]; then
               # Already RESOLVED: a changed body must not stay minimized (#2008).
-              gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
-                -f id="$cid" >/dev/null 2>&1 \
-                || echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+              if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                  -f id="$cid" >/dev/null 2>&1; then
+                echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                unminimize_failed=1
+              fi
             fi
             continue
           fi
@@ -1359,9 +1690,11 @@ resolve_dispositioned_comments() {
                 echo "::warning::comment ${cid}: its body changed while the correction was posted; leaving it open for a disposition of the current body (#2004)"
                 if [ "$reverify" = "true" ]; then
                   # Already RESOLVED: a changed body must not stay minimized (#2008).
-                  gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
-                    -f id="$cid" >/dev/null 2>&1 \
-                    || echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                  if ! gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+                      -f id="$cid" >/dev/null 2>&1; then
+                    echo "::error::failed to unminimize comment ${cid} after its body changed (#2008)" >&2
+                    unminimize_failed=1
+                  fi
                 fi
                 continue
               fi
@@ -1432,6 +1765,7 @@ resolve_dispositioned_comments() {
           echo "::notice::unminimized comment ${cid} — its post-edit disposition did not verify (#2008)"
         else
           echo "::warning::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)"
+          unminimize_failed=1
         fi
       fi
       continue
@@ -1504,6 +1838,18 @@ resolve_dispositioned_comments() {
     fi
   done <<< "$candidate_ids"
   echo "::notice::resolve_dispositioned_comments: minimized ${resolved_count} dispositioned comment(s) on PR #${PR_NUMBER}"
+  _rdc_unminimize_status "$unminimize_failed" || return 1
+}
+
+# _rdc_unminimize_status <unminimize_failed> — resolve_dispositioned_comments'
+# return status (#2037): non-zero when any comment that needed re-opening could
+# not be unminimized, so the caller ends the pass partial instead of applied.
+_rdc_unminimize_status() {
+  if [ "${1:-0}" -ne 0 ]; then
+    echo "::error::resolve_dispositioned_comments: failed to unminimize at least one comment on PR #${PR_NUMBER} — it stays RESOLVED without a verified disposition, so this pass must not end as a success (#2037)" >&2
+    return 1
+  fi
+  return 0
 }
 
 # ── CI blocking gate (#1859, completes #1795) ─────────────────────────────────
@@ -2047,8 +2393,11 @@ has_reviews_rate_limited_marker() {
   local sha="${HEAD_SHA:-}"
   [ -z "$sha" ] && return 1  # no SHA means no dedup possible
   local status_token="rate-limited"
-  [ "$reason" = "blocked" ] && status_token="blocked"
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=${status_token}"
+  { [ "$reason" = "blocked" ] || [ "$reason" = "resolve-failed" ]; } && status_token="blocked"
+  # Match the reason too: blocked and resolve-failed share status=blocked, and a
+  # change of hold reason must still notify the requester. A legacy marker with no
+  # reason= field (pre-#1568) still dedups on its status alone.
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=${status_token}( reason=${reason}( |$)| reset=| -->|$)"
   local count
   count=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -c --arg pat "$pattern" '[.[] | select(.body | test($pat))] | length' 2>/dev/null \
@@ -2084,7 +2433,9 @@ post_reviews_rate_limited() {
   # The blocked path owns its backoff: a fixed 30-minute reset so the retry cron
   # backs off instead of re-dispatching immediately. The rate-limit path's reset
   # is parsed from engine output (parse_reset_time) before this function is called.
-  if [ "$reason" = "blocked" ]; then
+  # resolve-failed (a thread/comment resolution or finalization failure) is not a
+  # quota hold either: it takes the same non-quota status and backoff (#2045).
+  if [ "$reason" = "blocked" ] || [ "$reason" = "resolve-failed" ]; then
     printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
   fi
 
@@ -2135,13 +2486,19 @@ post_reviews_rate_limited() {
   # for visible-text selection + marker forensics. The retry cron and marker dedup
   # patterns match `status=(rate-limited|blocked)`, so both tokens re-dispatch.
   local status_token="rate-limited"
-  [ "$reason" = "blocked" ] && status_token="blocked"
+  { [ "$reason" = "blocked" ] || [ "$reason" = "resolve-failed" ]; } && status_token="blocked"
   local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=${status_token} reason=${reason}${reset_detail} -->"
 
   # Retry message depends on the reason and on whether the intent can be
   # re-dispatched automatically.
   local heading retry_msg
-  if [ "$reason" = "blocked" ]; then
+  if [ "$reason" = "resolve-failed" ]; then
+    heading="## Dev-Lead — could not finish resolving review items (intent: ${intent})"
+    retry_msg="A review-thread or comment resolution step failed after the fix pass, so the pass was not marked done. The retry cron will re-attempt automatically."
+    if [ -n "$reset_time" ]; then
+      retry_msg="${retry_msg} Next attempt after: \`${reset_time}\`"
+    fi
+  elif [ "$reason" = "blocked" ]; then
     heading="## Dev-Lead — waiting on PR blockers (intent: ${intent})"
     retry_msg="No changes were committed, but the PR still can't be marked done: $(blocking_reason_phrase). The retry cron will re-attempt automatically."
     if [ -n "$reset_time" ]; then
@@ -2201,7 +2558,12 @@ ${retry_msg}"
         [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
         local reset_display="${reset_time:-unknown}"
         local ack_body
-        if [ "$reason" = "blocked" ]; then
+        if [ "$reason" = "resolve-failed" ]; then
+          ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
+> ${actor_mention}I worked through this PR, but a review-thread or comment resolution step failed, so I can't mark it done yet. I'll retry automatically.
+> Next attempt after: \`${reset_display}\`"
+        elif [ "$reason" = "blocked" ]; then
           ack_body="<!-- dev-lead rate-limit-ack -->
 > [!NOTE]
 > ${actor_mention}I reviewed this PR and no code changes were needed, but I can't mark it done yet: $(blocking_reason_phrase). I'll re-check automatically.
@@ -2237,6 +2599,7 @@ ${retry_msg}"
   fi
 }
 
+# handle_rate_limit <intent>: posts a rate-limited marker and exits when all engines hit rate limits.
 handle_rate_limit() {
   local intent="$1"
   echo "::warning::All engines rate-limited for intent=${intent} — posting rate-limited marker"
@@ -2652,8 +3015,10 @@ clear_not_applied_markers() {
   local ids id
   # No error masking: a failing gh api|jq must abort loudly rather than silently
   # skip the clear, which would leave a stale non-convergence count behind.
+  # Explicit `|| return 1`: callers invoke this on the left of `||`, where errexit
+  # does not apply.
   ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" \
-    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | .[].id')
+    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | .[].id') || return 1
   # Split safely into an array (IFS scoped to read) so no glob metacharacter in
   # the id list undergoes pathname expansion.
   local -a ids_arr=()
@@ -2661,7 +3026,7 @@ clear_not_applied_markers() {
     IFS=$'\n' read -r -d '' -a ids_arr <<< "$ids" || true
   fi
   for id in "${ids_arr[@]}"; do
-    gh api -X DELETE "repos/${REPO}/issues/comments/${id}"
+    gh api -X DELETE "repos/${REPO}/issues/comments/${id}" || return 1
   done
 }
 
@@ -2736,7 +3101,7 @@ finalize_review_application() {
 
   case "$verdict" in
     applied)
-      clear_not_applied_markers "$intent"
+      clear_not_applied_markers "$intent" || return 1
       local summary="Changes committed and pushed."
       [ -n "$enumerated" ] && summary="Changes committed and pushed. Requested items addressed:
 ${enumerated}"
@@ -2746,7 +3111,7 @@ ${enumerated}"
       # Progress was made (some named region was touched), so the run of
       # consecutive zero-progress passes is broken — reset the not-applied
       # counter so old cycles cannot trigger premature escalation (#1567).
-      clear_not_applied_markers "$intent"
+      clear_not_applied_markers "$intent" || return 1
       # The requested changes are not fully applied — do not let this pass become
       # auto-mergeable.
       _REVIEW_INCOMPLETE=1
@@ -2800,6 +3165,21 @@ ${enumerated}"
 # - Falls back to cp_rc == 0 ONLY when a SHA is genuinely unavailable (base snapshot
 #   unset or `git rev-parse HEAD` unresolvable), so a pass that legitimately pushed a
 #   commit is never wrongly gated shut just because the runner cannot report a SHA.
+# post_resolve_failed_marker <intent> <cp_rc>: posts the resolve-failed retry marker
+# keyed to the PR's CURRENT head (#2045). dev-lead-retry.sh scans only markers on
+# the current head, and after a successful push (cp_rc 0) HEAD_SHA still holds the
+# pre-pass head until try_enable_auto_merge refreshes it, so a marker keyed to it
+# would never be retried.
+post_resolve_failed_marker() {
+  local intent="$1" cp_rc="${2:-1}"
+  local HEAD_SHA="${HEAD_SHA:-}" pushed_head
+  if [ "$cp_rc" -eq 0 ]; then
+    pushed_head=$(git rev-parse HEAD 2>/dev/null || true)
+    [ -n "$pushed_head" ] && HEAD_SHA="$pushed_head"
+  fi
+  post_reviews_rate_limited "$intent" "resolve-failed"
+}
+
 resolution_gate_open() {
   local cp_rc="${1:-1}"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
@@ -2848,9 +3228,48 @@ case "$INTENT_TYPE" in
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
       retract_unlanded_claims "fix-reviews" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
+      # Deliberately OUTSIDE the review-thread resolution gate: each disposition is
+      # verified on its own terms (a `fixed` sha must be on head; out-of-scope needs
+      # a tracking issue; invalid/answered/informational need a non-empty evidence
+      # reply), so an answered/invalid disposition requires no head advance. Runs on
+      # every successful pass, including a net-zero one where the model only replied.
+      # Runs BEFORE the terminal marker (#2037): if a comment could not be
+      # unminimized, post_reviews_terminal downgrades applied/no-changes to partial.
+      if [ "$cp_rc" -eq 4 ]; then
+        resolve_dispositioned_comments "fix-reviews" failed || _DISPOSITIONS_UNRESOLVED=1
+      else
+        resolve_dispositioned_comments "fix-reviews" || _DISPOSITIONS_UNRESOLVED=1
+      fi
+      # Deferred bot threads (#2045) resolve BEFORE any terminal marker is posted: a
+      # failed resolution must leave no `applied`/`no-changes` terminal, because
+      # dev-lead-retry.sh skips an intent+SHA that has one and the thread would stay
+      # merge-blocking forever. They are verified against their tracking issue, not
+      # the diff, so they run outside the head-advance gate and on guard aborts too.
+      deferred_rc=0
+      resolve_deferred_bot_threads "fix-reviews" || deferred_rc=1
+      if [ "$deferred_rc" -ne 0 ]; then
+        rc=1
+        echo "::warning::fix-reviews: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
+        # Not fully applied: never let this pass become auto-mergeable (#1567), and
+        # drop the EXIT-trap restore so auto-merge held off at the start stays off.
+        _REVIEW_INCOMPLETE=1
+        _AM_NEEDS_RESTORE=0
+        # dev-lead-retry.sh re-dispatches only on a retry marker; a merely absent
+        # terminal is never retried. Guard aborts (3/4) are flagged for a human.
+        if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
+          post_resolve_failed_marker "fix-reviews" "$cp_rc"
+        fi
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
-        finalize_review_application "fix-reviews"
+        if [ "$deferred_rc" -eq 0 ]; then
+          finalize_review_application "fix-reviews" || {
+            echo "::warning::fix-reviews: finalize_review_application failed — posting retry marker"
+            post_resolve_failed_marker "fix-reviews" "$cp_rc"
+            rc=1
+          }
+        fi
       elif [ "$cp_rc" -eq 3 ]; then
         # No-op guard (#1340): the fix nets base…head to zero — already flagged
         # for a human, auto-merge disabled. Post no applied/no-changes/retry
@@ -2865,22 +3284,9 @@ case "$INTENT_TYPE" in
           post_reviews_rate_limited "fix-reviews" "blocked"
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
-        else
+        elif [ "$deferred_rc" -eq 0 ]; then
           post_no_changes "fix-reviews"
         fi
-      fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
-      # Deliberately OUTSIDE the review-thread resolution gate: each disposition is
-      # verified on its own terms (a `fixed` sha must be on head; out-of-scope needs
-      # a tracking issue; invalid/answered/informational need a non-empty evidence
-      # reply), so an answered/invalid disposition requires no head advance. Runs on
-      # every successful pass, including a net-zero one where the model only replied.
-      # A tamper-guard abort (rc 4) pushed nothing: a `fixed` disposition would cite a
-      # local commit that never landed, so treat it like a failed pass (#2013).
-      if [ "$cp_rc" -eq 4 ]; then
-        resolve_dispositioned_comments "fix-reviews" failed
-      else
-        resolve_dispositioned_comments "fix-reviews"
       fi
       if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
@@ -2890,14 +3296,22 @@ case "$INTENT_TYPE" in
           resolve_actor_outdated_threads "fix-reviews"
           # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
           # these are not necessarily outdated, so the nets above miss them.
-          resolve_addressed_bot_threads "fix-reviews"
+          resolve_addressed_bot_threads "fix-reviews" || rc=1
         else
           echo "::notice::resolution gate closed (#1609): the fix-reviews pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
-        # Never auto-merge an escalated or not-fully-applied review pass (#1567).
-        if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
+        # Never auto-merge an escalated or not-fully-applied review pass (#1567),
+        # nor one that left a comment RESOLVED it failed to re-open (#2037).
+        if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ] \
+           && [ "${_DISPOSITIONS_UNRESOLVED:-0}" -ne 1 ]; then
           try_enable_auto_merge
         fi
+      fi
+      # #2037: the pass ends failed so it is visibly not done. Also drop the EXIT-trap
+      # auto-merge restore, or it would re-enable merge over a RESOLVED comment.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
       fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992). The engine
@@ -2910,9 +3324,15 @@ case "$INTENT_TYPE" in
       # (A hard action-budget SIGKILL that kills the process mid-step can't be
       # recovered in-process — but the next pass self-heals via the idempotent
       # posting + duplicate recovery above.)
-      resolve_dispositioned_comments "fix-reviews" failed
+      resolve_dispositioned_comments "fix-reviews" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed fix-reviews pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-reviews" failed || true
+      # A deferral is verified against its tracking issue, not a commit, so it can
+      # clear even when the engine failed after posting it. A failed pass posts no
+      # marker and the bot-thread retry skips replied threads, so a resolver failure
+      # here needs its own retry marker (the pass keeps its exit code).
+      resolve_deferred_bot_threads "fix-reviews" || post_resolve_failed_marker "fix-reviews" 1 || true
     fi
     exit "$rc"
     ;;
@@ -2935,6 +3355,16 @@ case "$INTENT_TYPE" in
       # Retract every claim reply this pass posted whose commit did not land on the
       # remote head — no commit, a guard abort, or a stale pre-pass SHA (#2013).
       retract_unlanded_claims "fix-bot-comment" "$([ "$cp_rc" -eq 0 ] && echo ok || echo failed)" || { [ "$cp_rc" -ne 0 ] || cp_rc=1; }
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
+      # Outside the review-thread resolution gate for the same reason as fix-reviews:
+      # each disposition is independently verified, so a non-`fixed` disposition
+      # needs no head advance. Runs on every successful pass, net-zero included.
+      # Runs BEFORE the terminal marker (#2037) — see fix-reviews above.
+      if [ "$cp_rc" -eq 4 ]; then
+        resolve_dispositioned_comments "fix-bot-comment" failed || _DISPOSITIONS_UNRESOLVED=1
+      else
+        resolve_dispositioned_comments "fix-bot-comment" || _DISPOSITIONS_UNRESOLVED=1
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         _fbc_terminal="applied"
@@ -2954,17 +3384,6 @@ case "$INTENT_TYPE" in
         fi
         _fbc_terminal="no-changes"
       fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
-      # Outside the review-thread resolution gate for the same reason as fix-reviews:
-      # each disposition is independently verified, so a non-`fixed` disposition
-      # needs no head advance. Runs on every successful pass, net-zero included.
-      # A tamper-guard abort (rc 4) pushed nothing: a `fixed` disposition would cite a
-      # local commit that never landed, so treat it like a failed pass (#2013).
-      if [ "$cp_rc" -eq 4 ]; then
-        resolve_dispositioned_comments "fix-bot-comment" failed
-      else
-        resolve_dispositioned_comments "fix-bot-comment"
-      fi
       if [ "${RDC_STATE_UNKNOWN:-0}" = "1" ]; then
         echo "::warning::fix-bot-comment: a comment's current state could not be confirmed — withholding the terminal marker so the bot-comment retry can re-dispatch (#2017)"
         _fbc_terminal=""
@@ -2973,6 +3392,23 @@ case "$INTENT_TYPE" in
         if [ "$_fbc_resolved" != "yes" ]; then
           echo "::warning::fix-bot-comment: comment ${COMMENT_NODE_ID} has no verified disposition after this pass (state: ${_fbc_resolved}) — withholding the terminal marker so the bot-comment retry can re-dispatch within its attempt limits (#2017)"
           _fbc_terminal=""
+        fi
+      fi
+      # Deferred bot threads (#2045): verified against the tracking issue, so outside
+      # the head-advance gate below and run on guard aborts (rc 3/4) too. Resolved
+      # BEFORE the terminal marker so a failure leaves no terminal that would stop
+      # dev-lead-retry.sh from retrying this intent+SHA.
+      if ! resolve_deferred_bot_threads "fix-bot-comment"; then
+        rc=1
+        echo "::warning::fix-bot-comment: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
+        _fbc_terminal=""
+        _REVIEW_INCOMPLETE=1
+        _AM_NEEDS_RESTORE=0
+        # The bot-comment retry selects only undispositioned comments and the
+        # bot-thread retry only unreplied threads, so neither re-runs this resolver.
+        # Hand it to a PR-wide fix-reviews retry. Guard aborts (3/4) are flagged for a human.
+        if [ "$cp_rc" -ne 3 ] && [ "$cp_rc" -ne 4 ]; then
+          post_resolve_failed_marker "fix-reviews" "$cp_rc"
         fi
       fi
       case "$_fbc_terminal" in
@@ -2987,18 +3423,25 @@ case "$INTENT_TYPE" in
           resolve_actor_outdated_threads "fix-bot-comment"
           # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
           # these are not necessarily outdated, so the nets above miss them.
-          resolve_addressed_bot_threads "fix-bot-comment"
+          resolve_addressed_bot_threads "fix-bot-comment" || rc=1
         else
           echo "::notice::resolution gate closed (#1609): the fix-bot-comment pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
-        try_enable_auto_merge
+        { [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] || [ "${_REVIEW_INCOMPLETE:-0}" -eq 1 ]; } || try_enable_auto_merge
+      fi
+      # #2037: the pass ends failed so it is visibly not done; no auto-merge restore.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
       fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
-      resolve_dispositioned_comments "fix-bot-comment" failed
+      resolve_dispositioned_comments "fix-bot-comment" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed fix-bot-comment pass — keeping the pass's exit code ${rc} (#2037)"
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "fix-bot-comment" failed || true
+      resolve_deferred_bot_threads "fix-bot-comment" || post_resolve_failed_marker "fix-reviews" 1 || true
     fi
     exit "$rc"
     ;;
@@ -3062,6 +3505,8 @@ case "$INTENT_TYPE" in
       # or re-enable auto-merge on a self-cancelling PR.
       if [ "$cp_rc" -eq 3 ]; then
         echo "::notice::review-changes: no-op guard aborted the push for PR #${PR_NUMBER} — flagged for human, not merged (#1786)"
+        # A deferral is verified against its tracking issue, not the diff (#2045).
+        resolve_deferred_bot_threads "review-changes" || rc=1
         exit "$rc"
       fi
       # Test guards (#2013): the push was refused and the PR flagged for a human.
@@ -3069,12 +3514,40 @@ case "$INTENT_TYPE" in
       # thread resolves and auto-merge stays off.
       if [ "$cp_rc" -eq 4 ]; then
         echo "::warning::review-changes was refused by a test guard (tamper/regression) — flagged for human, not pushed (#2013)"
-        resolve_dispositioned_comments "review-changes" failed
+        resolve_dispositioned_comments "review-changes" failed || _DISPOSITIONS_UNRESOLVED=1
+        resolve_deferred_bot_threads "review-changes" || rc=1
+        [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ] && rc=1
         exit "$rc"
+      fi
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813) —
+      # independently verified, so outside the head-movement resolution gate.
+      # Runs BEFORE the terminal marker (#2037) — see fix-reviews above.
+      resolve_dispositioned_comments "review-changes" || _DISPOSITIONS_UNRESOLVED=1
+      # Deferred bot threads (#2045): verified against the tracking issue, so outside
+      # the head-advance gate below. Resolved BEFORE any terminal marker so a failure
+      # leaves none (dev-lead-retry.sh skips an intent+SHA that has one).
+      deferred_rc=0
+      resolve_deferred_bot_threads "review-changes" || deferred_rc=1
+      if [ "$deferred_rc" -ne 0 ]; then
+        rc=1
+        echo "::warning::review-changes: a verified deferral could not be resolved — withholding the terminal marker so the pass is retried"
+        # Not fully applied: never let this pass become auto-mergeable (#1567), and
+        # drop the EXIT-trap restore so auto-merge held off at the start stays off.
+        _REVIEW_INCOMPLETE=1
+        _AM_NEEDS_RESTORE=0
+        # dev-lead-retry.sh re-dispatches only on a retry marker; a merely absent
+        # terminal is never retried.
+        post_resolve_failed_marker "review-changes" "$cp_rc"
       fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
-        finalize_review_application "review-changes"
+        if [ "$deferred_rc" -eq 0 ]; then
+          finalize_review_application "review-changes" || {
+            echo "::warning::review-changes: finalize_review_application failed — posting retry marker"
+            post_resolve_failed_marker "review-changes" "$cp_rc"
+            rc=1
+          }
+        fi
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -3082,13 +3555,10 @@ case "$INTENT_TYPE" in
           post_reviews_rate_limited "review-changes" "blocked"
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
-        else
+        elif [ "$deferred_rc" -eq 0 ]; then
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
-      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813) —
-      # independently verified, so outside the head-movement resolution gate.
-      resolve_dispositioned_comments "review-changes"
       # Resolution gate (#1617): auto-resolve threads only when this pass advanced
       # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
       if resolution_gate_open "$cp_rc"; then
@@ -3096,18 +3566,28 @@ case "$INTENT_TYPE" in
         resolve_actor_outdated_threads "review-changes"
         # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
         # these are not necessarily outdated, so the nets above miss them.
-        resolve_addressed_bot_threads "review-changes"
+        resolve_addressed_bot_threads "review-changes" || rc=1
       else
         echo "::notice::resolution gate closed (#1609): the review-changes pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
       fi
-      # Never auto-merge an escalated or not-fully-applied review pass (#1567).
-      if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
+      # Never auto-merge an escalated or not-fully-applied review pass (#1567),
+      # nor one that left a comment RESOLVED it failed to re-open (#2037).
+      if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ] \
+         && [ "${_DISPOSITIONS_UNRESOLVED:-0}" -ne 1 ]; then
         try_enable_auto_merge
+      fi
+      # #2037: the pass ends failed so it is visibly not done; no auto-merge restore.
+      if [ "${_DISPOSITIONS_UNRESOLVED:-0}" -eq 1 ]; then
+        _AM_NEEDS_RESTORE=0
+        rc=1
       fi
     else
       # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
       # fix-reviews failure branch above for why running the resolver here is safe.
-      resolve_dispositioned_comments "review-changes" failed
+      resolve_dispositioned_comments "review-changes" failed \
+        || echo "::warning::resolve_dispositioned_comments failed on a failed review-changes pass — keeping the pass's exit code ${rc} (#2037)"
+      # A deferral is independently verifiable even when the pass failed (#2045).
+      resolve_deferred_bot_threads "review-changes" || post_resolve_failed_marker "review-changes" 1 || true
       # Nothing was pushed on a failed pass: retract its claim replies (#2013).
       retract_unlanded_claims "review-changes" failed || true
     fi

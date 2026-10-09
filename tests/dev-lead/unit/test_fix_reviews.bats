@@ -1361,6 +1361,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     # The claim names the commit THIS pass produced (resolved at call time), not the
     # pre-pass base_sha: since #2013 a pre-pass SHA is the stale-claim defect and
@@ -1429,6 +1432,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Skipping — first-party channel tag, intentional mutable ref."}]}}}}'
     ;;
@@ -1549,6 +1555,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"someone-else"},"body":"Applied in scripts/foo.sh. <!-- dev-lead:addressed -->"}]}}}}'
     ;;
@@ -1633,6 +1642,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"${marker_reply}","createdAt":"2026-09-01T10:00:00Z"},${POST_MARKER_NODE}]}}}}'
     ;;
@@ -1714,6 +1726,556 @@ GITEOF
   [ "$status" -eq 1 ]
 }
 
+# ── #2045: deferred bot threads — `<!-- dev-lead:deferred ref=#<n> -->` ──────────
+# A bot thread dev-lead judged valid but out of scope used to stay unresolved
+# forever (PR #1953). The harness now resolves it when our latest reply carries
+# exactly one deferral marker whose ref is an OPEN issue that links the thread —
+# on commit AND no-commit passes, because a deferral produces no commit.
+#
+# _2045_run_case writes the fixtures the gh stub serves from files:
+#   DEFER_THREAD_COMMENTS  JSON array: the thread's comments (node re-read)
+#   DEFER_ORIGIN_TYPENAME  originating author type at enumeration (default Bot)
+#   DEFER_ISSUE_JSON       REST body for issues/2050 ("" -> 404 for any issue)
+#   DEFER_ISSUE_COMMENTS   REST body for issues/2050/comments (default [])
+#   DEFER_COMMIT           "true" -> the engine advances the head
+#   DEFER_NODE_JSON        raw body for the thread node re-read (overrides the above)
+#   DEFER_INTENT           intent to run (default fix-reviews)
+#   DEFER_ENGINE_FAIL      "true" -> the engine exits non-zero (a failed pass)
+#   DEFER_THREADS_STUCK    "true" -> the deferral enumerator's thread pages never advance
+#   DEFER_AM_ON            non-empty -> the PR starts with auto-merge on (held, then restorable)
+_2045_run_case() {
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  local fx="$BATS_TEST_TMPDIR/fx"
+  mkdir -p "$fx"
+  local mutations_file="$BATS_TEST_TMPDIR/mutations"
+  : > "$mutations_file"
+  local base_sha
+  rm -f /tmp/dev-lead-session-output.txt
+
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+  base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
+
+  if [ -n "${DEFER_NODE_JSON:-}" ]; then
+    printf '%s' "$DEFER_NODE_JSON" > "$fx/node.json"
+  else
+    jq -cn --argjson c "$DEFER_THREAD_COMMENTS" --argjson more "${DEFER_HAS_NEXT_PAGE:-false}" \
+      '{data:{node:{isResolved:false,path:"scripts/canary_report.sh",comments:{pageInfo:{hasNextPage:$more},nodes:$c}}}}' > "$fx/node.json"
+  fi
+  jq -cn --arg t "${DEFER_ORIGIN_TYPENAME:-Bot}" '{data:{repository:{pullRequest:{reviewThreads:{
+      pageInfo:{hasNextPage:false,endCursor:""},
+      nodes:[{id:"PRRT_2045",isResolved:false,isOutdated:false,
+              origin:{nodes:[{author:{login:"chatgpt-codex-connector",__typename:$t}}]},
+              comments:{nodes:[{author:{login:"chatgpt-codex-connector",__typename:$t}}]}}]}}}}}' > "$fx/threads.json"
+  printf '%s' "${DEFER_ISSUE_JSON:-}" > "$fx/issue.json"
+  printf '%s' "${DEFER_ISSUE_COMMENTS:-[]}" > "$fx/issue-comments.json"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+echo "\$ARGS" >> "$BATS_TEST_TMPDIR/gh-calls"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$mutations_file"
+    if [ -n "\${DEFER_RESOLVE_FAIL:-}" ]; then echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":false}}}}'; exit 0; fi
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"PullRequestReviewThread"*) cat "$fx/node.json" ;;
+  *"reviewThreads"*)
+    # DEFER_THREADS_STUCK: the deferral enumerator (its query aliases origin:) sees
+    # hasNextPage with an endCursor that never advances.
+    if [ "\${DEFER_THREADS_STUCK:-false}" = "true" ] && [[ "\$ARGS" == *"origin: comments"* ]]; then
+      jq -c '.data.repository.pullRequest.reviewThreads.pageInfo = {hasNextPage:true,endCursor:"c1"}' "$fx/threads.json"
+    else
+      cat "$fx/threads.json"
+    fi
+    ;;
+  *"repos/petry-projects/.github-private/issues/2050/comments"*)
+    if [ -n "\${DEFER_ISSUE_COMMENTS_FAIL:-}" ]; then echo '{"message":"Server Error"}'; exit 1; fi
+    cat "$fx/issue-comments.json"
+    ;;
+  *"repos/petry-projects/.github-private/issues/2050"*)
+    if [ -s "$fx/issue.json" ]; then cat "$fx/issue.json"; else echo '{"message":"Not Found"}'; exit 1; fi
+    ;;
+  *"repos/petry-projects/.github-private/issues/9999"*) echo '{"message":"Not Found"}'; exit 1 ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*"auto_merge.merge_method"*) [ -n "\${DEFER_AM_ON:-}" ] && echo squash ;;
+  *"pulls/"*"auto_merge.commit_"*) : ;;
+  *"pulls/"*"--jq .auto_merge // empty"*) [ -z "\${DEFER_AM_ON:-}" ] && echo '{"merge_method":"squash"}' ;;
+  *"pulls/"*"--jq .state"*) echo open ;;
+  *"pulls/"*"--jq .head.sha"*) echo "${base_sha}" ;;
+  *"pulls/"*) echo '{"head":{"sha":"${base_sha}"},"auto_merge":null}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  if [ "${DEFER_ENGINE_FAIL:-false}" = "true" ]; then
+    cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Posted the deferral, then crashed."
+exit 1
+STUB
+  elif [ "${DEFER_COMMIT:-false}" = "true" ]; then
+    cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Addressed feedback."
+printf 'fixed\n' > fix.txt
+STUB
+  else
+    cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Deferred the finding; no code change."
+STUB
+  fi
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  run timeout "${DEFER_RUN_TIMEOUT:-0}" bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=${DEFER_INTENT:-fix-reviews} DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$base_sha REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='chatgpt-codex-connector[bot]' COMMENT_BODY='P2: finding'
+    export BOT_USER='donpetry-bot'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  _HARNESS_STATUS="$status"
+  _HARNESS_OUTPUT="$output"
+  _MUTATIONS_FILE="$mutations_file"
+  _2045_BASE_SHA="$base_sha"
+}
+
+_2045_LINK='https://github.com/petry-projects/.github-private/pull/54#discussion_r2401234567'
+
+# Thread comments: the Codex finding, then our deferral reply carrying $1 as body.
+_2045_comments() {
+  jq -cn --arg reply "$1" '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: emit_token_record writes no duration_ms.",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:$reply,createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]'
+}
+
+_2045_open_issue() {
+  jq -cn --arg b "Deferred review findings\n- [ ] duration_ms — ${_2045_LINK}" \
+    '{number:2050,title:"dev-lead: deferred review findings",author_association:"MEMBER",state:"open",body:$b}'
+}
+
+@test "resolve_deferred_bot_threads (#2045): verified deferral resolves on a NO-commit pass" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Valid, but deferring — out of scope. Tracked in #2050.
+<!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  # The #1617 gate is closed (no head advance), yet the deferral path still ran.
+  [[ "$_HARNESS_OUTPUT" == *"resolution gate closed"* ]]
+  grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+}
+
+@test "resolve_deferred_bot_threads (#2045): verified deferral resolves on a commit pass" {
+  export DEFER_COMMIT=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" != *"resolution gate closed"* ]]
+  grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+}
+
+@test "resolve_deferred_bot_threads (#2045): a link in a tracking-issue COMMENT is enough" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred review findings"}'
+  export DEFER_ISSUE_COMMENTS="$(jq -cn --arg b "- duration_ms: ${_2045_LINK}" '[{author_association:"MEMBER",body:$b}]')"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+}
+
+@test "resolve_deferred_bot_threads (#2045): thread with more than one page of comments -> stays open" {
+  export DEFER_HAS_NEXT_PAGE=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"more than 100 comments"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): thread with no reply from us does not abort under set -e" {
+  export DEFER_THREAD_COMMENTS='[{"author":{"login":"chatgpt-codex-connector","__typename":"Bot"},"body":"P2: finding","createdAt":"2026-10-01T09:00:00Z","fullDatabaseId":"2401234567","lastEditedAt":null}]'
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): missing ref -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  # A malformed deferral is a resolver failure, so the pass stays retryable.
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"missing-ref"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): nonexistent ref -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#9999 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"tracking issue #9999 cannot back the deferral (missing)"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): ref to a CLOSED issue -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(jq -cn --arg b "${_2045_LINK}" '{number:2050,title:"dev-lead: deferred review findings",author_association:"MEMBER",state:"closed",body:$b}')"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"(closed)"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): tracking issue that does not mention the thread -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred review findings (none linked)"}'
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"(no-mention)"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): tracking-issue comments page failure -> stays open and counts as failure" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON='{"number":2050,"title":"dev-lead: deferred review findings","author_association":"MEMBER","state":"open","body":"Deferred review findings (none linked)"}'
+  export DEFER_ISSUE_COMMENTS_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"(comments-unreadable)"* ]]
+  [[ "$_HARNESS_OUTPUT" != *"(no-mention)"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a failed resolution posts a retry marker (resolve-failed)" {
+  # Tracker verification succeeds; the resolveReviewThread mutation itself fails.
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"failed to resolve deferred bot thread PRRT_2045"* ]]
+  # dev-lead-retry.sh re-dispatches only on a retry marker; an absent terminal is never retried.
+  # Non-quota: recorded as status=blocked, never as a provider rate limit.
+  grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -q "status=rate-limited reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): after a pushed commit, the resolve-failed marker is keyed to the pushed head" {
+  # dev-lead-retry.sh scans only markers on the PR's current head; HEAD_SHA is
+  # still the pre-pass head right after commit_and_push.
+  export DEFER_COMMIT=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  # The harness commits in a worktree; take the new commit from its output.
+  local pushed
+  pushed="$(grep -oE '\[detached HEAD [0-9a-f]+\]' <<<"$_HARNESS_OUTPUT" | head -1 | tr -d ']' | awk '{print $3}')"
+  [ -n "$pushed" ]
+  [[ "$_2045_BASE_SHA" != "${pushed}"* ]]
+  grep -qE "sha=${pushed}[0-9a-f]* intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -q "sha=${_2045_BASE_SHA} intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a resolution failure on a FAILED pass still posts a retry marker" {
+  # A failed pass posts no marker and the bot-thread retry skips replied threads.
+  export DEFER_ENGINE_FAIL=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -ne 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"failed to resolve deferred bot thread PRRT_2045"* ]]
+  grep -q "intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+}
+
+@test "resolve_deferred_bot_threads (#2045): a review-thread cursor that never advances fails instead of looping" {
+  export DEFER_THREADS_STUCK=true DEFER_RUN_TIMEOUT=120
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -ne 124 ]
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"did not advance (endCursor unchanged)"* ]]
+  grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+}
+
+@test "resolve_deferred_bot_threads (#2045): a tracker linked only by an untrusted author -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(jq -cn --arg b "${_2045_LINK}" '{number:2050,title:"dev-lead: deferred review findings",author_association:"NONE",state:"open",body:$b}')"
+  _2045_run_case
+  [[ "$_HARNESS_OUTPUT" == *"untrusted-mention"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a failed deferral does not restore auto-merge held off at the start" {
+  export DEFER_AM_ON=1
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"holding auto-merge OFF"* ]]
+  grep -q "pr merge 54 --repo petry-projects/.github-private --disable-auto" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -E "pr merge.*--auto( |$)" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a successful deferral still restores auto-merge held off at the start" {
+  export DEFER_AM_ON=1
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  grep -qE "pr merge 54 .*--auto --squash" "$BATS_TEST_TMPDIR/gh-calls"
+}
+
+@test "resolve_deferred_bot_threads (#2045): a failed deferral on a commit pass never enables auto-merge (#1567)" {
+  export DEFER_COMMIT=true
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  # try_enable_auto_merge never runs (the stub reports auto-merge as already on,
+  # so reaching it logs "auto-merge already enabled").
+  [[ "$_HARNESS_OUTPUT" != *"auto-merge already enabled"* ]]
+  run grep -E "pr merge.*--auto" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a fix-bot-comment resolution failure posts a PR-wide fix-reviews retry marker" {
+  # Neither the bot-comment retry (undispositioned comments) nor the bot-thread
+  # retry (unreplied threads) would re-select this thread, so fix-reviews must.
+  export DEFER_INTENT=fix-bot-comment
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  export DEFER_RESOLVE_FAIL=1
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"failed to resolve deferred bot thread PRRT_2045"* ]]
+  grep -q "intent=fix-reviews status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+}
+
+@test "resolve_deferred_bot_threads (#2045): a partial thread snapshot (no comment nodes) -> stays open and counts as failure" {
+  export DEFER_NODE_JSON='{"data":{"node":{"isResolved":false,"path":"scripts/canary_report.sh","comments":{"pageInfo":{"hasNextPage":false}}}}}'
+  export DEFER_THREAD_COMMENTS='[]'
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"partial snapshot of review thread PRRT_2045"* ]]
+  grep -q "status=blocked reason=resolve-failed" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a snapshot carrying GraphQL errors -> stays open and counts as failure" {
+  export DEFER_NODE_JSON="$(jq -cn --argjson c "$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')" \
+    '{errors:[{message:"Something went wrong"}],data:{node:{isResolved:false,comments:{pageInfo:{hasNextPage:false},nodes:$c}}}}')"
+  export DEFER_THREAD_COMMENTS='[]'
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"partial snapshot of review thread PRRT_2045"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): the deferral is matched by fullDatabaseId (ids exceed 32-bit Int)" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  grep -q "fullDatabaseId" "$BATS_TEST_TMPDIR/gh-calls"
+  run grep -qE "[^l]databaseId" "$BATS_TEST_TMPDIR/gh-calls"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): an unreadable originating comment id -> stays open and counts as failure" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"could not read the originating comment id"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a bot finding edited after the deferral -> stays open (#2008)" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P1: a different, edited finding.",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:"2026-10-01T11:00:00Z"},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"edited after our deferral"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): an unreadable edit time -> stays open and counts as failure" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567"},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"could not read the edit time"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): more than one marker -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->
+<!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  # A malformed deferral is a resolver failure, so the pass stays retryable.
+  [ "$_HARNESS_STATUS" -eq 1 ]
+  [[ "$_HARNESS_OUTPUT" == *"multiple-deferrals"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a maintainer (marker-less human) thread is never resolved" {
+  export DEFER_ORIGIN_TYPENAME=User
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"don-petry",__typename:"User"},body:"Please add duration_ms.",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a maintainer comment after the deferral -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null},
+    {author:{login:"don-petry",__typename:"User"},body:"No — this is REQUIRED before merge.",createdAt:"2026-10-01T11:00:00Z",fullDatabaseId:"2401240000",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a standing maintainer 'required' disposition withholds resolution" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"don-petry",__typename:"User"},body:"ACCEPTED — required before merge.",createdAt:"2026-10-01T09:30:00Z",fullDatabaseId:"2401235000",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"maintainer disposition"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): a later our-account reply without the marker supersedes the deferral" {
+  export DEFER_THREAD_COMMENTS="$(jq -cn '[
+    {author:{login:"chatgpt-codex-connector",__typename:"Bot"},body:"P2: finding",createdAt:"2026-10-01T09:00:00Z",fullDatabaseId:"2401234567",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"Deferring. <!-- dev-lead:deferred ref=#2050 -->",createdAt:"2026-10-01T10:00:00Z",fullDatabaseId:"2401239999",lastEditedAt:null},
+    {author:{login:"donpetry-bot",__typename:"User"},body:"On reflection, looking again.",createdAt:"2026-10-01T11:00:00Z",fullDatabaseId:"2401240000",lastEditedAt:null}
+  ]')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue)"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): dry-run announces and skips API calls" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export GH_CALLS="$BATS_TEST_TMPDIR/gh-calls"
+  : > "$GH_CALLS"
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+echo "\$*" >> "$GH_CALLS"
+echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  run bash "$FIX_REVIEWS_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would resolve deferred review threads from bot reviewers on PR #54"* ]]
+  run grep -c "resolveReviewThread" "$GH_CALLS"
+  [ "$output" = "0" ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): tracking issue with a non-tracker title -> stays open" {
+  export DEFER_THREAD_COMMENTS="$(_2045_comments 'Deferring. <!-- dev-lead:deferred ref=#2050 -->')"
+  export DEFER_ISSUE_JSON="$(_2045_open_issue | jq -c '.title="some other issue"')"
+  _2045_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$_HARNESS_OUTPUT" == *"(wrong-title)"* ]]
+  run grep -q "PRRT_2045" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_deferred_bot_threads (#2045): wired outside the #1617 head-advance gate in every thread-resolving intent" {
+  local intent block
+  for intent in fix-reviews fix-bot-comment review-changes; do
+    block="$(sed -n "/build_and_run \"${intent}\"/,/^    ;;\$/p" "$FIX_REVIEWS_SCRIPT")"
+    # Called, and before (not inside) the resolution-gate branch.
+    grep -q "resolve_deferred_bot_threads \"${intent}\"" <<<"$block"
+    local call_line gate_line
+    call_line=$(grep -n "resolve_deferred_bot_threads \"${intent}\"" <<<"$block" | head -1 | cut -d: -f1)
+    gate_line=$(grep -n 'if resolution_gate_open' <<<"$block" | head -1 | cut -d: -f1)
+    [ "$call_line" -lt "$gate_line" ]
+  done
+}
+
 # ── Harness-only resolution (#1691, epic #1621) ──────────────────────────────
 # Story 1 removes the model's resolveReviewThread path from the prompts, leaving
 # the harness as the ONLY resolver. This asserts the guarantee at the harness
@@ -1750,6 +2312,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Looked into this but made no change."}]}}}}'
     ;;
@@ -1870,6 +2435,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"scripts/other.sh","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in scripts/other.sh. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"'"\$(git rev-parse HEAD)"'\",\"files\":[\"scripts/other.sh\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
@@ -1915,6 +2483,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in fix.txt. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"${absent_sha}\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
@@ -1957,6 +2528,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1, not valid json} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
@@ -2000,6 +2574,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"a-maintainer","__typename":"User"},"body":"ACCEPTED — required before merge","createdAt":"2099-01-01T00:00:00Z"},{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Fixed in fix.txt. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"'"\$(git rev-parse HEAD)"'\",\"files\":[\"fix.txt\"]} -->","createdAt":"2026-09-01T10:00:00Z"}]}}}}'
     ;;
@@ -2055,6 +2632,9 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Applied. <!-- dev-lead:addressed -->"}]}}}}'
     ;;
@@ -2272,6 +2852,20 @@ readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.l
   [[ "$output" == *'Also fix the lint warnings.'* ]]
   # The COMMENTED body must not appear in all_change_request_bodies
   [[ "$output" != *'Looks almost there.'* ]]
+}
+
+@test "has_reviews_rate_limited_marker: a blocked marker does not dedup a resolve-failed hold (reason-aware, #2045)" {
+  export PR_NUMBER=54 REPO="petry-projects/.github-private" HEAD_SHA="ddd444eee555"
+  export REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo '[{"id":1,"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=review-changes status=blocked reason=blocked reset=2099-01-01T00:00:00Z -->"}]'
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  run bash -c "export PATH='$STUB_BIN_DIR:$PATH'; source <(sed -n '/^has_reviews_rate_limited_marker()/,/^}/p' '$FIX_REVIEWS_SCRIPT'); has_reviews_rate_limited_marker review-changes resolve-failed"
+  [ "$status" -eq 1 ]
+  run bash -c "export PATH='$STUB_BIN_DIR:$PATH'; source <(sed -n '/^has_reviews_rate_limited_marker()/,/^}/p' '$FIX_REVIEWS_SCRIPT'); has_reviews_rate_limited_marker review-changes blocked"
+  [ "$status" -eq 0 ]
 }
 
 @test "fix-reviews: rate-limited: review-changes does not repost ack when prior rate-limited marker exists" {
@@ -4887,10 +5481,25 @@ STUB
 #!/usr/bin/env bash
 ARGS="$*"
 case "$ARGS" in
+  *"unminimizeComment"*)
+    # #2037: log every unminimize call, then simulate an API failure for the
+    # one configured comment id.
+    echo "$ARGS" >> "$MINLOG"
+    case "$ARGS" in
+      *"id=${UNMINIMIZE_FAIL_ID:-<none>}"*) exit 1 ;;
+    esac
+    printf '%s' '{"data":{"unminimizeComment":{"unminimizedComment":{"isMinimized":false}}}}'; exit 0 ;;
   *"minimizeComment"*)
     echo "$ARGS" >> "$MINLOG"
     printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}'; exit 0 ;;
   *"on IssueComment"*)
+    # NODE_REOPENS=1: a successful unminimize call re-opens the node on readback.
+    if [ "${NODE_REOPENS:-}" = "1" ] && grep -q 'unminimizeComment' "$MINLOG" 2>/dev/null; then
+      printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0
+    fi
+    if [ "${NODE_RESOLVED:-}" = "1" ]; then
+      printf '%s' '{"data":{"node":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}'; exit 0
+    fi
     printf '%s' '{"data":{"node":{"isMinimized":false,"minimizedReason":null}}}'; exit 0 ;;
   *"reviewThreads"*)
     printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'; exit 0 ;;
@@ -4901,7 +5510,7 @@ case "$ARGS" in
   *"pr view"*)
     printf '%s' '{"state":"OPEN","headRefName":"testbranch"}'; exit 0 ;;
   *"pr checkout"*) exit 0 ;;
-  *"pr comment"*) exit 0 ;;
+  *"pr comment"*) echo "$ARGS" >> "${COMMENTLOG:-/dev/null}"; exit 0 ;;
   *"issue comment"*) exit 0 ;;
   *"api"*"issues/"*) echo "[]"; exit 0 ;;
   *"api"*) echo "{}"; exit 0 ;;
@@ -5233,7 +5842,7 @@ _resolved_bot_comment() {
   end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   [ -n "$start" ] && [ -n "$end" ]
   block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   applied=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
   nochg=$(grep -n 'post_no_changes "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$applied" ] && [ -n "$nochg" ]
@@ -5255,7 +5864,7 @@ _resolved_bot_comment() {
   start=$(grep -n '^  fix-bot-comment)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   end=$(grep -n '^  on-mention)$' "$FIX_REVIEWS_SCRIPT" | head -1 | cut -d: -f1)
   block=$(sed -n "${start},${end}p" "$FIX_REVIEWS_SCRIPT")
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"$' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   guard=$(grep -n 'RDC_STATE_UNKNOWN:-0}" = "1"' <<< "$block" | head -1 | cut -d: -f1)
   post=$(grep -n 'case "\$_fbc_terminal" in' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$guard" ] && [ -n "$post" ]
@@ -5344,7 +5953,7 @@ _target_state() {
   local block
   block="$(sed -n '/build_and_run "fix-bot-comment"/,/try_enable_auto_merge/p' "$FIX_REVIEWS_SCRIPT")"
   local resolver check terminal
-  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment"' <<< "$block" | head -1 | cut -d: -f1)
+  resolver=$(grep -n 'resolve_dispositioned_comments "fix-bot-comment" ||' <<< "$block" | head -1 | cut -d: -f1)
   check=$(grep -n 'fbc_target_resolved' <<< "$block" | head -1 | cut -d: -f1)
   terminal=$(grep -n 'post_reviews_terminal "fix-bot-comment" "applied"' <<< "$block" | head -1 | cut -d: -f1)
   [ -n "$resolver" ] && [ -n "$check" ] && [ -n "$terminal" ]
@@ -5401,6 +6010,9 @@ case "\$ARGS" in
     echo "\$*" >> "$T2013_MUT"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  # The deferral resolver (#2045) asks for fullDatabaseId: answer with a readable,
+  # comment-less thread so it skips cleanly instead of reading this fixture.
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
   *"PullRequestReviewThread"*)
     printf '%s\n' "{\"data\":{\"node\":{\"isResolved\":false,\"path\":\"fix.txt\",\"comments\":{\"nodes\":[{\"author\":{\"login\":\"donpetry-bot\",\"__typename\":\"User\"},\"body\":\"\${reply}\",\"createdAt\":\"2099-01-01T00:00:00Z\"}]}}}}"
     ;;
@@ -5623,6 +6235,121 @@ SH
 
   [ -s "$T2013_PUSH" ]
   [[ "$output" == *"Test suite: NOT RUN"* ]]
+}
+
+# ── #2037: an unminimizeComment failure fails the resolver closed ─────────────
+# A comment that must be re-opened but whose unminimize call fails stays RESOLVED,
+# and the gate would clear it. The resolver keeps processing the remaining
+# candidates, then returns non-zero. A success-path caller must then post no
+# applied/no-changes terminal marker, so the comment is retried.
+
+# _reverify_fixed_pair <comment-id> <old-reply-id> <new-reply-id>
+#   A RESOLVED bot comment edited at 21:30, with an `informational` disposition
+#   from before the edit and a fresh `fixed` one after it. The fresh `fixed` cites
+#   a sha this pass did not produce, so its re-verification fails.
+_reverify_fixed_pair() {
+  jq -nc --arg id "$1" '{id:$id, author:{login:"coderabbitai", __typename:"Bot"},
+    body:"Walkthrough only.", isMinimized:true, minimizedReason:"RESOLVED",
+    createdAt:"2026-09-26T20:00:00Z", lastEditedAt:"2026-09-26T21:30:00Z"}'
+  _disp_reply "$2" "2026-09-26T21:00:00Z" "informational" "$1"
+  jq -nc --arg id "$3" --arg t "$1" '{id:$id, author:{login:"donpetry-bot", __typename:"User"},
+    body:("Fixed it.\n<!-- dev-lead:comment-disposition id=" + $t + " disposition=fixed sha=c03ecdaea49cb873ca29ac0ca905c2d92ecbd3ce -->"),
+    isMinimized:false, minimizedReason:null, createdAt:"2026-09-26T22:00:00Z"}'
+}
+
+# _succeed_fix_bot_comment: turn the disposition pass into a SUCCESSFUL
+# fix-bot-comment pass that changes nothing (engine exits 0, nothing to commit),
+# so it reaches the no-changes terminal-marker branch. PR comments go to
+# $COMMENTLOG.
+_succeed_fix_bot_comment() {
+  cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
+  cp "$STUB_ENGINES_DIR/stub-gemini" "$STUB_BIN_DIR/gemini"
+  chmod +x "$STUB_BIN_DIR/claude" "$STUB_BIN_DIR/gemini"
+  export INTENT_TYPE="fix-bot-comment"
+  export COMMENT_BODY="Walkthrough" COMMENT_NODE_ID="IC_ORIG"
+  export COMMENTLOG="$BATS_TEST_TMPDIR/comments.log"
+  # The dispatched comment reads back RESOLVED, so the #2017 gate lets the
+  # terminal marker post (the #2037 downgrade is what is under test).
+  export NODE_RESOLVED=1
+  : > "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a failed unminimize on the re-verify path fails the pass; later candidates are still processed; no no-changes/applied marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2) <(_reverify_fixed_pair IC_B R3 R4))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  # The failure is not swallowed: the pass ends non-zero.
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG after a failed post-edit re-verification"* ]]
+  [[ "$output" == *"resolve_dispositioned_comments: failed to unminimize"* ]]
+  # The loop did not stop at the failure: IC_B, after IC_ORIG, was re-opened.
+  grep -Eq 'unminimizeComment.*id=IC_B' "$MINLOG"
+  # No success terminal marker, so the comment is retried; a partial one instead.
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
+  grep -q 'intent=fix-bot-comment status=partial' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a successful unminimize on the re-verify path still posts the no-changes marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 0 ]
+  grep -Eq 'unminimizeComment.*id=IC_ORIG' "$MINLOG"
+  grep -q 'intent=fix-bot-comment status=no-changes' "$COMMENTLOG"
+  ! grep -q 'status=partial' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): once the unminimize re-opens the target, fix-bot-comment posts no terminal marker" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export NODE_REOPENS=1
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  grep -Eq 'unminimizeComment.*id=IC_ORIG' "$MINLOG"
+  # The target is open and awaits a verified disposition: no terminal marker.
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): a failed re-open (edited after its latest disposition) fails the pass even with no other candidate" {
+  local nodes
+  nodes=$(jq -sc '.' \
+    <(_resolved_bot_comment "2026-09-26T22:00:00Z") \
+    <(_disp_reply "R1" "2026-09-26T21:00:00Z" "informational" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+  _succeed_fix_bot_comment
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG (edited after its latest disposition)"* ]]
+  ! grep -Eq 'status=(no-changes|applied)' "$COMMENTLOG"
+}
+
+@test "resolve_dispositioned_comments(#2037): on a FAILED pass a failed unminimize keeps the engine's exit code" {
+  local nodes
+  nodes=$(jq -sc '.' <(_reverify_fixed_pair IC_ORIG R1 R2))
+  _setup_disposition_pass "$nodes"
+  export UNMINIMIZE_FAIL_ID="IC_ORIG"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  # Engine failed → rc=1. The resolver's own failure is reported, not exited on.
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to unminimize comment IC_ORIG after a failed post-edit re-verification"* ]]
+  [[ "$output" == *"resolve_dispositioned_comments: failed to unminimize"* ]]
 }
 
 # ── open review threads are paginated and fail closed (#2056) ─────────────────

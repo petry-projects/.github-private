@@ -243,6 +243,62 @@ mk_bot_events() {  # mk_bot_events <count>
   [ "$status" -eq 0 ]
 }
 
+@test "pr_resume_suppressed(#2089): dev-lead:hands-off → suppress without reading budget events" {
+  # The budget gate is stubbed to "not exhausted" and the events are unreadable,
+  # so only the hold itself can suppress: it must short-circuit before the budget.
+  pr_budget_exhausted() { return 1; }
+  gather_pr_automation_events() { echo "events read" >&2; return 1; }
+  run pr_resume_suppressed 2085 petry-projects/demo '["bug","dev-lead:hands-off"]'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"carries dev-lead:hands-off"* ]]
+  [[ "$output" != *"events read"* ]]
+}
+
+@test "pr_resume_suppressed(#2089 review): an unreadable label set suppresses (fail closed)" {
+  pr_budget_exhausted() { return 1; }
+  local bad
+  for bad in 'not json' 'null' '{"labels":[]}'; do
+    run pr_resume_suppressed 2085 petry-projects/demo "$bad" '[]'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"labels unavailable"* ]]
+  done
+  # A failed label fetch (labels not passed in) suppresses too — never read as `[]`.
+  gh() { return 1; }
+  run pr_resume_suppressed 2085 petry-projects/demo '' '[]'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"labels unavailable"* ]]
+  # …while a label set that was read and is empty still proceeds.
+  run pr_resume_suppressed 2085 petry-projects/demo '[]' '[]'
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_resume_suppressed(#2089): dev-lead:needs-human → suppress" {
+  run pr_resume_suppressed 2085 petry-projects/demo '["dev-lead:needs-human"]' "$(mk_bot_events 1)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"carries dev-lead:needs-human"* ]]
+}
+
+@test "pr_resume_suppressed(#2089): needs-human-review keeps its #946 message" {
+  run pr_resume_suppressed 2085 petry-projects/demo '["dev-lead:hands-off","needs-human-review"]' '[]'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"carries needs-human-review — human-gated; not resuming (#946)"* ]]
+}
+
+@test "pr_resume_suppressed(#2089): a label merely containing a hold name does not suppress" {
+  run pr_resume_suppressed 2085 petry-projects/demo '["dev-lead:hands-off-later","x-dev-lead:needs-human"]' "$(mk_bot_events 1)"
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_hold_gate_label(#2089): prints the held label; malformed input is not held" {
+  run pr_hold_gate_label '["bug","dev-lead:hands-off"]'
+  [ "$status" -eq 0 ]
+  [ "$output" = "dev-lead:hands-off" ]
+  run pr_hold_gate_label 'not json'
+  [ "$status" -ne 0 ]
+  run pr_hold_gate_label '[]'
+  [ "$status" -ne 0 ]
+}
+
 @test "pr_resume_suppressed: FORCE_REVIEW must not bypass the budget" {
   FORCE_REVIEW=true run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 10)"
   [ "$status" -eq 0 ]

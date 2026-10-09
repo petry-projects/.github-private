@@ -184,8 +184,11 @@ jobs:
             tests/test_review_one_pr_ci_pending.bats \
             tests/test_review_one_pr_decline_verdict.bats \
             tests/test_review_one_pr_force_ci_failing.bats \
+            tests/test_pr_review_force_review_wiring.bats \
             tests/test_review_one_pr_nonrequired_gate.bats \
             tests/test_review_one_pr_force_re_review.bats \
+            tests/test_review_one_pr_escalation_hold.bats \
+            tests/test_review_one_pr_self_dismissed_reeval.bats \
             tests/test_review_one_pr_metadata_rearm.bats \
             tests/test_review_one_pr_claim_observe.bats \
             tests/test_pr_metadata_digest.bats \
@@ -212,6 +215,7 @@ jobs:
             tests/test_sc2_self_review_channel.bats \
             tests/test_channel_pin_consistency.bats \
             tests/pr_review_canary.bats \
+            tests/dev-lead/unit/test_bot_thread_retry.bats \
             tests/dev-lead/unit/test_maintainer_review_thread_gate.bats \
             tests/dev-lead/unit/test_open_review_threads.bats \
             tests/dev-lead/unit/test_maintainer_comment_gate.bats \
@@ -223,6 +227,7 @@ jobs:
             tests/dev-lead/unit/test_claim_landing.bats \
             tests/dev-lead/unit/test_test_tamper_guard.bats \
             tests/dev-lead/unit/test_test_regression_guard.bats \
+            tests/dev-lead/unit/test_deferred_thread_verify.bats \
             tests/dev-lead/unit/test_fewshot_assemble.bats \
             tests/dev-lead/unit/test_net_diff_guard.bats \
             tests/dev-lead/unit/test_git_history.bats \

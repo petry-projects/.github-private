@@ -523,7 +523,7 @@ breaks post-merge (the #1034 defect). This guard closes that gap.
 The `caller-stub-freeze` job in `lint.yml` (#1255, epic #1052 Part B) is the byte-identity **backstop** to
 `validate-caller-inputs` for the specific **ring-0 / self-host** caller stubs — the ones whose reusable lives
 in **this** repo and is pinned to a canary channel tag (`docs/initiatives/agentic-release-strategy.md` §5):
-`dev-lead.yml` (`@dev-lead/v1-stable`), `pr-review-trigger.yml` (`@pr-review/v1-next`), and
+`dev-lead.yml` (`@dev-lead/v139-ring0`), `pr-review-trigger.yml` (`@pr-review/v1-next`), and
 `ci-failure-analyst.lock.yml` (`@ci-failure-analyst/v1-stable`). A trigger/`with:` forwarding change to a
 channel-pinned self-host stub is exercised by nothing in PR CI and only breaks post-merge (the #1034 defect
 class), so each stub's `on:` trigger + `uses:`/`with:` forwarding block is frozen byte-for-byte against a
@@ -945,6 +945,19 @@ even though every ref looks valid, because the stub is ahead of the channel it p
      pinned channel resolves to a commit that declares the input.
 
   Doing these out of order (forwarding first) is exactly the skew this rule prevents.
+- **Same order for a new `client_payload` field from a dispatching sweep (#2050).** A sweep
+  such as `scripts/dev-lead-retry.sh` sends `repository_dispatch` payloads to the harness at
+  the pinned channel. A new field the sweep sends follows the same order: **(1)** the harness
+  change that reads the field (e.g. `scripts/dev-lead-intent.sh`) merges and **reaches the
+  pinned channel first**; **(2)** only then does the sweep change that sends it merge. Before
+  the backstop below, the sweep ran from `main`, so a sweep change that merged ahead of the
+  channel broke every dispatched run until the channel caught up (#2017: every
+  fix-bot-comment retry failed against `v139-stable`), and the canary gate charged those
+  failures to the next candidate. As a structural backstop, `dev-lead-retry.yml` now checks
+  out `scripts/` at the channel `dev-lead.yml` pins (`agent_ref`), not `main`, so the sweep
+  and the harness it dispatches to in this repo are the same release
+  (`tests/dev-lead/unit/test_dev_lead_retry_channel.bats`). The order still matters for
+  target repos that pin an older channel than this one (#2086).
 - **Enforcement.** The dev-lead prompt guardrail (part C, #1254) stops the agent from introducing the
   skew at the source; the **Part A CI guard (#1253)** is the belt-and-braces check that fails a PR whose
   caller-stub `with:` forwards an input the pinned channel does not declare.
