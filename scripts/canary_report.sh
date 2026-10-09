@@ -392,11 +392,14 @@ render_canary_report() {
       return 3
     fi
   done
-  for _b in "$min_prs" "$min_inv" "$max_prs"; do
-    case "${_b#-}" in
-      ''|*[!0-9]*) echo "ERROR: --min-prs/--min-invocations/--candidate-max-prs must be integers (got '${_b}')." >&2; return 3 ;;
+  for _b in "$min_prs" "$min_inv"; do
+    case "$_b" in
+      ''|*[!0-9]*) echo "ERROR: --min-prs/--min-invocations must be non-negative integers (got '${_b}')." >&2; return 3 ;;
     esac
   done
+  case "${max_prs#-}" in
+    ''|*[!0-9]*) echo "ERROR: --candidate-max-prs must be an integer (got '${max_prs}')." >&2; return 3 ;;
+  esac
 
   # Identical candidate/incumbent IDs make the two arms the same model over different
   # time windows — workload drift alone could then PASS. A misconfiguration, not a verdict.
@@ -824,6 +827,13 @@ main() {
       || { echo "ERROR: could not derive the baseline window." >&2; return 64; }
   fi
   [ -z "$since" ] && since="$b_until"
+  # Without a cut both windows would be unbounded (collection falls back to 1970) and
+  # the report would compare all retained history rather than canary vs baseline.
+  # Local snapshots (--dir / --model-ab-dir) do no collection, so only live runs need it.
+  if [ -z "$since" ] && [ -z "$b_until" ] && { [ "$collect_only" = "true" ] || { [ -z "$dir" ] && [ -z "$model_ab_dir" ]; }; }; then
+    echo "ERROR: --since (the canary cut) or --baseline-until is required." >&2
+    return 64
+  fi
 
   # An explicitly supplied local input directory must exist and be readable. A
   # misspelled/unreadable path would otherwise glob to zero rows and render an

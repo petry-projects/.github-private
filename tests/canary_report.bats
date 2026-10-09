@@ -247,6 +247,24 @@ seed_pass() {
   [[ "$output" == *"- candidate unpriced records: 2"* ]]
 }
 
+@test "render_canary_report: a record dated exactly on the pricing effective date is priced" {
+  seed_pass
+  # model-new pricing is effective 2026-09-10; the boundary day itself must be priced.
+  mkrec "$FILE" "2026-09-10T00:00:00Z" pr-review deep model-new \
+    1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/93" 700
+  run render_canary_report "$DIR"
+  [[ "$output" == *"- candidate invocations: 6"* ]]
+  [[ "$output" == *"- candidate unpriced records: 0"* ]]
+}
+
+@test "render_canary_report: negative sample floors are rejected (exit 3)" {
+  seed_pass
+  CANARY_MIN_PRS=-1 run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+  CANARY_MIN_INVOCATIONS=-1 run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
 @test "render_canary_report: a partially unpriced INCUMBENT arm blocks a cost/cache PASS" {
   # Both arms clear the bars on their priced records, but one incumbent call is
   # unpriced (dated before model-old pricing took effect). An unpriced incumbent must

@@ -56,28 +56,8 @@ on:
         required: false
         default: ""
         type: string
-      cost_bar:
-        description: "Cost reduction bar as a fraction (blank = script default)"
-        required: false
-        default: ""
-        type: string
-      cache_bar:
-        description: "Cache-read cost reduction bar as a fraction (blank = script default)"
-        required: false
-        default: ""
-        type: string
-      latency_bar:
-        description: "Latency improvement bar as a fraction (blank = script default)"
-        required: false
-        default: ""
-        type: string
-      min_prs:
-        description: "Minimum distinct candidate PRs (blank = script default)"
-        required: false
-        default: ""
-        type: string
-      min_invocations:
-        description: "Minimum invocations per arm (blank = script default)"
+      canary_thresholds:
+        description: "Optional canary overrides as space-separated key=value (keys: cost-bar, cache-bar, latency-bar, min-prs, min-invocations); blank = script defaults"
         required: false
         default: ""
         type: string
@@ -235,11 +215,7 @@ jobs:
           CANDIDATE_MODEL_INPUT: ${{ inputs.candidate_model }}
           INCUMBENT_MODEL_INPUT: ${{ inputs.incumbent_model }}
           BASELINE_DAYS_INPUT: ${{ inputs.baseline_days }}
-          COST_BAR_INPUT: ${{ inputs.cost_bar }}
-          CACHE_BAR_INPUT: ${{ inputs.cache_bar }}
-          LATENCY_BAR_INPUT: ${{ inputs.latency_bar }}
-          MIN_PRS_INPUT: ${{ inputs.min_prs }}
-          MIN_INVOCATIONS_INPUT: ${{ inputs.min_invocations }}
+          CANARY_THRESHOLDS_INPUT: ${{ inputs.canary_thresholds }}
         run: |
           if [ -z "$CANDIDATE_MODEL_INPUT" ] || [ -z "$INCUMBENT_MODEL_INPUT" ]; then
             echo "run_canary requires both candidate_model and incumbent_model inputs." >&2
@@ -248,11 +224,13 @@ jobs:
           args=(--candidate "$CANDIDATE_MODEL_INPUT" --incumbent "$INCUMBENT_MODEL_INPUT")
           [ -n "$CANARY_SINCE_INPUT" ] && args+=(--since "$CANARY_SINCE_INPUT")
           [ -n "$BASELINE_DAYS_INPUT" ] && args+=(--baseline-days "$BASELINE_DAYS_INPUT")
-          [ -n "$COST_BAR_INPUT" ] && args+=(--cost-bar "$COST_BAR_INPUT")
-          [ -n "$CACHE_BAR_INPUT" ] && args+=(--cache-bar "$CACHE_BAR_INPUT")
-          [ -n "$LATENCY_BAR_INPUT" ] && args+=(--latency-bar "$LATENCY_BAR_INPUT")
-          [ -n "$MIN_PRS_INPUT" ] && args+=(--min-prs "$MIN_PRS_INPUT")
-          [ -n "$MIN_INVOCATIONS_INPUT" ] && args+=(--min-invocations "$MIN_INVOCATIONS_INPUT")
+          for kv in $CANARY_THRESHOLDS_INPUT; do
+            case "$kv" in
+              cost-bar=*|cache-bar=*|latency-bar=*|min-prs=*|min-invocations=*)
+                args+=("--${kv%%=*}" "${kv#*=}") ;;
+              *) echo "canary_thresholds: unsupported entry '${kv}'." >&2; exit 64 ;;
+            esac
+          done
           # Exit 1 (FAIL) / 2 (INSUFFICIENT) are valid go/no-go verdicts, not step
           # failures — the rendered table already carries the signal. Any OTHER
           # non-zero exit (bad args, missing tool, failed artifact collection) is a
