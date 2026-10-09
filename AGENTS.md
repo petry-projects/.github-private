@@ -945,6 +945,17 @@ even though every ref looks valid, because the stub is ahead of the channel it p
      pinned channel resolves to a commit that declares the input.
 
   Doing these out of order (forwarding first) is exactly the skew this rule prevents.
+- **Same order for a new `client_payload` field from a dispatching sweep (#2050).** A sweep
+  such as `scripts/dev-lead-retry.sh` sends `repository_dispatch` payloads to the harness at
+  the pinned channel. A new field the sweep sends follows the same order: **(1)** the harness
+  change that reads the field (e.g. `scripts/dev-lead-intent.sh`) merges and **reaches the
+  pinned channel first**; **(2)** only then does the sweep change that sends it merge. A
+  sweep and harness change merged together breaks every dispatched run until the channel
+  catches up (#2017: every fix-bot-comment retry failed against `v139-stable`), and the
+  canary gate charges those failures to the next candidate. As a structural backstop,
+  `dev-lead-retry.yml` checks out `scripts/` at the channel `dev-lead.yml` pins (`agent_ref`),
+  not `main`, so the sweep it runs is the same release as the harness
+  (`tests/dev-lead/unit/test_dev_lead_retry_channel.bats`).
 - **Enforcement.** The dev-lead prompt guardrail (part C, #1254) stops the agent from introducing the
   skew at the source; the **Part A CI guard (#1253)** is the belt-and-braces check that fails a PR whose
   caller-stub `with:` forwards an input the pinned channel does not declare.
