@@ -198,6 +198,10 @@ main() {
     exit 1
   fi
 
+  # A budget escalation that cannot apply its hold label fails the run (#2142);
+  # the auto-merge trap below keeps the guard as its last handler.
+  trap hold_label_exit_guard EXIT
+
   # Per-PR automation budget (#926): if this PR has exhausted its lifetime
   # automation budget since the last human interaction, stop before any writes.
   # Checked before holding auto-merge so the escalation's auto-merge disable is
@@ -214,7 +218,7 @@ main() {
   # idempotent (_AM_NEEDS_RESTORE guards it), so the EXIT trap no-ops cleanly
   # when check_idempotency causes an early exit with nothing to restore.
   # checkout_pr_in_worktree chains its own cleanup onto this trap.
-  trap restore_auto_merge EXIT
+  trap 'restore_auto_merge; hold_label_exit_guard' EXIT
   hold_auto_merge
 
   if check_idempotency; then

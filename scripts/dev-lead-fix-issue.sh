@@ -720,7 +720,10 @@ ${lint_output}
     gh label create "auto-rebase:ready" --repo "$REPO" \
       --description "Opts a non-draft PR into auto-rebase without an approval (auto-rebase ready_label)" \
       --color "0e8a16" >/dev/null 2>&1 || true
-    gh pr edit "$pr_url" --repo "$REPO" --add-label "auto-rebase:ready" >/dev/null 2>&1 || true
+    # Best-effort, but never silent (#2142): log gh's message when the label fails.
+    local label_err
+    label_err=$(gh pr edit "$pr_url" --repo "$REPO" --add-label "auto-rebase:ready" 2>&1 >/dev/null) \
+      || echo "::warning::could not add auto-rebase:ready to ${pr_url}: ${label_err//$'\n'/ }"
   fi
 
   # Durable completion claim (#1445): posted ONLY here — after commits are pushed

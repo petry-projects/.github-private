@@ -35,6 +35,8 @@ case "$1" in
   api)
     case "$all" in
       *"/issues/"*"/comments"*) cat "$FIX/comments.json" ;;
+      # Hold label via the REST labels API (#2142).
+      *"/issues/"*"/labels"*)   printf '%s\n' "$all" >> "$LABELS"; echo '[]' ;;
       *"/pulls/"*"/commits"*)   cat "$FIX/commits.json" ;;
       *"/pulls/"*"/reviews"*)   cat "$FIX/reviews.json" ;;
       *) echo '[]' ;;
