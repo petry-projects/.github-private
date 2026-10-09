@@ -13,8 +13,7 @@
 #     unchanged, AC #1).
 #   * surface == pull_request, persona qa-lead -> qa_lead_pr_gather_and_decide,
 #     the ONE gathering+decision shared with the local workflow (AC #2).
-#   * surface == pull_request, no registered gate -> generic already-advised
-#     marker check + a logged notice that no persona gate exists (AC #3).
+#   * surface == pull_request, no registered gate -> skip + a logged notice (AC #3).
 #   * any unreadable signal -> fail closed (skip) with a ::error naming it (AC #3).
 #
 # gh is stubbed on PATH, keyed on the `--jq` filter each call uses, so the
@@ -204,31 +203,26 @@ prior advisory' \
 }
 
 # ---------------------------------------------------------------------------
-# A persona with NO registered pre-gate still gets the generic already-advised
-# marker check on the pull_request surface, and logs that no gate exists (AC #3).
+# A persona with NO registered pre-gate skips on the pull_request surface (its
+# own dedicated workflow serves it), makes no gh call, and logs a notice (AC #3).
 # ---------------------------------------------------------------------------
 
-@test "no-registered-gate: runs (generic already-advised passes) + logs no gate" {
+@test "no-registered-gate: skips, makes no gh call, logs a notice" {
+  printf '#!/usr/bin/env bash\necho called >> "%s/gh-called"\nexit 42\n' "$BATS_TEST_TMPDIR" > "$STUB_BIN/gh"
   run persona_event_pregate scrum-master pull_request petry-projects/.github-private 5 opened
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"run"* ]]
-  [[ "$output" == *"no persona-specific"* ]]
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"skip:no-registered-pregate"* ]]
+  [[ "$output" == *"::notice::"* ]]
   [[ "$output" == *"scrum-master"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/gh-called" ]
 }
 
-@test "no-registered-gate: an existing marker for that persona suppresses" {
-  STUB_COMMENT_BODIES='<!-- persona:scrum-master -->
-prior advisory' \
-    run persona_event_pregate scrum-master pull_request petry-projects/.github-private 5 opened
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"skip:already-advised"* ]]
-}
-
-@test "no-registered-gate: unreadable comments fail closed" {
-  STUB_COMMENTS_RC=1 \
-    run persona_event_pregate scrum-master pull_request petry-projects/.github-private 5 opened
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::"* ]]
+@test "no-registered-gate: dev-lead and pr-review also skip" {
+  for p in dev-lead pr-review; do
+    run persona_event_pregate "$p" pull_request petry-projects/.github-private 5 opened
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"skip:no-registered-pregate"* ]]
+  done
 }
 
 # ---------------------------------------------------------------------------

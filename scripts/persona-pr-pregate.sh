@@ -19,8 +19,10 @@ set -euo pipefail
 #     not be treated as a mention and bypass the pull_request suppressors.
 #   * surface == pull_request + a persona with a registered pre-gate (qa-lead):
 #     run that gate — the ONE shared gather+decide (AC #2).
-#   * surface == pull_request + a persona with NO registered pre-gate: the generic
-#     already-advised marker check only, logging that no persona gate exists (AC #3).
+#   * surface == pull_request + a persona with NO registered pre-gate: skip
+#     (skip:no-registered-pregate) with a ::notice. Such personas (dev-lead,
+#     pr-review, ...) are served by their own dedicated workflows; running their
+#     engine here would post a duplicate advisory (AC #3).
 #   * any unreadable signal: fail closed (skip) with a ::error naming it (AC #3).
 #
 # Prints exactly one decision line on stdout: "run" or "skip:<reason>". Returns 0
@@ -31,27 +33,6 @@ _PERSONA_PREGATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_PERSONA_PREGATE_DIR}/qa-lead-pr-gate.sh"
 # shellcheck source=scripts/lib/persona-runner.sh
 source "${_PERSONA_PREGATE_DIR}/lib/persona-runner.sh"
-
-# persona_generic_already_advised_gate <persona> <repo> <item>
-#   The fallback pull_request pre-gate for a persona with no registered
-#   suppressor set: the generic idempotency check only. Scans the item's comment
-#   stream for the persona's recursion marker; an existing marker means an
-#   advisory already landed -> skip. Fails closed on an unreadable comment stream.
-persona_generic_already_advised_gate() {
-  local persona="$1" repo="$2" item="$3" marker bodies
-  marker="$(pr_agent_marker "$persona")"
-  if ! bodies="$(gh api --paginate \
-      "repos/${repo}/issues/${item}/comments" --jq 'if type == "array" then .[].body else error("expected comments array") end')"; then
-    echo "::error::persona pull_request pre-gate: existing-advisory scan unavailable for ${repo}#${item} — failing closed (skip)" >&2
-    printf 'skip:signal-unavailable\n'
-    return 1
-  fi
-  if grep -qF "$marker" <<< "$bodies"; then
-    printf 'skip:already-advised\n'
-    return 1
-  fi
-  printf 'run\n'
-}
 
 # persona_event_pregate <persona> <surface> <repo> <item> [event_action]
 #   The single entry point the runner calls. See the header for the dispatch.
@@ -85,8 +66,9 @@ persona_event_pregate() {
       qa_lead_pr_gather_and_decide "$repo" "$item"
       ;;
     *)
-      echo "::notice::no persona-specific pull_request pre-gate registered for '${persona}' — applying only the generic already-advised marker check" >&2
-      persona_generic_already_advised_gate "$persona" "$repo" "$item"
+      echo "::notice::no persona-specific pull_request pre-gate registered for '${persona}' — skipping (served by its own workflow)" >&2
+      printf 'skip:no-registered-pregate\n'
+      return 1
       ;;
   esac
 }
