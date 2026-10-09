@@ -203,6 +203,13 @@ setup() {
   [[ "$status" -eq 1 ]]
 }
 
+@test "acv_latest_maintainer_disposition: skip-nochange still counts a separate 'must be fixed' in a no-change comment" {
+  local comments='[{"author":{"login":"m","__typename":"User"},"body":"No change required here, but this must be fixed.","createdAt":"2026-09-04T00:00:00Z"}]'
+  run acv_latest_maintainer_disposition "$comments" "donpetry-bot" "skip-nochange"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-04T00:00:00Z" ]]
+}
+
 @test "acv_latest_maintainer_disposition: skip-nochange still counts a real REQUIRED comment" {
   local comments='[{"author":{"login":"m","__typename":"User"},"body":"Required before merge.","createdAt":"2026-09-03T00:00:00Z"}]'
   run acv_latest_maintainer_disposition "$comments" "donpetry-bot" "skip-nochange"

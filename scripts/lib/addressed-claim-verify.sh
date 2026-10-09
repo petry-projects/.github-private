@@ -385,14 +385,21 @@ acv_latest_maintainer_disposition() {
     # our markers) is ours, never a maintainer finding.
     review_thread_is_agent_authored "$body" && continue
     # Does the marker-less human comment assert a required disposition?
-    [[ "${body^^}" =~ $_ACV_DISPOSITION_RE_UPPER ]] || continue
+    local disp_up="${body^^}"
+    [[ "$disp_up" =~ $_ACV_DISPOSITION_RE_UPPER ]] || continue
     # Optional (#2079): "no change required" contains REQUIRED; when the caller is
-    # evaluating a no-change verdict, an affirmative no-change comment is not itself a
-    # required disposition.
+    # evaluating a no-change verdict, neutralise ONLY the REQUIRED contributed by an
+    # affirmative no-change phrase. A separate blocking assertion in the same comment
+    # ("no change required, but this MUST BE FIXED") must still count.
     if [[ "$skip_nochange" == "skip-nochange" ]] \
-       && [[ "${body^^}" =~ $_ACV_NOCHANGE_RE_UPPER ]] \
-       && ! [[ "${body^^}" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]]; then
-      continue
+       && [[ "$disp_up" =~ $_ACV_NOCHANGE_RE_UPPER ]] \
+       && ! [[ "$disp_up" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]]; then
+      local rest="$disp_up" matched
+      while [[ "$rest" =~ $_ACV_NOCHANGE_RE_UPPER ]]; do
+        matched="${BASH_REMATCH[0]}"
+        rest="${rest//"$matched"/ }"
+      done
+      [[ "$rest" =~ $_ACV_DISPOSITION_RE_UPPER ]] || continue
     fi
     # A disposition with no parseable timestamp cannot be ordered against the fix ->
     # fail closed.
