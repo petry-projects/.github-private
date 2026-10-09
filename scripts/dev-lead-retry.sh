@@ -70,6 +70,14 @@ set -euo pipefail
 #   dispatches one deduplicated fix-bot-comment pass (lib/bot-comment-retry.sh).
 #   This recovers the run GitHub drops when a burst of PR events supersedes the
 #   pending fix-bot-comment run in the per-PR concurrency lane (#2009).
+#
+# Unreplied bot review threads are retried too (#2046). A trusted reviewer bot's
+#   review thread is processed only by a fix-reviews pass. When that pass is lost,
+#   the thread keeps blocking the merge with no reply.
+#   scan_pr_for_unreplied_bot_threads finds unresolved, non-outdated, bot-opened
+#   threads with no reply from our automation, and dispatches one deduplicated
+#   fix-reviews pass per PR (lib/bot-thread-retry.sh). Threads that exhaust their
+#   attempts get a single visible notice, so the stall is never silent.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Escalation gate (#946): pr_has_escalation_label / NEEDS_HUMAN_REVIEW_LABEL.
@@ -85,6 +93,9 @@ fi
 # Undispositioned bot-comment retry decision + comment fetch (#2017).
 # shellcheck source=lib/bot-comment-retry.sh
 source "$SCRIPT_DIR/lib/bot-comment-retry.sh"
+# Unreplied bot review-thread retry decision + thread fetch (#2046).
+# shellcheck source=lib/bot-thread-retry.sh
+source "$SCRIPT_DIR/lib/bot-thread-retry.sh"
 
 TARGET_ORG="${TARGET_ORG:-petry-projects}"
 DELEGATION_ORGS="${DELEGATION_ORGS:-}"
@@ -143,16 +154,18 @@ is_reset_in_future() {
 # DISPATCH_GUARD_WINDOW_SEC seconds, indicating a concurrent caller already
 # claimed dispatch for this PR and the current caller should skip.
 has_dispatch_guard() {
-  local comments_json="$1" sha="$2" guard_time guard_epoch now_epoch age
-  guard_time=$(echo "$comments_json" | jq -r \
-    --arg pat "${DISPATCH_GUARD_PREFIX}${sha}" \
-    '[.[] | select(. | test($pat))] | .[0] | capture("at=(?<t>[0-9T:Z-]+)") | .t // ""' \
-    2>/dev/null || true)
-  [ -z "$guard_time" ] && return 1
-  guard_epoch=$(date -u -d "$guard_time" +%s 2>/dev/null || echo 0)
+  local comments_json="$1" sha="$2" now_epoch window
   now_epoch=$(get_now_epoch)
-  age=$(( now_epoch - guard_epoch ))
-  [ "$age" -lt "${DISPATCH_GUARD_WINDOW_SEC:-600}" ]
+  window="${DISPATCH_GUARD_WINDOW_SEC:-600}"
+  [[ "$window" =~ ^[0-9]+$ ]] || window=600
+  # ANY matching guard counts (not just the first), and only one dated inside
+  # [now - window, now]: a far-future `at=` must never hold retries off (#2046).
+  echo "$comments_json" | jq -e \
+    --arg pat "${DISPATCH_GUARD_PREFIX}${sha}" --argjson now "$now_epoch" --argjson win "$window" '
+    [ .[] | strings | select(test($pat))
+      | (capture("at=(?<t>[0-9T:Z-]+)")? | .t | try fromdateiso8601 catch null)
+      | select(. != null) | ($now - .) | select(. >= 0 and . < $win) ]
+    | length > 0' >/dev/null 2>&1
 }
 
 # post_dispatch_guard <repo> <pr_number> <sha>
@@ -694,6 +707,17 @@ scan_pr_for_undispositioned_bot_comments() {
     echo "  [warn] bot-comment retry: could not read PR ${pr_number} comments in ${repo} — skipping (fail closed)" >&2
     echo "0"; return 0
   fi
+  # A run another path queued moments ago for this head (dev-lead-resume.sh or the
+  # rate-limit sweep posts the guard first) is still pending in the per-PR lane; a
+  # second dispatch now would supersede it (#2046). Defer to it.
+  # Only a guard our own automation posted counts, so a PR commenter cannot pause it.
+  if has_dispatch_guard "$(jq -c --arg a "$(bcr_automation_logins)" '
+        ($a | split(",") | map(sub("\\[bot\\]$"; ""))) as $L
+        | [ .[] | objects | select(((.author.login // "") | sub("\\[bot\\]$"; "")) as $l | $L | index($l) != null)
+            | .body // empty ]' <<< "$comments" 2>/dev/null || echo '[]')" "$head_sha"; then
+    echo "  [skip] bot-comment retry: PR ${pr_number} SHA ${head_sha:0:8} has a recent dispatch guard — not superseding it" >&2
+    echo "0"; return 0
+  fi
 
   local trusted="${TRUSTED_BOTS:-}"
   if [ -z "$trusted" ]; then
@@ -794,6 +818,29 @@ scan_pr_for_undispositioned_bot_comments() {
       withdraw_bot_comment_retry_marker "$repo" "$marker_id"
       echo "0"; return 0
     fi
+    # A thread-retry marker posted concurrently shares the per-PR lane: the
+    # earliest in-window one wins, so both kinds cannot each dispatch.
+    local sib_pending sib_first sib_raw
+    sib_pending="${BOT_THREAD_RETRY_PENDING_SEC:-9000}"
+    [[ "$sib_pending" =~ ^[0-9]+$ ]] || sib_pending=9000
+    if ! sib_raw=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+      --jq '.[] | select((.user.login // "" | sub("\\[bot\\]$"; "")) as $l | '"${logins_jq}"' | index($l) != null)
+            | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
+            | select((.body // "") | contains("<!-- dev-lead-bot-thread-retry threads="))
+            | {id, created_at}' 2>/dev/null) \
+      || ! sib_first=$(printf '%s\n' "$sib_raw" | jq -rs --argjson now "$(get_now_epoch)" --argjson pending "$sib_pending" '
+        [ .[] | objects | select((.id | type) == "number")
+          | select($now - ((.created_at // "") | (try fromdateiso8601 catch 0)) < $pending) | .id ]
+        | min // empty' 2>/dev/null); then
+      echo "  [warn] bot-comment retry: could not re-read thread retry markers on PR ${pr_number} — withdrawing and not dispatching (fail closed)" >&2
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      echo "0"; return 0
+    fi
+    if [[ "$sib_first" =~ ^[0-9]+$ ]] && [ "$sib_first" -lt "$marker_id" ]; then
+      echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent thread retry already recorded a retry" >&2
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      echo "0"; return 0
+    fi
     if [ "$first_marker" != "$marker_id" ]; then
       echo "  [skip] bot-comment ${cid} on PR ${pr_number}: a concurrent scan already recorded a retry" >&2
       withdraw_bot_comment_retry_marker "$repo" "$marker_id"
@@ -804,6 +851,210 @@ scan_pr_for_undispositioned_bot_comments() {
     # Nothing was dispatched, so withdraw the marker — left in place it would read
     # as a pending retry and block the next attempt for the whole pending window.
     withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+    echo "0"; return 0
+  fi
+  echo "1"
+}
+
+# post_bot_thread_exhausted_notice <repo> <pr_number> <decisions_json>
+# Surfaces threads whose retries ran out (#2046). Without the notice the stall
+# would be silent: the thread keeps blocking the merge and the sweep stops
+# retrying it. Posts ONE comment naming every newly exhausted thread. Its hidden
+# marker lists their ids, so a later scan never repeats the notice for them.
+# Best effort.
+post_bot_thread_exhausted_notice() {
+  local repo="$1" pr_number="$2" decisions="$3" ids list body
+  ids=$(jq -r '.exhausted_unnoticed | join(",")' <<< "$decisions" 2>/dev/null || true)
+  [ -n "$ids" ] || return 0
+  if [[ ! "$ids" =~ ^[-A-Za-z0-9_+/=,]+$ ]]; then
+    echo "  [warn] bot-thread retry: unexpected thread ids on PR ${pr_number} — not posting the exhaustion notice" >&2
+    return 0
+  fi
+  echo "  [exhausted] bot-thread retry on PR ${pr_number}: retries exhausted for ${ids} — posting notice" >&2
+  [ "$DRY_RUN" = "true" ] && return 0
+  list=$(jq -r '.exhausted_unnoticed as $n | .threads[] | select(.id as $i | $n | index($i) != null)
+      | "- `\(.path // "?"):\(.line // "?")` (\(.login))"' <<< "$decisions" 2>/dev/null || true)
+  body="**dev-lead: bot review threads still unprocessed after automatic retries**
+
+dev-lead retried the fix-reviews pass for these trusted-bot review threads, but none of them received a dev-lead reply. Unresolved threads block the merge (\`required_review_thread_resolution\`), so a maintainer needs to address or resolve them, or @mention dev-lead to try again:
+
+${list}
+
+$(btr_exhausted_marker "$ids")"
+  if ! gh api --method POST "repos/${repo}/issues/${pr_number}/comments" -f body="$body" >/dev/null 2>&1; then
+    echo "  ::warning::bot-thread retry: could not post the exhaustion notice on PR ${pr_number} in ${repo}" >&2
+  fi
+}
+
+# scan_pr_for_unreplied_bot_threads <repo> <pr_number>
+# Finds unresolved, non-outdated review threads on an open dev-lead PR that a
+# trusted reviewer bot opened and our automation never replied to. If any is past
+# the grace period, it dispatches ONE fix-reviews retry for the PR (#2046). The
+# pass enumerates every unresolved thread (open-review-threads.sh), so one
+# dispatch covers them all. A second would supersede the first in the per-PR
+# lane. Dedup (pending, rate limit, attempt caps) lives in the pure
+# btr_retry_decisions. The claim marker is posted before the dispatch, so this
+# cron and pr-review's gate hook never both dispatch. Threads that run out of
+# attempts get one visible notice. Prints only the number of dispatches to
+# stdout; all other output goes to stderr. Fails closed (0 dispatches) on any
+# read failure. It never replies to or resolves a thread.
+scan_pr_for_unreplied_bot_threads() {
+  local repo="$1" pr_number="$2"
+
+  local pr_obj
+  pr_obj=$(gh api "repos/${repo}/pulls/${pr_number}" 2>/dev/null || echo '{}')
+  local pr_state head_sha head_repo pr_author
+  pr_state=$(jq -r '.state // empty' <<< "$pr_obj" 2>/dev/null || true)
+  head_sha=$(jq -r '.head?.sha // empty' <<< "$pr_obj" 2>/dev/null || true)
+  head_repo=$(jq -r '.head?.repo?.full_name // empty' <<< "$pr_obj" 2>/dev/null || true)
+  pr_author=$(jq -r '.user?.login // empty' <<< "$pr_obj" 2>/dev/null || true)
+  if [ "$pr_state" != "open" ]; then
+    echo "  [skip] bot-thread retry: PR ${pr_number} in ${repo} is ${pr_state:-unknown}" >&2
+    echo "0"; return 0
+  fi
+  if [ -z "$head_sha" ]; then
+    echo "  [warn] bot-thread retry: could not resolve HEAD SHA for PR ${pr_number} in ${repo} — skipping" >&2
+    echo "0"; return 0
+  fi
+  # Authorship gate (#1311), as in the bot-comment retry: fix-reviews only pushes
+  # to PRs dev-lead authored, with a same-repository head.
+  if [ -z "$pr_author" ] || [ "$pr_author" != "$(dev_lead_identity)" ] \
+     || [ "$head_repo" != "$repo" ]; then
+    echo "0"; return 0
+  fi
+  local labels_json
+  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
+  if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
+    echo "0"; return 0
+  fi
+
+  local threads comments
+  if ! threads=$(btr_fetch_pr_threads "$repo" "$pr_number"); then
+    echo "  [warn] bot-thread retry: could not read PR ${pr_number} review threads in ${repo} — skipping (fail closed)" >&2
+    echo "0"; return 0
+  fi
+  if ! comments=$(bcr_fetch_pr_comments "$repo" "$pr_number"); then
+    echo "  [warn] bot-thread retry: could not read PR ${pr_number} comments in ${repo} — skipping (fail closed)" >&2
+    echo "0"; return 0
+  fi
+  # A run another path queued moments ago for this head (dev-lead-resume.sh or the
+  # rate-limit sweep posts the guard first) is still pending in the per-PR lane; a
+  # second dispatch now would supersede it (#2046). Defer to it.
+  # Only a guard our own automation posted counts, so a PR commenter cannot pause it.
+  if has_dispatch_guard "$(jq -c --arg a "$(bcr_automation_logins)" '
+        ($a | split(",") | map(sub("\\[bot\\]$"; ""))) as $L
+        | [ .[] | objects | select(((.author.login // "") | sub("\\[bot\\]$"; "")) as $l | $L | index($l) != null)
+            | .body // empty ]' <<< "$comments" 2>/dev/null || echo '[]')" "$head_sha"; then
+    echo "  [skip] bot-thread retry: PR ${pr_number} SHA ${head_sha:0:8} has a recent dispatch guard — not superseding it" >&2
+    echo "0"; return 0
+  fi
+
+  local trusted="${TRUSTED_BOTS:-}"
+  if [ -z "$trusted" ]; then
+    trusted=$( (
+      # shellcheck source=lib/reviewer-sources.sh
+      source "$SCRIPT_DIR/lib/reviewer-sources.sh" && reviewer_sources_trusted_bots_csv
+    ) 2>/dev/null || true)
+  fi
+  if [ -z "$trusted" ]; then
+    echo "  [warn] bot-thread retry: no trusted reviewer bots resolved — skipping" >&2
+    echo "0"; return 0
+  fi
+
+  local automation decisions now_epoch
+  automation=$(bcr_automation_logins)
+  now_epoch=$(get_now_epoch)
+  if ! decisions=$(btr_retry_decisions "$threads" "$comments" "$trusted" "$now_epoch" "$automation"); then
+    echo "  [warn] bot-thread retry: could not evaluate PR ${pr_number} review threads — skipping (fail closed)" >&2
+    echo "0"; return 0
+  fi
+
+  if ! jq -r --arg pr "$pr_number" '.threads[] | select(.decision == "skip")
+         | "  [skip] bot-thread \(.id) (\(.login)) on PR \($pr): \(.reason)"' \
+       <<< "$decisions" >&2; then
+    echo "  [warn] bot-thread retry: could not render skip decisions for PR ${pr_number}" >&2
+  fi
+
+  local ids attempt now_iso
+  ids=$(jq -r '.dispatch | join(",")' <<< "$decisions")
+  if [ -z "$ids" ]; then
+    # Only when nothing is dispatched: a fix-reviews pass covers EVERY unresolved
+    # thread, the exhausted ones included, so a notice posted alongside a dispatch
+    # could go stale while its marker blocks a corrected one.
+    post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"
+    echo "0"; return 0
+  fi
+  attempt=$(jq -r '.attempt' <<< "$decisions")
+  # Spliced into the marker body below.
+  if [[ ! "$ids" =~ ^[-A-Za-z0-9_+/=,]+$ ]] || [[ ! "$attempt" =~ ^[0-9]+$ ]]; then
+    echo "  [warn] bot-thread retry: unexpected thread ids/attempt on PR ${pr_number} — not dispatching" >&2
+    post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
+    echo "0"; return 0
+  fi
+  now_iso="${NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  echo "  [retry] bot-thread(s) ${ids} on PR ${pr_number}: unreplied → fix-reviews attempt ${attempt}" >&2
+
+  # Record the attempt BEFORE dispatching, so a concurrent caller (this cron or
+  # pr-review's gate hook) sees it as pending and does not dispatch again.
+  local marker_id=""
+  if [ "$DRY_RUN" != "true" ]; then
+    if ! marker_id=$(gh api --method POST "repos/${repo}/issues/${pr_number}/comments" \
+         -f body="$(btr_retry_marker "$ids" "$attempt" "$now_iso")" \
+         --jq '.id // empty' 2>/dev/null); then
+      echo "  [warn] bot-thread retry: could not record the retry marker on PR ${pr_number} — not dispatching (dedup unavailable)" >&2
+      post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
+      echo "0"; return 0
+    fi
+    if [[ ! "$marker_id" =~ ^[0-9]+$ ]]; then
+      echo "  [warn] bot-thread retry: the retry marker's id on PR ${pr_number} is unreadable — not dispatching (fail closed)" >&2
+      post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
+      echo "0"; return 0
+    fi
+    # Two concurrent scans can both have seen no pending marker. The earliest
+    # trusted retry marker (thread or bot-comment: they share one per-PR lane,
+    # and scan_pr_for_undispositioned_bot_comments arbitrates against this kind
+    # too) inside the pending window wins. The decision
+    # above found none pending, so any other in-window marker was posted
+    # concurrently. An expired marker from a lost run is outside the window and
+    # never beats this claim. As with the bot-comment retry this is a best-effort
+    # claim, not a lock (the listing is eventually consistent).
+    local listing first_marker logins_jq pending
+    pending="${BOT_THREAD_RETRY_PENDING_SEC:-9000}"
+    [[ "$pending" =~ ^[0-9]+$ ]] || pending=9000
+    logins_jq=$(jq -cn --arg a "$automation" '$a | split(",") | map(sub("\\[bot\\]$"; ""))')
+    if [ "$BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC" -gt 0 ]; then
+      sleep "$BOT_COMMENT_RETRY_CLAIM_SETTLE_SEC"
+    fi
+    if ! listing=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+      --jq '.[] | select((.user.login // "" | sub("\\[bot\\]$"; "")) as $l | '"${logins_jq}"' | index($l) != null)
+            | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a) != null)
+            | select((.body // "") | (contains("<!-- dev-lead-bot-thread-retry threads=") or contains("<!-- dev-lead-bot-comment-retry id=")))
+            | {id, created_at}' \
+      2>/dev/null); then
+      echo "  [warn] bot-thread retry: could not re-read retry markers on PR ${pr_number} — withdrawing and not dispatching (fail closed)" >&2
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
+      echo "0"; return 0
+    fi
+    first_marker=$(printf '%s\n' "$listing" | jq -rs --argjson now "$now_epoch" --argjson pending "$pending" '
+        [ .[] | objects | select((.id | type) == "number")
+          | select($now - ((.created_at // "") | (try fromdateiso8601 catch 0)) < $pending) | .id ]
+        | min // empty' 2>/dev/null || true)
+    if [ -z "$first_marker" ]; then
+      echo "  ::warning::bot-thread retry: the retry marker on PR ${pr_number} was posted by an identity the retry dedup does not trust (expected one of: ${automation}) — withdrawing and not dispatching" >&2
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
+      echo "0"; return 0
+    fi
+    if [ "$first_marker" != "$marker_id" ]; then
+      echo "  [skip] bot-thread retry on PR ${pr_number}: a concurrent scan already recorded a retry" >&2
+      withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+      echo "0"; return 0
+    fi
+  fi
+  if ! dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "fix-reviews"; then
+    withdraw_bot_comment_retry_marker "$repo" "$marker_id"
+    post_bot_thread_exhausted_notice "$repo" "$pr_number" "$decisions"  # nothing was dispatched
     echo "0"; return 0
   fi
   echo "1"
@@ -835,6 +1086,11 @@ scan_repo() {
       # per-PR lane would supersede the first while it is still pending.
       if [ "${dispatched:-0}" -eq 0 ]; then
         dispatched=$(scan_pr_for_undispositioned_bot_comments "$repo" "$pr_number")
+        total_dispatched=$(( total_dispatched + dispatched ))
+      fi
+      # Unreplied bot review threads (#2046), under the same one-per-PR rule.
+      if [ "${dispatched:-0}" -eq 0 ]; then
+        dispatched=$(scan_pr_for_unreplied_bot_threads "$repo" "$pr_number")
         total_dispatched=$(( total_dispatched + dispatched ))
       fi
     done < <(echo "$prs_json" | jq -sc 'add // [] | .[]')
@@ -977,6 +1233,7 @@ list_repos_for_org() {
   echo "$result"
 }
 
+# main: orchestrates the retry scan across all configured repos and dispatches retries.
 main() {
   echo "[retry] dev-lead-retry starting at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "[retry] dry_run=${DRY_RUN} dispatch_delay=${DISPATCH_DELAY_SEC}s"
