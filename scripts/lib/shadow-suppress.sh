@@ -38,10 +38,12 @@ shadow_mode_active() {
 }
 
 # shadow_apply_suppression()
-#   Enable shadow-mode output suppression by forcing DEV_LEAD_DRY_RUN=true,
-#   which disables all PR/issue posting sites. Records a suppression notice
-#   to the run log and an optional output file. Idempotent: no-op if shadow
-#   mode is inactive (DEV_LEAD_SHADOW_MODE is recognized-falsy).
+#   Enable shadow-mode output suppression by normalizing DEV_LEAD_SHADOW_MODE.
+#   Does NOT force DEV_LEAD_DRY_RUN — instead, relies on posting sites to check
+#   shadow_mode_active separately. This allows the engine to run while suppressing
+#   all PR/issue output. Records a suppression notice to the run log and an
+#   optional output file. Idempotent: no-op if shadow mode is inactive
+#   (DEV_LEAD_SHADOW_MODE is recognized-falsy).
 #
 # Environment variables (read):
 #   DEV_LEAD_SHADOW_MODE - shadow mode flag (recognized-falsy = inactive)
@@ -49,7 +51,6 @@ shadow_mode_active() {
 #
 # Environment variables (written):
 #   DEV_LEAD_SHADOW_MODE - normalized to "true" if suppression activated
-#   DEV_LEAD_DRY_RUN     - set to "true" to disable all posting sites
 #
 # Returns:
 #   Always 0 (success)
@@ -57,7 +58,6 @@ shadow_apply_suppression() {
   shadow_mode_active || return 0
 
   export DEV_LEAD_SHADOW_MODE="true"
-  export DEV_LEAD_DRY_RUN="true"
 
   export SHADOW_OUTPUT_FILE="${SHADOW_OUTPUT_FILE:-/tmp/dev-lead-shadow-output.txt}"
   printf '[shadow] PR-output suppression active for this run (%s)\n' \
