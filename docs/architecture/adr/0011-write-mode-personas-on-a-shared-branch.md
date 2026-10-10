@@ -78,12 +78,19 @@ Follow-up ([#2032](https://github.com/petry-projects/.github-private/issues/2032
 - **Earlier passes are swept too.** A run that is cancelled or killed after its
   model replies never reaches its own sweep. So every pass, before it posts
   anything, checks the claim replies our account posted in earlier passes
-  (`sweep_earlier_claims`, `cl_earlier_claim_verdict`). A claim survives only
-  if its commit is on the remote head, touches the claimed files, and was
-  committed no earlier than the review comment it answers. A retracted reply
-  keeps its original claim in a `dev-lead:retracted-claim` comment, which is
-  never read as a claim. If that claim later passes the same check, the reply
-  is restored without a new commit.
+  (`sweep_earlier_claims`, `cl_earlier_claim_verdict`). A verifiable claim
+  survives only if its commit is on the remote head, touches the claimed files,
+  and was committed no earlier than the review comment it answers. The sweep
+  fails open when it cannot verify: it leaves a claim as is when the remote head
+  or the comments cannot be read, the checkout is shallow and lacks the commit,
+  or GitHub cannot be asked about the commit; the date check is skipped when the
+  finding's timestamp is missing. A commit that is not on the head but is known
+  to GitHub was pushed and then rewritten, so its claim is kept, not retracted;
+  only a commit GitHub has never seen is. A retracted reply keeps its original
+  claim in a `dev-lead:retracted-claim` comment (with `--` JSON-escaped), which
+  is never read as a claim. If that claim later passes the same check, the
+  reply is restored without a new commit, and gets the addressed-marker back
+  only if it carried one before.
 - **A clean rebase keeps true claims.** When the push guard rebases dev-lead's
   commits onto a foreign commit, it records each old→new SHA pair
   (`_PUSH_GUARD_REWRITES`), matched on author, author date and message, which

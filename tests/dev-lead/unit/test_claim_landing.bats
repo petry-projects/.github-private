@@ -193,6 +193,31 @@ second line")
   [[ "$(jq -r .sha <<<"$output")" == "$A40" ]]
 }
 
+@test "cl_retract_body/cl_restore_body: a claim containing -- is stored escaped and restores" {
+  local claim='{"v":1,"sha":"'"$A40"'","files":["a--b.txt"]}' orig retracted
+  orig=$(printf 'Fixed.\n\n<!-- dev-lead:addressed -->\n<!-- dev-lead:claim %s -->' "$claim")
+  retracted=$(cl_retract_body "$orig" "not-on-ref")
+  [[ "$retracted" == *"dev-lead:retracted-claim "* ]]
+  local line
+  line=$(grep '^<!-- dev-lead:retracted-claim ' <<<"$retracted")
+  local payload="${line#'<!-- dev-lead:retracted-claim '}"
+  [[ "${payload%' -->'}" != *"--"* ]]
+  run cl_restore_body "$retracted" "$claim"
+  [[ "$status" -eq 0 ]]
+  [[ "$(acv_parse_claim "$output" | jq -r '.files[0]')" == "a--b.txt" ]]
+}
+
+@test "cl_restore_body: a reply that never carried the addressed-marker does not gain one" {
+  local orig retracted
+  orig=$(printf 'Fixed in f.\n\n<!-- dev-lead:claim {"v":1,"sha":"%s","files":["f"]} -->' "$A40")
+  retracted=$(cl_retract_body "$orig" "not-on-ref")
+  [[ "$retracted" == *"<!-- dev-lead:retracted-unaddressed -->"* ]]
+  run cl_restore_body "$retracted" "{\"v\":1,\"sha\":\"$A40\",\"files\":[\"f\"]}"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" != *"dev-lead:addressed"* ]]
+  [[ "$output" != *"dev-lead:retracted"* ]]
+}
+
 @test "cl_restore_body: an invalid claim payload restores nothing" {
   run cl_restore_body "$(cl_retract_body "$(_claim_body "$A40")" x)" '{"v":1,"sha":"short","files":["f"]}'
   [[ "$status" -eq 1 ]]

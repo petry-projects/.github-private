@@ -6022,6 +6022,12 @@ case "\$ARGS" in
     echo "\$*" >> "$T2013_PATCH"
     echo '{}'
     ;;
+  # The earlier-claim sweep asks GitHub whether a not-on-ref commit exists (#2032).
+  # GitHub has never seen 9313650…: the lookup fails as an unknown commit does.
+  *"commits/931365099bfb2c283aecfb16b0f5f0b8d59436b2"*)
+    echo "gh: No commit found for SHA: 931365099bfb2c283aecfb16b0f5f0b8d59436b2 (HTTP 422)" >&2
+    exit 1
+    ;;
   *"resolveReviewThread"*)
     echo "\$*" >> "$T2013_MUT"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'

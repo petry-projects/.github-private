@@ -52,6 +52,7 @@ readonly _CL_RETRACTED_PREFIX='<!-- dev-lead:retracted reason='
 # acv_parse_claim never reads it as a claim.
 readonly _CL_RETRACTED_CLAIM_PREFIX='<!-- dev-lead:retracted-claim '
 # The line cl_retract_body puts above the quoted original reply.
+readonly _CL_UNADDRESSED_MARKER='<!-- dev-lead:retracted-unaddressed -->'
 readonly _CL_ORIGINAL_HEADER='Original reply, kept for the record'
 
 # cl_push_landed_verdict <start_head> <pushed_sha> <remote_head> <pushed_on_remote>
@@ -227,6 +228,14 @@ cl_reply_stamp_body() {
   printf '%s\n\n<!-- dev-lead:reply -->\n' "${1:-}"
 }
 
+# cl_escape_dashes <text>
+#   <text> with every `--` rewritten as `-\u002d` (a JSON escape), so a claim payload
+#   can sit inside an HTML comment without closing it. Pure.
+cl_escape_dashes() {
+  local t="${1:-}"
+  printf '%s' "${t//--/-\\u002d}"
+}
+
 # cl_retract_body <body> <reason>
 #   The retracted form of a claim reply. Removes the addressed-marker and the claim
 #   comment (so neither the thread gate nor another bot can treat it as a fix),
@@ -240,11 +249,17 @@ cl_retract_body() {
   local body="${1:-}" reason="${2:-unknown}"
   [[ "$reason" =~ ^[a-z][a-z-]*$ ]] || reason="unknown"
 
-  # A payload containing `--` could close the HTML comment early; drop it (the
-  # reply then simply cannot be restored).
-  local claim="" claim_line=""
-  if claim=$(acv_parse_claim "$body") && [[ "$claim" != *"--"* ]]; then
-    claim_line="${_CL_RETRACTED_CLAIM_PREFIX}${claim}${_ACV_CLAIM_SUFFIX}"$'\n'
+  # A payload containing `--` could close the HTML comment early, so each `--` is
+  # stored with a JSON `\u002d` escape (cl_escape_dashes): the reply stays
+  # restorable. Whether the original carried the addressed-marker is recorded too,
+  # so a restore never grants a marker the reply never had.
+  local claim="" claim_line="" unaddressed_line=""
+  claim=$(acv_parse_claim "$body") || claim=""
+  if [[ -n "$claim" ]]; then
+    claim_line="${_CL_RETRACTED_CLAIM_PREFIX}$(cl_escape_dashes "$claim")${_ACV_CLAIM_SUFFIX}"$'\n'
+  fi
+  if ! [[ "$body" =~ $_DEV_LEAD_ADDRESSED_MARKER ]]; then
+    unaddressed_line="${_CL_UNADDRESSED_MARKER}"$'\n'
   fi
 
   local stripped
@@ -256,11 +271,11 @@ cl_retract_body() {
   local quoted
   quoted=$(printf '%s\n' "$stripped" | sed 's/^/> /')
 
-  printf '%s\n\n%s\n\n%s\n\n%s%s%s -->\n' \
+  printf '%s\n\n%s\n\n%s\n\n%s%s%s%s -->\n' \
     "**⚠️ Retracted by the dev-lead harness (\`${reason}\`).** This reply's claim could not be verified as a fix produced and pushed by this pass (its commit was not produced by this pass, or the push did not land), so it no longer counts as addressed. The thread stays open; the next dev-lead pass re-verifies against the pushed diff." \
     "${_CL_ORIGINAL_HEADER} (unverified — it does not count as a fix):" \
     "$quoted" \
-    "$claim_line" "$_CL_RETRACTED_PREFIX" "$reason"
+    "$claim_line" "$unaddressed_line" "$_CL_RETRACTED_PREFIX" "$reason"
 }
 
 # cl_restore_body <retracted_body> <claim_json>
@@ -282,8 +297,13 @@ cl_restore_body() {
       on { sub(/^> ?/, ""); print }
     ' <<<"$body" | sed -e '/./,$!d')
 
-  printf '%s\n\n<!-- dev-lead:addressed -->\n%s%s%s\n' \
-    "$original" "$_ACV_CLAIM_PREFIX" "$claim" "$_ACV_CLAIM_SUFFIX"
+  # Only a reply that carried the addressed-marker gets it back.
+  local marker_line="<!-- dev-lead:addressed -->"$'\n'
+  if grep -qxF "$_CL_UNADDRESSED_MARKER" <<<"$body"; then
+    marker_line=""
+  fi
+  printf '%s\n\n%s%s%s%s\n' \
+    "$original" "$marker_line" "$_ACV_CLAIM_PREFIX" "$(cl_escape_dashes "$claim")" "$_ACV_CLAIM_SUFFIX"
 }
 
 # cl_rewrite_claim_sha <body> <new_sha>

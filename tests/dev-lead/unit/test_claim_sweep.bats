@@ -75,6 +75,13 @@ case "\$*" in
     echo '{}'
     ;;
   *"pulls/54/comments"*) cat "$COMMENTS" ;;
+  # github_knows_commit: GH_KNOWN_COMMIT was pushed; GH_COMMITS_ERROR fails the lookup.
+  *"/commits/"*)
+    all="\$*"; sha="\${all##*/commits/}"; sha="\${sha%% *}"
+    if [ -n "\${GH_COMMITS_ERROR:-}" ]; then echo "gh: Server Error (HTTP 500)" >&2; exit 1; fi
+    if [ "\$sha" = "\${GH_KNOWN_COMMIT:-}" ]; then echo "\$sha"; exit 0; fi
+    echo "gh: No commit found for SHA: \$sha (HTTP 422)" >&2; exit 1
+    ;;
   *) echo '{}' ;;
 esac
 GHEOF
@@ -86,6 +93,7 @@ GHEOF
   source "$LIB_DIR/claim-landing.sh"
   source "$LIB_DIR/git-push-guard.sh"
   source "$LIB_DIR/git-history.sh"
+  eval "$(sed -n '/^github_knows_commit()/,/^}/p' "$FIX_REVIEWS_SCRIPT")"
   eval "$(sed -n '/^sweep_earlier_claims()/,/^}/p' "$FIX_REVIEWS_SCRIPT")"
   eval "$(sed -n '/^retract_unlanded_claims()/,/^}/p' "$FIX_REVIEWS_SCRIPT")"
   declare -F sweep_earlier_claims >/dev/null
@@ -159,6 +167,27 @@ _landed_fix() {
   ! grep -q "dev-lead:addressed" "$PATCHES/201"
   # The original claim is kept (not as a claim) so a later pass can re-verify it.
   grep -q "dev-lead:retracted-claim .*${ghost}" "$PATCHES/201"
+}
+
+@test "#2032 AC1: an earlier reply whose commit GitHub knows (pushed, then rewritten) is kept" {
+  local ghost="931365099bfb2c283aecfb16b0f5f0b8d59436b2"
+  export GH_KNOWN_COMMIT="$ghost"
+  _serve "$(_reply 201 "2026-10-09T02:42:00Z" "$(_claim "$ghost")")"
+
+  run sweep_earlier_claims
+  [ "$status" -eq 0 ]
+  [ ! -f "$PATCHES/201" ]
+  [[ "$output" == *"pushed, then rewritten"* ]]
+}
+
+@test "#2032 AC1: a failed GitHub commit lookup retracts nothing" {
+  local ghost="931365099bfb2c283aecfb16b0f5f0b8d59436b2"
+  export GH_COMMITS_ERROR=1
+  _serve "$(_reply 201 "2026-10-09T02:42:00Z" "$(_claim "$ghost")")"
+
+  run sweep_earlier_claims
+  [ "$status" -eq 0 ]
+  [ ! -f "$PATCHES/201" ]
 }
 
 @test "#2032 AC1: an earlier pass's reply whose commit landed and touches its files is left alone" {

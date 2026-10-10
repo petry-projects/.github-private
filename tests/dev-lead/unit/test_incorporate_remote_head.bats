@@ -222,7 +222,9 @@ _remote_log()  { git --git-dir="$REMOTE" log --format='%s' main; }
   source "$GUARD_LIB"
   printf 'dev-lead line\n' >> base; git add base; git commit -q -m "dev-lead edits base"
   _maintainer_push base "maintainer rewrite of base"
-  push_no_clobber origin main || true
+  local push_status=0
+  push_no_clobber origin main || push_status=$?
+  [ "$push_status" -ne 0 ]
   [ -z "$_PUSH_GUARD_REWRITES" ]
 }
 
