@@ -122,8 +122,14 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == pr-auto-review-* ]]
   [[ "$output" != *"head_sha"* ]]
-  local re="pull_request\\.number.*check_suite\\.id.*workflow_run\\.id.*'none'"
-  printf '%s' "$output" | tr '\n' ' ' | grep -Eq "$re"
+  # Tighten the assertion: verify || operators are present and in correct order.
+  # This catches regressions like missing branches, wrong order, or invalid fallbacks.
+  local normalized
+  normalized=$(printf '%s' "$output" | tr '\n' ' ')
+  # Exact pattern: pull_request.number || check_suite.id || workflow_run.id || 'none'
+  [[ "$normalized" =~ pull_request\.number[^}]*\|\|[^}]*check_suite\.id[^}]*\|\|[^}]*workflow_run\.id[^}]*\|\|[^}]*\'none\' ]]
+  # Also verify no run_id or head_sha crept in (beyond the above tests)
+  [[ "$normalized" != *"run_id"* ]]
   run yq '.jobs["pr-auto-review"].concurrency["cancel-in-progress"]' "$INGRESS"
   [ "$status" -eq 0 ]
   [ "$output" = "true" ]
