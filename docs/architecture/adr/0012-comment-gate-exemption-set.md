@@ -6,7 +6,7 @@ proposed
 
 ## Context
 
-#1813 redesigned pr-review's maintainer-comment gate
+Issue #1813 redesigned pr-review's maintainer-comment gate
 (`scripts/lib/maintainer-comment-gate.sh`). Its scope is **every PR issue
 comment**: each one blocks approval until dev-lead posts a verified disposition
 and the harness minimizes the comment `RESOLVED`. The only exclusions were our
