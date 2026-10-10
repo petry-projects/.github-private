@@ -56,6 +56,9 @@ source "$SCRIPT_DIR/lib/downstream-impact.sh"
 # Gated behind SAFETY_CHECKS_ENABLED (default ON; off => byte-identical prompt).
 # shellcheck source=lib/safety-checks.sh
 source "$SCRIPT_DIR/lib/safety-checks.sh"
+
+# shellcheck source=lib/merge-queue-dequeue.sh
+source "$SCRIPT_DIR/lib/merge-queue-dequeue.sh"
 # Semantic symbol-context pass (issue #1090, epic #1088): assemble_symbol_context
 # gathers caller/callee/type-def reference contexts (via the GitHub search_code
 # path) for each function touched in the diff and writes them to a file whose
@@ -573,6 +576,8 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
         _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
         if [ -n "$_agent_approval" ]; then
           gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to a PR issue comment lacking a verified disposition (#1813)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
+          # The queue checks reviews only at enqueue; drop a queued PR left with no approval (#2174).
+          mq_dequeue_if_unapproved "$PR_URL" || true
         fi
       fi
       # Act on this verdict instead of waiting (#2017). When a blocking comment is
@@ -647,6 +652,8 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
         _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
         if [ -n "$_agent_approval" ]; then
           gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer review thread (#1415)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
+          # The queue checks reviews only at enqueue; drop a queued PR left with no approval (#2174).
+          mq_dequeue_if_unapproved "$PR_URL" || true
         fi
       fi
       emit_verdict skip unaddressed-maintainer-review-thread "the maintainer review thread is resolved and a new commit is pushed, or an @mention (FORCE_REVIEW) overrides the gate"
