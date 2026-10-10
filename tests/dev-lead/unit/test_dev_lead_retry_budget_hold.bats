@@ -352,7 +352,22 @@ _assert_fail_open() {
 }
 
 @test "fail-open (#2139 AC2): a record older than bp_stale_hours is ignored" {
-  # Default window is 3h: 3h01m old is stale, even though it says exhausted.
+  # Default window is 6h (raised from 3h so a dropped hourly cron tick does not
+  # make the record stale): 6h01m old is stale, even though it says exhausted.
+  _publish "$(_record $((NOW_EPOCH - 21660)) 40 100 "" 2026-10-12T16:00:00Z)"
+  _init
+  _assert_fail_open "stale record, poll 6h 1m old > 6h"
+}
+
+@test "hold (#2139 AC2): a 3h01m-old record is FRESH under the 6h default, so the hold applies" {
+  _publish "$(_record $((NOW_EPOCH - 10860)) 40 100 "" 2026-10-12T16:00:00Z)"
+  _init
+  [ "$BUDGET_HOLD_UNTIL" = "2026-10-12T16:00:00Z" ]
+  grep -q '(poll 3h 1m old)' "$HOLD_LOG"
+}
+
+@test "fail-open (#2139 AC2): a 3h01m-old record is STALE when BUDGET_POLLER_STALE_HOURS=3" {
+  export BUDGET_POLLER_STALE_HOURS=3
   _publish "$(_record $((NOW_EPOCH - 10860)) 40 100 "" 2026-10-12T16:00:00Z)"
   _init
   _assert_fail_open "stale record, poll 3h 1m old > 3h"

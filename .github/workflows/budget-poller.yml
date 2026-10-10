@@ -15,12 +15,15 @@
 #   • Fail-open: a failed poll is a DEGRADED record + warning, never a red run.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Budget Poller (dry-run)
-# readme-report: Dry-run Claude budget poller — reads the usage windows hourly, logs what the token-budget breaker would do (never sets a variable), and proves the feed is alive (#2029).
+# readme-report: Dry-run Claude budget poller — reads the usage windows twice hourly, logs what the token-budget breaker would do (never sets a variable), and proves the feed is alive (#2029).
 
 on:
   schedule:
-    # Hourly at :17 — off the top of the hour (schedule standard).
+    # Twice hourly at :17 and :47 — off the top of the hour (schedule standard).
+    # Two slots because GitHub delivers only ~40% of scheduled ticks in this repo
+    # (#2160); the concurrency group below keeps them from overlapping.
     - cron: '17 * * * *'
+    - cron: '47 * * * *'
   # No workflow_dispatch: a manual dispatch can run branch code that receives the
   # Claude OAuth secret. `schedule` only ever runs the default branch's workflow.
 
@@ -99,6 +102,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           BUDGET_POLLER_PUBLIC_LIB: public/scripts/lib/agent-rate-limit.sh
           AGENT_RATE_LIMITS_CONFIG: public/standards/agent-rate-limits.json
+          # The cron that fired, recorded to measure delivery (#2160).
+          BUDGET_POLLER_CRON: ${{ github.event.schedule }}
         run: bash scripts/budget_poller.sh
 
       - name: Upload the poll log
