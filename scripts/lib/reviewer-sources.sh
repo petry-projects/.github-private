@@ -123,7 +123,7 @@ reviewer_sources_info_status_patterns() {
 #   Fail closed: it errs toward matching. A false match only costs a real
 #   disposition; a missed one lets a finding be waved away.
 reviewer_sources_finding_section_pattern() {
-  printf '%s\n' '<!-- architecture_review_start -->(?:(?!<!-- architecture_review_end -->)[\s\S])*?(?:Retained concerns|Hardening Proposals|\*\*(?:Critical|High|Medium|Moderate|Low|Major|Minor)\s*·|Security architecture risk:\*\*\s*_[^_]*?(?:Low|Moderate|Medium|Elevated|High|Critical|Severe))|Actionable comments posted:\s*[1-9]|Outside diff range comments(?!\s*\(\s*0\s*\))|Nitpick comments(?!\s*\(\s*0\s*\))|\*\*Suggestion:\*\*|PR Risk:\s*\**\s*(?!Low Risk)\S'
+  printf '%s\n' '<!-- architecture_review_start -->(?:(?!<!-- architecture_review_end -->)[\s\S])*?(?:Retained concerns|Hardening Proposals|\*\*(?:Critical|High|Medium|Moderate|Low|Major|Minor)\s*·|Security architecture risk:\*\*\s*_[^_]*?(?:Low|Moderate|Medium|Elevated|High|Critical|Severe))|Actionable comments posted:\s*[1-9]|Outside diff range comments(?!\s*\(\s*0\s*\))|Nitpick comments(?!\s*\(\s*0\s*\))|\*\*Suggestion:\*\*|PR Risk:\s*(?!\**Low Risk(?:\*\*)?)\S'
 }
 
 # reviewer_sources_trusted_bots_csv

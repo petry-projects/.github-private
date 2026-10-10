@@ -600,6 +600,18 @@ _codeant_low_risk_body() {
   [ "$status" -eq 1 ]
 }
 
+@test "#2178: a bolded 'PR Risk: Low Risk' body is not finding-bearing" {
+  source "$SCRIPT_DIR/lib/comment-disposition-verify.sh"
+  run cdv_body_has_findings $'## CodeAnt **PR Risk: Low Risk**\n\n- The PR appears safe to merge.\n\n**Assessed commit:** `abc123`'
+  [ "$status" -eq 1 ]
+}
+
+@test "#2178: a bolded 'PR Risk: Medium Risk' body is finding-bearing" {
+  source "$SCRIPT_DIR/lib/comment-disposition-verify.sh"
+  run cdv_body_has_findings $'## CodeAnt **PR Risk: Medium Risk**\n\n- This needs attention before merging.'
+  [ "$status" -eq 0 ]
+}
+
 @test "#2008: maintainer_gate_merge_edit_times merges lastEditedAt by comment id" {
   local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
   cat > "$bin/gh" <<'SHIM'
