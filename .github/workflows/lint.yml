@@ -97,6 +97,7 @@ jobs:
             tests/agent_ingress_markets_package.bats \
             tests/test_vendored_installed_tools.bats \
             tests/fleet_report.bats \
+            tests/test_rate_limit_samples.bats \
             tests/fleet_stub_drift.bats \
             tests/fleet_stub_remediate.bats \
             tests/fleet_remediate_gate.bats \
