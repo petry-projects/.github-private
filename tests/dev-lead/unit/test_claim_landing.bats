@@ -287,3 +287,60 @@ _inject_foreign_commit() {
   [[ "$status" -eq 1 ]]
   [[ "$output" == "not-on-ref" ]]
 }
+
+# ── #2079 AC4: stamping the pass's own marker-less replies ──────────────────────
+
+@test "cl_install_reply_recorder: records the node id of an addPullRequestReviewThreadReply and passes output through" {
+  local real="$BATS_TEST_TMPDIR/real-gh" rec="$BATS_TEST_TMPDIR/rec"
+  printf '#!/usr/bin/env bash\necho "{\\"data\\":{\\"addPullRequestReviewThreadReply\\":{\\"comment\\":{\\"id\\":\\"PRRC_abc\\"}}}}"\n' > "$real"
+  chmod +x "$real"
+  local dir
+  dir=$(cl_install_reply_recorder "$rec" "$real")
+  run "$dir/gh" api graphql -f query='mutation { addPullRequestReviewThreadReply(input:{}) { comment { id } } }'
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *PRRC_abc* ]]
+  run cl_recorded_reply_ids "$rec"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "PRRC_abc" ]]
+}
+
+@test "cl_install_reply_recorder: other gh calls are forwarded and not recorded" {
+  local real="$BATS_TEST_TMPDIR/real-gh" rec="$BATS_TEST_TMPDIR/rec"
+  printf '#!/usr/bin/env bash\necho "args: $*"\n' > "$real"
+  chmod +x "$real"
+  local dir
+  dir=$(cl_install_reply_recorder "$rec" "$real")
+  run "$dir/gh" pr view 5
+  [[ "$output" == "args: pr view 5" ]]
+  [[ ! -s "$rec" ]]
+}
+
+@test "cl_install_reply_recorder: a reply response with no id is UNATTRIBUTED and fails closed" {
+  local real="$BATS_TEST_TMPDIR/real-gh" rec="$BATS_TEST_TMPDIR/rec"
+  printf '#!/usr/bin/env bash\necho "{}"\n' > "$real"
+  chmod +x "$real"
+  local dir
+  dir=$(cl_install_reply_recorder "$rec" "$real")
+  run "$dir/gh" api graphql -f query='mutation { addPullRequestReviewThreadReply(input:{}) { comment { id } } }'
+  run cl_recorded_reply_ids "$rec"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "cl_recorded_reply_ids: a missing record fails closed; an empty record is ok" {
+  run cl_recorded_reply_ids "$BATS_TEST_TMPDIR/nope"
+  [[ "$status" -eq 1 ]]
+  : > "$BATS_TEST_TMPDIR/empty"
+  run cl_recorded_reply_ids "$BATS_TEST_TMPDIR/empty"
+  [[ "$status" -eq 0 ]]
+  [[ -z "$output" ]]
+}
+
+@test "cl_reply_stamp_body: stamped reply is agent-authored and no longer a no-change maintainer verdict" {
+  local stamped
+  stamped=$(cl_reply_stamp_body "No change needed in this pass: the guard already exists.")
+  review_thread_is_agent_authored "$stamped"
+  local comments
+  comments=$(jq -cn --arg b "$stamped" '[{author:{login:"don-petry",__typename:"User"},authorAssociation:"MEMBER",body:$b,createdAt:"2026-10-11T08:00:00Z"}]')
+  run acv_latest_nochange_disposition "$comments" "2026-10-10T00:00:00Z"
+  [[ "$status" -eq 1 ]]
+}
