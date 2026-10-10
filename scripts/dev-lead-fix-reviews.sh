@@ -137,6 +137,10 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   # The pass boundary for the claim-retraction sweep (#2013): only claim replies
   # created at/after this instant are this pass's to retract.
   PASS_START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Reply-id record for stamp_pass_replies (#2079 AC4): created empty here so a pass
+  # that never runs the engine still has a (empty) record; the engine run installs the
+  # recording gh shim that fills it. A missing record disables the no-change path.
+  PASS_REPLY_RECORD="$(mktemp "${TMPDIR:-/tmp}/dev-lead-replies.XXXXXX" 2>/dev/null || true)"
   setup_git_identity
   # Backfill the five required description sections into a pre-existing PR whose
   # body still lacks them (#1805). Idempotent + marker-keyed, so open PRs heal on
@@ -185,7 +189,17 @@ build_and_run() {
   fi
 
   local rc=0
-  run_writer_with_fallback "$prompt_file" "${INTENT_TYPE:-}" || rc=$?
+  # Run the model with a recording gh shim first on PATH so every review-thread reply it
+  # posts is attributable by node id (#2079 AC4). No recorder => nothing is trusted.
+  local shim_dir="" engine_path="$PATH"
+  if [ -n "${PASS_REPLY_RECORD:-}" ] && shim_dir=$(cl_install_reply_recorder "$PASS_REPLY_RECORD"); then
+    engine_path="${shim_dir}:${PATH}"
+  else
+    echo "::warning::could not install the reply recorder — no-change dispositions are disabled this pass (#2079)"
+    [ -n "${PASS_REPLY_RECORD:-}" ] && printf 'UNATTRIBUTED\n' > "$PASS_REPLY_RECORD"
+  fi
+  PATH="$engine_path" run_writer_with_fallback "$prompt_file" "${INTENT_TYPE:-}" || rc=$?
+  [ -n "$shim_dir" ] && rm -rf "$shim_dir"
   rm -f "${prompt_file:-}"
   return "$rc"
 }
@@ -816,6 +830,15 @@ resolve_addressed_bot_threads() {
   # so they match both the raw BOT_USER and its stripped form.
   local bot_user="${BOT_USER:-donpetry-bot}"
 
+  # Attribute this pass's own replies to dev-lead BEFORE any thread is evaluated, on
+  # every pass (even one with no candidates), so an unstamped skip note can never
+  # become a later pass's "maintainer verdict" (#2079 AC4). On failure the no-change
+  # path is disabled for this pass.
+  local stamp_ok=1
+  local nochange_epoch=""
+  nochange_epoch=$(nochange_epoch_cutoff) || stamp_ok=0
+  stamp_pass_replies || stamp_ok=0
+
   # The enumeration pass ONLY collects candidate thread ids (unresolved,
   # bot-originated). It deliberately does NOT capture the last reply's body or
   # author: that snapshot goes stale the moment a new reply lands, and trusting it
@@ -845,7 +868,7 @@ resolve_addressed_bot_threads() {
       ... on PullRequestReviewThread {
         isResolved
         path
-        comments(first:100){nodes{author{login __typename} body createdAt}}
+        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} authorAssociation body createdAt}}
       }
     }
   }'
@@ -874,6 +897,70 @@ resolve_addressed_bot_threads() {
     # forever (the regression #1691 exposed). A marker from any other account still
     # does not authorize resolution (acv_latest_marker_index checks the author).
     comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+
+    # ── No-change disposition path (#2079): a maintainer may authorize resolution ──
+    # without an addressed-marker by asserting "no changes needed" or a false-positive
+    # disposition. This is checked FIRST, before the addressed-marker path (#1735).
+    local nochange_disposition nochange_rc
+    # A truncated comment page may hide a later neutral maintainer comment that
+    # supersedes the affirmation -> fail closed (skip this path) unless fully read.
+    if [ "$stamp_ok" -eq 1 ] && [ "$(printf '%s' "$node_json" | jq -r 'if .data.node.comments.pageInfo.hasNextPage == false then "false" else "true" end' 2>/dev/null || echo true)" = "false" ]; then
+      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json" "$nochange_epoch") && nochange_rc=0 || nochange_rc=$?
+    else
+      nochange_disposition="" nochange_rc=1
+    fi
+    if [ "${nochange_rc:-0}" -eq 0 ] && [ -n "$nochange_disposition" ]; then
+      # A no-change disposition was found. Re-read the thread immediately before
+      # resolution to ensure it hasn't changed (no new required disposition or bot finding).
+      local fresh_json fresh_resolved
+      fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
+      fresh_resolved=$(printf '%s' "$fresh_json" | jq -r \
+        'if .data.node.isResolved == null then "unknown"
+         elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+      if [ "$fresh_resolved" != "false" ]; then
+        echo "::notice::skipping thread ${id} — already resolved during no-change check"
+        continue
+      fi
+      local fresh_comments
+      fresh_comments=$(printf '%s' "$fresh_json" | jq -c \
+        'if .data.node.comments.pageInfo.hasNextPage == false then (.data.node.comments.nodes // []) else "changed" end' \
+        2>/dev/null || echo '"changed"')
+      if [ "$fresh_comments" != "$comments_json" ]; then
+        echo "::notice::skipping thread ${id} — thread changed during no-change disposition check; leaving unresolved"
+        continue
+      fi
+      # Reject if a newer required disposition exists (a REQUIRED overrides NO-CHANGE).
+      # Only a REQUIRED disposition at/after the no-change verdict blocks; affirmative
+      # no-change comments ("no change required") are excluded from the scan.
+      local req_rc req_ts
+      req_ts=$(acv_latest_maintainer_disposition "$fresh_comments" "__no-such-account__" "skip-nochange") && req_rc=0 || req_rc=$?
+      if [ "${req_rc:-0}" -eq 2 ] || { [ "${req_rc:-0}" -eq 0 ] && [[ ! "$req_ts" < "$nochange_disposition" ]]; }; then
+        echo "::notice::skipping thread ${id} — a required maintainer disposition blocks the no-change verdict; leaving unresolved (#2079)"
+        continue
+      fi
+      # Reject if any bot comment postdates the no-change verdict (a newer bot finding
+      # overrides it). A bot comment with no createdAt cannot be ordered -> fail closed.
+      local newer_bot
+      newer_bot=$(printf '%s' "$fresh_comments" | jq -r --arg t "$nochange_disposition" \
+        'map(select(((.author.__typename // "") == "Bot" or ((.author.login // "") | endswith("[bot]")))
+                    and (((.createdAt // "") == "") or (.createdAt > $t)))) | length' 2>/dev/null || echo "1")
+      if [ "$newer_bot" != "0" ]; then
+        echo "::notice::skipping thread ${id} — a bot comment postdates the no-change disposition; leaving unresolved (#2079)"
+        continue
+      fi
+      if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+          -f id="$id" >/dev/null 2>&1; then
+        resolved_count=$((resolved_count + 1))
+        echo "::notice::resolved bot thread ${id} due to no-change disposition (${nochange_disposition})"
+      else
+        echo "::warning::failed to resolve bot thread ${id} despite no-change disposition"
+      fi
+      continue
+    elif [ "${nochange_rc:-0}" -eq 2 ]; then
+      echo "::notice::skipping thread ${id} — a no-change disposition could not be parsed; leaving unresolved (fail closed) (#2079)"
+      continue
+    fi
+
     if ! marker_idx=$(acv_latest_marker_index "$comments_json" "$bot_user"); then
       echo "::notice::skipping thread ${id} — no addressed-marker reply from our account in the thread; leaving unresolved (#1735)"
       continue
@@ -1154,6 +1241,12 @@ resolve_deferred_bot_threads() {
   fi
 
   local bot_user="${BOT_USER:-donpetry-bot}"
+  # Stamp this pass's own replies before evaluating any thread (#2079 AC4); on failure
+  # the no-change path is disabled for this pass.
+  local stamp_ok=1
+  local nochange_epoch=""
+  nochange_epoch=$(nochange_epoch_cutoff) || stamp_ok=0
+  stamp_pass_replies || stamp_ok=0
   local ids
   ids=$(list_unresolved_bot_thread_ids) || {
     echo "::error::resolve_deferred_bot_threads: could not enumerate review threads on PR #${PR_NUMBER}"
@@ -1168,7 +1261,7 @@ resolve_deferred_bot_threads() {
     node(id:$id){
       ... on PullRequestReviewThread {
         isResolved
-        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} body createdAt lastEditedAt fullDatabaseId}}
+        comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename} authorAssociation body createdAt lastEditedAt fullDatabaseId}}
       }
     }
   }'
@@ -1263,6 +1356,67 @@ resolve_deferred_bot_threads() {
     post_reason=$(acv_post_marker_clear "$comments_json" "$reply_idx" "$bot_user") || post_rc=$?
     if [ "$post_rc" -ne 0 ]; then
       echo "::notice::skipping thread ${id} — an unaddressed comment landed after our deferral (${post_reason}); leaving unresolved (#2045)"
+      continue
+    fi
+
+    # Check for a no-change disposition before checking for required disposition or deferral (#2079 AC1).
+    # A maintainer's "no change needed" verdict can resolve the thread without a deferral.
+    local nochange_disposition nochange_rc
+    if [ "$stamp_ok" -eq 1 ]; then
+      nochange_disposition=$(acv_latest_nochange_disposition "$comments_json" "$nochange_epoch") && nochange_rc=0 || nochange_rc=$?
+    else
+      nochange_disposition="" nochange_rc=1
+    fi
+    if [ "${nochange_rc:-0}" -eq 0 ] && [ -n "$nochange_disposition" ]; then
+      # A no-change disposition was found. Re-read the thread immediately before resolution.
+      local fresh_json fresh_resolved fresh_comments
+      fresh_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null) || fresh_json=""
+      fresh_resolved=$(printf '%s' "$fresh_json" | jq -r \
+        'if .data.node.isResolved == null then "unknown"
+         elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+      if [ "$fresh_resolved" = "unknown" ]; then
+        echo "::warning::could not re-read review thread ${id} during no-change check"
+        failed_count=$((failed_count + 1))
+        continue
+      fi
+      if [ "$fresh_resolved" != "false" ]; then
+        echo "::notice::skipping thread ${id} — already resolved during no-change check"
+        continue
+      fi
+      fresh_comments=$(printf '%s' "$fresh_json" | jq -c \
+        'if .data.node.comments.pageInfo.hasNextPage == false then (.data.node.comments.nodes // []) else "changed" end' \
+        2>/dev/null || echo '"changed"')
+      if [ "$fresh_comments" != "$comments_json" ]; then
+        echo "::notice::skipping thread ${id} — thread changed during no-change disposition check; leaving unresolved"
+        continue
+      fi
+      # Reject if a newer required disposition exists (a REQUIRED overrides NO-CHANGE).
+      local req_rc req_ts
+      req_ts=$(acv_latest_maintainer_disposition "$fresh_comments" "__no-such-account__" "skip-nochange") && req_rc=0 || req_rc=$?
+      if [ "${req_rc:-0}" -eq 2 ] || { [ "${req_rc:-0}" -eq 0 ] && [[ ! "$req_ts" < "$nochange_disposition" ]]; }; then
+        echo "::notice::skipping thread ${id} — a required maintainer disposition blocks the no-change verdict; leaving unresolved (#2079)"
+        continue
+      fi
+      # Reject if any bot comment postdates the no-change verdict (a newer bot finding overrides it).
+      local newer_bot
+      newer_bot=$(printf '%s' "$fresh_comments" | jq -r --arg t "$nochange_disposition" \
+        'map(select(((.author.__typename // "") == "Bot" or ((.author.login // "") | endswith("[bot]")))
+                    and (((.createdAt // "") == "") or (.createdAt > $t)))) | length' 2>/dev/null || echo "1")
+      if [ "$newer_bot" != "0" ]; then
+        echo "::notice::skipping thread ${id} — a bot comment postdates the no-change disposition; leaving unresolved (#2079)"
+        continue
+      fi
+      if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+          -f id="$id" >/dev/null 2>&1; then
+        resolved_count=$((resolved_count + 1))
+        echo "::notice::resolved deferred bot thread ${id} due to no-change disposition (${nochange_disposition})"
+      else
+        echo "::warning::failed to resolve deferred bot thread ${id} despite no-change disposition"
+        failed_count=$((failed_count + 1))
+      fi
+      continue
+    elif [ "${nochange_rc:-0}" -eq 2 ]; then
+      echo "::notice::skipping thread ${id} — a no-change disposition could not be parsed; leaving unresolved (fail closed) (#2079)"
       continue
     fi
 
@@ -2864,6 +3018,74 @@ verify_push_landed() {
   fi
   echo "::notice::push verified: ${pushed} is on the remote head ${remote} (#2013)"
   return 0
+}
+
+# nochange_epoch_cutoff — the instant from which a marker-less maintainer comment may
+# authorize a no-change resolution (#2079 AC4). Read from DEV_LEAD_NOCHANGE_EPOCH, never
+# hard-coded: dev-lead replies posted by a release that predates the stamping are
+# marker-less and look like the maintainer's own, so the maintainer turns the path on
+# (by setting this to an instant after the stamping release reached every consumer's
+# channel) only when that is safe. Unset or unparseable => returns 1: the no-change
+# path is disabled.
+nochange_epoch_cutoff() {
+  local e="${DEV_LEAD_NOCHANGE_EPOCH:-}"
+  [[ "$e" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  _acv_is_iso8601 "$e" || return 1
+  printf '%s\n' "$e"
+}
+
+# stamp_pass_replies — make every review-thread reply this pass posted attributable to
+# dev-lead (#2079 AC4). The model posts skip notes from its own shell as the SAME
+# account the maintainer uses, and only addressed claims are told to carry a marker, so
+# a marker-less "No change needed" skip note would otherwise read as the maintainer's
+# verdict. Attribution is by IDENTITY: the recording gh shim (cl_install_reply_recorder)
+# captured the node id of each reply the pass posted, and ONLY those ids are rewritten
+# (`<!-- dev-lead:reply -->` appended when no agent marker is present). A comment whose
+# id was not recorded — e.g. the maintainer's own, posted mid-pass — is never touched.
+# Returns non-zero when no recorder record exists, a reply could not be attributed, or a
+# fetch/update failed; the resolvers then skip the no-change path (fail closed).
+# Idempotent: a stamped reply carries a marker and is skipped.
+stamp_pass_replies() {
+  local record="${PASS_REPLY_RECORD:-}" ids id body_json body failed=0
+  local pending_file="${PASS_REPLY_PENDING_FILE:-${RUNNER_TEMP:-/tmp}/dev-lead-unstamped-replies-${PR_NUMBER:-0}}"
+  local recorded="" pending="" new_pending=""
+  if recorded=$(cl_recorded_reply_ids "$record"); then
+    :
+  else
+    echo "::warning::stamp_pass_replies: no usable reply record — no-change dispositions are disabled this pass (#2079)"
+    failed=1
+    recorded=""
+  fi
+  # Replies that failed to be stamped in an earlier pass stay pending until stamped,
+  # so a marker-less dev-lead reply is never forgotten (#2079).
+  [ -f "$pending_file" ] && pending=$(cat "$pending_file" 2>/dev/null || true)
+  ids=$(printf '%s\n%s\n' "$recorded" "$pending" | awk 'NF && !seen[$0]++')
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    if ! body_json=$(gh api graphql \
+        -f query='query($id:ID!){node(id:$id){... on PullRequestReviewComment{body}}}' \
+        -f id="$id" 2>/dev/null); then
+      failed=1; new_pending+="${id}"$'\n'; continue
+    fi
+    body=$(jq -er '.data.node.body // empty' <<<"$body_json" 2>/dev/null) || { failed=1; new_pending+="${id}"$'\n'; continue; }
+    review_thread_is_agent_authored "$body" && continue
+    if ! gh api graphql \
+        -f query='mutation($id:ID!,$body:String!){updatePullRequestReviewComment(input:{pullRequestReviewCommentId:$id,body:$body}){pullRequestReviewComment{id}}}' \
+        -f id="$id" -f body="$(cl_reply_stamp_body "$body")" >/dev/null 2>&1; then
+      echo "::warning::stamp_pass_replies: could not stamp reply ${id} on PR #${PR_NUMBER:-} — will retry on later passes (#2079)"
+      failed=1
+      new_pending+="${id}"$'\n'
+    fi
+  done <<< "$ids"
+  # Persist whatever is still unstamped so later passes retry it and keep no-change
+  # dispositions disabled until it is resolved.
+  if [ -n "$new_pending" ]; then
+    printf '%s' "$new_pending" > "$pending_file" 2>/dev/null || \
+      echo "::warning::stamp_pass_replies: could not persist unstamped reply ids to ${pending_file} (#2079)"
+  else
+    rm -f "$pending_file" 2>/dev/null || true
+  fi
+  [ "$failed" -eq 0 ]
 }
 
 # retract_unlanded_claims <intent> <ok|failed> — the claim-retraction sweep (#2013).
