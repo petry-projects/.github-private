@@ -221,7 +221,7 @@ keeps its own file) carries **no** job qualifier and remains exactly one row.
 | `.github/workflows/premature-closure-audit.yml` | 3 | — | `schedule: '49 8 * * 1'` weekly premature-closure audit; cadence is the origin. |
 | `.github/workflows/auto-rebase-health.yml` | 3 | — | `schedule: '43 7 * * *'` daily auto-rebase health report; cadence is the origin. |
 | `.github/workflows/engine-token-liveness.yml` | 3 | — | `schedule: '23 7 * * *'` daily engine-token preflight liveness monitor (#1587); cadence is the origin. `workflow_dispatch` for ad-hoc runs. |
-| `.github/workflows/budget-poller.yml` | 3 | — | `schedule: '17 * * * *'` hourly dry-run Claude budget poller (#2029); reads usage and logs what the breaker would do, writes no variable; cadence is the origin. |
+| `.github/workflows/budget-poller.yml` | 3 | — | `schedule: '17 * * * *'` + `'47 * * * *'` twice-hourly dry-run Claude budget poller (#2029; second slot because ~60% of scheduled ticks are dropped here, #2160); reads usage and logs what the breaker would do, writes no variable; cadence is the origin. |
 
 > **Out-of-scope workflows (exclusion list).** The completeness check (§10) ignores the paths
 > below. A workflow absent from both this table and this list is a completeness failure.
