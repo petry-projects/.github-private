@@ -157,6 +157,11 @@ teardown() { rm -rf "$STUB_BIN_DIR" "$GH_CALLS"; }
 }
 
 @test "hold_label_exit_guard: works chained after another EXIT handler" {
+  LABEL_RC=1 run bash -c "source '$LIB'; other() { true; }; trap 'rc=\$?; other; hold_label_exit_guard \"\$rc\"' EXIT; apply_hold_label owner/repo 77 || true; exit 0"
+  [ "$status" -ne 0 ]
+}
+
+@test "hold_label_exit_guard: no-argument fallback still fails a run with a failed hold" {
   LABEL_RC=1 run bash -c "source '$LIB'; other() { true; }; trap 'other; hold_label_exit_guard' EXIT; apply_hold_label owner/repo 77 || true; exit 0"
   [ "$status" -ne 0 ]
 }
@@ -196,4 +201,40 @@ EOF
   f="$BATS_TEST_TMPDIR/failed"
   HOLD_LABEL_FAILED_FILE="$f" LABEL_RC=1 run bash -c "source '$LIB'; x=\$(apply_hold_label owner/repo 77 2>/dev/null || true); trap 'rc=\$?; hold_label_exit_guard \"\$rc\"' EXIT; exit 0"
   [ "$status" -ne 0 ]
+}
+
+# ── dev-lead-retry.sh marker directory (#2142 review) ─────────────────────────
+
+_run_retry_with_marker_probe() {
+  # gh stub records the marker's parent dir + mode; optionally simulates a failed hold.
+  cat > "$STUB_BIN_DIR/gh" <<'EOF2'
+#!/usr/bin/env bash
+if [ -n "${HOLD_LABEL_FAILED_FILE:-}" ]; then
+  d="$(dirname "$HOLD_LABEL_FAILED_FILE")"
+  echo "$d" > "$PROBE_OUT.dir"
+  stat -c '%a' "$d" > "$PROBE_OUT.mode"
+  [ "${SIMULATE_FAILED_HOLD:-0}" != "1" ] || : > "$HOLD_LABEL_FAILED_FILE"
+fi
+case "$*" in
+  *"repo list"*) echo '[]' ;;
+esac
+exit 0
+EOF2
+  chmod +x "$STUB_BIN_DIR/gh"
+  export PROBE_OUT="$BATS_TEST_TMPDIR/probe"
+  DRY_RUN=true TARGET_ORG=acme DELEGATION_ORGS="" run bash "$SCRIPT_DIR/scripts/dev-lead-retry.sh"
+}
+
+@test "dev-lead-retry.sh: the failure marker lives in a private mode-700 directory removed on a clean exit" {
+  SIMULATE_FAILED_HOLD=0 _run_retry_with_marker_probe
+  [ "$status" -eq 0 ]
+  [ "$(cat "$PROBE_OUT.mode")" = "700" ]
+  [ ! -e "$(cat "$PROBE_OUT.dir")" ]
+}
+
+@test "dev-lead-retry.sh: a failed hold fails the scan and the private marker directory is still removed" {
+  SIMULATE_FAILED_HOLD=1 _run_retry_with_marker_probe
+  [ "$status" -ne 0 ]
+  [ "$(cat "$PROBE_OUT.mode")" = "700" ]
+  [ ! -e "$(cat "$PROBE_OUT.dir")" ]
 }

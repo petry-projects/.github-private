@@ -1460,14 +1460,14 @@ main() {
   echo "[retry] done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
-# hold_label_exit_guard_then_cleanup <rc> — remove the failure-marker file after
-# the guard has read it, then apply the guard.
+# hold_label_exit_guard_then_cleanup <rc> — remove the private marker directory
+# after the guard has read the marker file, then apply the guard.
 hold_label_exit_guard_then_cleanup() {
   local rc="$1"
   if [ -n "${HOLD_LABEL_FAILED_FILE:-}" ] && [ -e "$HOLD_LABEL_FAILED_FILE" ]; then
     export HOLD_LABEL_FAILED=1
-    rm -f "$HOLD_LABEL_FAILED_FILE"
   fi
+  [ -z "${HOLD_LABEL_FAILED_DIR:-}" ] || rm -rf "$HOLD_LABEL_FAILED_DIR"
   hold_label_exit_guard "$rc"
 }
 
@@ -1477,7 +1477,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   # A failed hold (#2142) must fail the scan even though escalation is `|| true`.
   # Escalations run inside command substitutions, so a failed hold is also
   # recorded in a file that survives the subshell; the guard reads it.
-  HOLD_LABEL_FAILED_FILE=$(mktemp -u)
+  # The marker lives in a private mktemp -d directory (mode 700): `mktemp -u`
+  # would only print a name that something else could claim first.
+  HOLD_LABEL_FAILED_DIR=$(mktemp -d)
+  HOLD_LABEL_FAILED_FILE="$HOLD_LABEL_FAILED_DIR/failed"
   export HOLD_LABEL_FAILED_FILE
   # shellcheck disable=SC2154  # rc is set by the trap string itself
   trap 'rc=$?; hold_label_exit_guard_then_cleanup "$rc"' EXIT
