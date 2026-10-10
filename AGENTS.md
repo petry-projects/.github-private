@@ -852,8 +852,8 @@ on it is the follow-up actuation work.
   - first model has a usable key: `available`;
   - a later model has a usable key: `degraded`, and `degraded_to` names that model,
     because it is a quality change;
-  - a model with an `unknown` key comes first: `unknown`;
-  - no model has a usable key: `unavailable`.
+  - a model with an `unknown` key comes before any usable model: `unknown`;
+  - no model is usable and none is unknown: `unavailable`.
 
   The view also lists the usable (model, key index) pairs and the total remaining calls.
 - **Snapshot and history.** On every fleet-monitor run, `scripts/gemini_tier_report.sh`

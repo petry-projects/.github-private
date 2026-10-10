@@ -191,7 +191,4 @@ regexes = ['''secret-key''']
 description = "Suppress test fixture fake API keys in test_gemini_tier_view.bats (Gemini tier view and redaction tests)"
 condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_gemini_tier_view\.bats$''']
-regexes = [
-  '''fake-secret''',
-  '''AIza[0-9A-Za-z_-]{35}''',
-]
+regexes = ['''AIza0123456789[0-9A-Za-z_-]{25}''']

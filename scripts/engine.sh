@@ -1066,8 +1066,8 @@ _gemini_chain_invoke() {
               "$_cd" "$_cd_src" "$_cd_scope")"
             if gq_is_quota_rejection "$stdout_tmp" "$stderr_tmp"; then
               gq_record_attempt "${_key_idxs[$_key_i]}" "$model"
+              gq_record_rejection_sample "${_key_idxs[$_key_i]}" "$model" "$_cd_scope" "$stdout_tmp" "$stderr_tmp"
             fi
-            gq_record_rejection_sample "${_key_idxs[$_key_i]}" "$model" "$_cd_scope" "$stdout_tmp" "$stderr_tmp"
             gq_record_cooldown "${_key_idxs[$_key_i]}" "$model" "$_cd" "$_cd_src"
             echo "::notice::[gemini] model $model: key index ${_key_idxs[$_key_i]} cooling down for ${_cd}s ($_cd_src)" >&2
           fi

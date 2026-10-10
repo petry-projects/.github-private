@@ -327,11 +327,16 @@ export_gemini_records() {
   local files=("$1"/*.jsonl)
   [ -e "${files[0]}" ] || return 0
   while IFS= read -r line; do
-    local sample
-    sample="$(jq -r '.sample // empty' <<< "$line" 2>/dev/null || true)"
-    if [ -n "$sample" ]; then
-      sample="$(_gq_redact_line "$sample")"
-      jq -c ".sample = \"$sample\"" <<< "$line" 2>/dev/null || echo "$line"
+    local sample kind
+    kind="$(jq -r '.kind // empty' <<< "$line" 2>/dev/null || true)"
+    if [ "$kind" = "gemini_rejection_sample" ]; then
+      # Untrusted: validate shape, redact, cap, re-encode with --arg. Fail closed (drop).
+      jq -e '(.key_index | type) == "number"
+             and ((.ts // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$"))' \
+        <<< "$line" >/dev/null 2>&1 || continue
+      sample="$(jq -r '(.sample // "") | tostring | .[0:300]' <<< "$line" 2>/dev/null)" || continue
+      sample="$(_gq_redact_line "$sample")" || continue
+      jq -c --arg s "$sample" '.sample = $s' <<< "$line" 2>/dev/null || continue
     else
       echo "$line"
     fi

@@ -648,8 +648,8 @@ jobs:
         run: bash scripts/token_report.sh >> "$GITHUB_STEP_SUMMARY"
 
       # Gemini availability per task tier (#2041). The per-day history store survives
-      # across fleet-monitor runs through actions/cache (a run-unique key, restored by
-      # prefix); the snapshot is uploaded as the gemini-tier-snapshot artifact for the
+      # across fleet-monitor runs through actions/cache (a per-org, run-and-attempt-unique key,
+      # restored by org prefix); the snapshot is uploaded as the gemini-tier-snapshot artifact for the
       # dry-run poller (#2029). Informational only: nothing gates or defers dispatch on
       # it, and every step is non-blocking.
       - name: Restore Gemini tier history
@@ -657,9 +657,9 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .gemini-tier-state
-          key: gemini-tier-history-${{ github.run_id }}
+          key: gemini-tier-history-${{ env.ORG }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            gemini-tier-history-
+            gemini-tier-history-${{ env.ORG }}-
 
       - name: Gemini availability per task tier
         continue-on-error: true
@@ -679,7 +679,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .gemini-tier-state
-          key: gemini-tier-history-${{ github.run_id }}
+          key: gemini-tier-history-${{ env.ORG }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Gemini tier snapshot
         if: always()

@@ -43,7 +43,14 @@ gtr_merge_store() {
   cutoff="$(gq_day_bounds "$(gq_history_days)" | tail -1 | cut -f2)"
   [[ "$cutoff" =~ ^[0-9]+$ ]] || cutoff=0
   tmp="$(mktemp)" || return 1
-  { [ -f "$store" ] && cat "$store"; [ -n "$new" ] && [ -r "$new" ] && cat "$new"; } 2>/dev/null \
+  local inputs=()
+  [ -f "$store" ] && inputs+=("$store")
+  [ -n "$new" ] && [ -r "$new" ] && inputs+=("$new")
+  if [ "${#inputs[@]}" -eq 0 ]; then
+    mv "$tmp" "$store"
+    return 0
+  fi
+  cat "${inputs[@]}" \
     | jq -R -c -S --argjson cutoff "$cutoff" 'try fromjson catch empty
         | select(type == "object")
         | select(.kind == "gemini_tier_notice"
@@ -52,7 +59,12 @@ gtr_merge_store() {
                           "gemini_key_cooldown", "gemini_rejection_sample"))))
         | ((.ts // "") | try fromdateiso8601 catch null) as $e
         | select($e != null and $e >= $cutoff)' 2>/dev/null \
-    | sort -u > "$tmp" || true
+    | sort -u > "$tmp"
+  local rc=("${PIPESTATUS[@]}")
+  if [ "${rc[1]}" -ne 0 ] || [ "${rc[2]}" -ne 0 ]; then
+    rm -f "$tmp"
+    return 1
+  fi
   mv "$tmp" "$store"
 }
 
@@ -124,8 +136,11 @@ gtr_render() {
   printf '### Rejection messages seen (redacted, one per distinct message)\n\n'
   local samples
   samples="$(jq -R -r 'try fromjson catch empty
-      | select(type == "object" and .kind == "gemini_rejection_sample")
-      | [ (.ts // "-"), (.key_index | tostring), (.model // "-"), (.scope // "-"), (.sample // "") ] | @tsv' \
+      | select(type == "object" and .kind == "gemini_rejection_sample"
+               and ((.key_index | type) == "number")
+               and ((.ts // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$")))
+      | [ .ts, (.key_index | tostring), ((.model // "-") | tostring | .[0:80]), ((.scope // "-") | tostring | .[0:20]),
+          ((.sample // "") | tostring | .[0:300]) ] | @tsv' \
       "$store" 2>/dev/null | sort | awk -F'\t' '!seen[$5]++')"
   if [ -z "$samples" ]; then
     printf '_None recorded in the retained window._\n\n'
@@ -147,6 +162,8 @@ main() {
   store="$dir/history.jsonl"
   snap="$dir/snapshot.json"
   hist="$dir/history-days.json"
+  # A failed report must not leave the previous run's restored output to be uploaded.
+  rm -f "$snap" "$hist"
   [ -f "$store" ] || : > "$store"
   gtr_merge_store "$store" "${GEMINI_RECORDS_IN:-}"
   export GEMINI_LEDGER_FILE="$store"

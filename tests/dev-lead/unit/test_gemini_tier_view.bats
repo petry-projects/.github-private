@@ -708,3 +708,97 @@ jsonschema.validate(json.load(open(sys.argv[1])), json.load(open(sys.argv[2])))'
   run grep -nEi 'curl|wget|https?://|generativelanguage|/dev/tcp' "$TIER_REPORT"
   [ "$status" -eq 1 ]
 }
+
+# ── review follow-ups (#2150) ─────────────────────────────────────────────────
+
+@test "rotation: a key at its per-minute cap is skipped as cooling; an unknown key is still used" {
+  _caps "1 m-a free 3 none 20"
+  _call_at 1 m-a $(( NOW - 40 ))
+  _call_at 1 m-a $(( NOW - 20 ))
+  _call_at 1 m-a $(( NOW - 10 ))
+  export GOOGLE_API_KEY="fake-secret-a" GOOGLE_API_KEY_2="fake-secret-b"
+  _source_lib
+  run gq_rotation_plan m-a 75 GOOGLE_API_KEY GOOGLE_API_KEY_2
+  [[ "$output" == *$'skip\tGOOGLE_API_KEY\t1\t'* ]]
+  [[ "$output" != *$'use\tGOOGLE_API_KEY\t'* ]]
+  # key 2 has no caps row → unknown → still tried.
+  [[ "$output" == *$'use\tGOOGLE_API_KEY_2\t2'* ]]
+}
+
+@test "attempts: 413 and 402 rejections record no attempt and no sample; a 429 records exactly one" {
+  export GOOGLE_API_KEY="fake-secret-a"
+  export STUB_ENGINE_EXIT_BY_KEY="fake-secret-a=1"
+  _source_engine gemini
+  local resp
+  for resp in "413 request body too large" "402 payment required"; do
+    : > "$TOKEN_LOG_FILE"
+    export STUB_ENGINE_RESPONSE_BY_KEY="fake-secret-a=$resp"
+    run _gemini_chain_invoke "gemini-3.8-flash" "$TEST_PROMPT" 30
+    [ "$(grep -c '"gemini_attempt"' "$TOKEN_LOG_FILE" || true)" = "0" ]
+    [ "$(grep -c '"gemini_rejection_sample"' "$TOKEN_LOG_FILE" || true)" = "0" ]
+  done
+  : > "$TOKEN_LOG_FILE"
+  export STUB_ENGINE_RESPONSE_BY_KEY="fake-secret-a=429 too many requests"
+  run _gemini_chain_invoke "gemini-3.8-flash" "$TEST_PROMPT" 30
+  [ "$(grep -c '"gemini_attempt"' "$TOKEN_LOG_FILE")" = "1" ]
+}
+
+@test "attempts: a number merely containing 429 is not a quota rejection" {
+  _source_lib
+  local f="$BATS_TEST_TMPDIR/err"
+  echo "request id 14293 failed" > "$f"
+  ! gq_is_quota_rejection "$f"
+  echo "HTTP 429" > "$f"
+  gq_is_quota_rejection "$f"
+}
+
+@test "ledger: a gemini_attempt with a bad timestamp makes the ledger untrusted" {
+  _caps "1 m-a free 10 none 20"
+  printf '{"kind":"gemini_attempt","engine":"gemini","key_index":1,"model":"m-a"}\n' >> "$TOKEN_LOG_FILE"
+  _source_lib
+  run gq_remaining 1 m-a
+  [ "$(jq -r .state <<< "$output")" = "unknown" ]
+}
+
+@test "history: a pipe in a model name is escaped in the table; a plain name is unchanged" {
+  _caps "1 weird|name free 10 none 20" "1 gemini-3.8-flash free 10 none 20"
+  local dir="$BATS_TEST_TMPDIR/state" in="$BATS_TEST_TMPDIR/in.jsonl"
+  TOKEN_LOG_FILE="$in" _call_at 1 "weird|name" $(( NOW - 60 ))
+  TOKEN_LOG_FILE="$in" _call_at 1 gemini-3.8-flash $(( NOW - 30 ))
+  export GEMINI_TIER_STATE_DIR="$dir" GEMINI_RECORDS_IN="$in"
+  run bash "$TIER_REPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'| `weird\|name` | 1 |'* ]]
+  [[ "$output" == *'| `gemini-3.8-flash` | 1 |'* ]]
+}
+
+@test "report: a forged rejection sample is redacted, capped and shape-checked at render time" {
+  _caps "1 m-a free 10 none 20"
+  local dir="$BATS_TEST_TMPDIR/state" in="$BATS_TEST_TMPDIR/in.jsonl" key
+  key="AI""za0123456789$(printf '%025d' 0)"
+  jq -cn --arg ts "$(_iso $(( NOW - 300 )))" --arg s "boom $key end" \
+    '{kind:"gemini_rejection_sample", ts:$ts, engine:"gemini", key_index:1, model:"m-a", scope:"minute", sample:$s}' >> "$in"
+  jq -cn --arg ts "$(_iso $(( NOW - 200 )))" \
+    '{kind:"gemini_rejection_sample", ts:$ts, engine:"gemini", key_index:"x", model:"m-a", scope:"minute", sample:"bad-shape-row"}' >> "$in"
+  export GEMINI_TIER_STATE_DIR="$dir" GEMINI_RECORDS_IN="$in"
+  run bash "$TIER_REPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"$key"* ]]
+  [[ "$output" == *"end"* ]]
+  [[ "$output" != *"bad-shape-row"* ]]
+}
+
+@test "store: a failing merge leaves the retained store untouched" {
+  source "$TIER_REPORT"
+  local dir="$BATS_TEST_TMPDIR/state" in="$BATS_TEST_TMPDIR/in.jsonl"
+  mkdir -p "$dir"
+  TOKEN_LOG_FILE="$in" _call_at 1 m-a $(( NOW - 60 ))
+  gtr_merge_store "$dir/history.jsonl" "$in"
+  local before; before="$(cat "$dir/history.jsonl")"
+  [ -n "$before" ]
+  jq() { return 5; }
+  run gtr_merge_store "$dir/history.jsonl" "$in"
+  unset -f jq
+  [ "$status" -ne 0 ]
+  [ "$(cat "$dir/history.jsonl")" = "$before" ]
+}

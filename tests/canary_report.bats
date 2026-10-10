@@ -584,6 +584,8 @@ seed_pass() {
   printf '{"kind":"gemini_rejection_sample","ts":"2026-09-26T10:00:00Z","engine":"gemini","key_index":1,"sample":"x"}\n' >> "$FILE"
   run render_canary_report "$DIR"
   [ "$status" -eq 0 ]
+  [[ "$output" == *"- candidate invocations: 5"* ]]
+  [[ "$output" == *"**Overall verdict:** PASS"* ]]
 }
 
 @test "render_canary_report: an incumbent record exactly at the baseline end is excluded" {

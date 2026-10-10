@@ -570,3 +570,28 @@ JSONL
   [[ "$output" == *'| 1 | `m` | unknown | 2 | 1 / unknown | 2 / unknown | 1 / unknown | 0 |'* ]]
   [[ "$output" == *'| 2 | `m` | unknown | 2 | 1 / unknown | 2 / unknown | 1 / unknown | 0 |'* ]]
 }
+
+@test "export_gemini_records: a forged rejection sample is emitted redacted, even with a double quote (#2150)" {
+  local d key; d="$(mktemp -d)"
+  key="AI""za0123456789$(printf '%025d' 0)"
+  jq -cn --arg s "say \"hi\" $key end" \
+    '{kind:"gemini_rejection_sample", ts:"2026-10-09T10:00:00Z", engine:"gemini", key_index:1, sample:$s}' > "$d/run.jsonl"
+  run export_gemini_records "$d"
+  rm -rf "$d"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"$key"* ]]
+  [ "$(jq -r .sample <<< "$output" | grep -c 'end')" = "1" ]
+}
+
+@test "export_gemini_records: a rejection sample that cannot be validated or re-encoded is dropped (#2150)" {
+  local d; d="$(mktemp -d)"
+  printf '%s\n' '{"kind":"gemini_rejection_sample","ts":"not-a-time","engine":"gemini","key_index":1,"sample":"x"}' > "$d/run.jsonl"
+  run export_gemini_records "$d"
+  [ -z "$output" ]
+  rm -f "$d/run.jsonl"
+  printf '%s\n' '{"kind":"gemini_rejection_sample","ts":"2026-10-09T10:00:00Z","engine":"gemini","key_index":1,"sample":"x"}' > "$d/run.jsonl"
+  _gq_redact_line() { return 1; }
+  run export_gemini_records "$d"
+  rm -rf "$d"
+  [ -z "$output" ]
+}

@@ -232,11 +232,12 @@ gq_ledger_rows() {
       [ split("\n")[] | select(test("\\S")) | (try fromjson catch "__bad__") ] as $recs
       | ($recs | map(select(. == "__bad__")) | length) as $badjson
       | ($recs | map(select(type == "object"
-            and (.kind // "token_usage") == "token_usage" and .engine == "gemini"
+            and ((.kind // "token_usage") | IN("token_usage", "gemini_attempt")) and .engine == "gemini"
             and ((.key_index // "" | tostring) == $k)
             and ( ((.ts // "") | try fromdateiso8601 catch null) == null
-                  or ([.input_tokens, .cache_read_tokens, .output_tokens]
-                      | any(. != null and type != "number")) )))
+                  or ((.kind // "token_usage") == "token_usage"
+                      and ([.input_tokens, .cache_read_tokens, .output_tokens]
+                           | any(. != null and type != "number"))) )))
           | length) as $badrec
       | ($badjson + $badrec) as $bad
       | if $bad > 0 then "BAD\t\($bad)"
@@ -618,7 +619,7 @@ gq_is_quota_rejection() {
   local files=() f
   for f in "$@"; do [ -n "$f" ] && [ -f "$f" ] && files+=("$f"); done
   [ "${#files[@]}" -gt 0 ] || return 1
-  grep -qiE '429|resource.?exhausted|quota_exceeded|too many requests|rate.?limit|quotaexceeded|resets [0-9]+(am|pm)' "${files[@]}" 2>/dev/null
+  grep -qiE '([^0-9]|^)429([^0-9]|$)|resource.?exhausted|quota_exceeded|too many requests|rate.?limit|quotaexceeded|resets [0-9]+(am|pm)' "${files[@]}" 2>/dev/null
 }
 
 # gq_record_rejection_sample <key_index> <model> <scope> <file>...
