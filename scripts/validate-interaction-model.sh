@@ -404,7 +404,8 @@ imv_persona_opt_out() {
 
 # imv_persona_serves_pr_surface <root> <role> — return 0 iff the persona's manifest
 # (personas/<role>/persona.yml) declares a `pull_request` surface with
-# `enabled: true`. The shared persona-mention router derives which personas it
+# `enabled: true` and at least one declared event the router subscribes (opened,
+# ready_for_review, reopened). The shared persona-mention router derives which personas it
 # dispatches on the pull_request EVENT from exactly these manifest surfaces (#1165,
 # #2187), so only such a persona is served pull_request by the router.
 imv_persona_serves_pr_surface() {
@@ -412,13 +413,19 @@ imv_persona_serves_pr_surface() {
   pf="$root/personas/$role/persona.yml"
   [ -f "$pf" ] || return 1
   awk '
-    /^[A-Za-z_]/ { cur="" }   # a top-level key ends the surfaces list
+    function flush() { if (cur == "pull_request" && en && ov) found=1; cur=""; en=0; ov=0 }
+    /^[A-Za-z_]/ { flush() }   # a top-level key ends the surfaces list
     /^[[:space:]]*-[[:space:]]*surface:/ {
+      flush()
       s=$0; sub(/.*surface:[[:space:]]*/,"",s); gsub(/[\047"]/,"",s); sub(/[[:space:]#].*/,"",s)
       cur=s; next
     }
-    cur == "pull_request" && /^[[:space:]]*enabled:[[:space:]]*true([[:space:]#]|$)/ { found=1; exit }
-    END { exit found ? 0 : 1 }
+    cur == "pull_request" && /^[[:space:]]*events:/ {
+      # only the actions the router subscribes (opened, ready_for_review, reopened) count
+      if ($0 ~ /[^A-Za-z_](opened|ready_for_review|reopened)[^A-Za-z_]/) ov=1
+    }
+    cur == "pull_request" && /^[[:space:]]*enabled:[[:space:]]*true([[:space:]#]|$)/ { en=1 }
+    END { flush(); exit found ? 0 : 1 }
   ' "$pf"
 }
 
@@ -572,8 +579,10 @@ imv_v_contracts() {
       # it only when that persona's manifest enables a pull_request surface. A
       # mention-only persona is not served pull_request by the router, so its
       # contract is not charged with it.
-      if [ "$wf" = ".github/workflows/persona-mention.yml" ] \
-         && ! imv_persona_serves_pr_surface "$root" "$(imv_c_role "$c")"; then
+      local role status=0
+      role="$(imv_c_role "$c")" || status=$?
+      if [ "$status" -eq 0 ] && [ "$wf" = ".github/workflows/persona-mention.yml" ] \
+         && ! imv_persona_serves_pr_surface "$root" "$role"; then
         actual_events+="$(imv_on_event_set "$root/$wf" | grep -vx 'pull_request' || true)"$'\n'
       else
         actual_events+="$(imv_on_event_set "$root/$wf")"$'\n'
