@@ -287,10 +287,12 @@ _seed_degraded() {
     line:"telemetry read DEGRADED, status=503 reason=http-503"}' >> "$BUDGET_POLLER_LOG"
 }
 
-@test "staleness: warning fires when the last OK record is older than the default 3h window" {
+@test "staleness: warning fires when the last OK record is older than the default 6h window" {
+  # #2160: the default moved 3h -> 6h (GitHub drops ~60% of scheduled ticks
+  # here), so the seed moved from 4h to 7h old to stay past the default window.
   # shellcheck source=scripts/lib/budget-poller.sh
   source "$POLLER_LIB"
-  _seed_ok $((NOW_EPOCH - 4 * 3600))
+  _seed_ok $((NOW_EPOCH - 7 * 3600))
   _seed_degraded $((NOW_EPOCH - 600))
   run bp_staleness_warning "$BUDGET_POLLER_LOG" "$NOW_EPOCH"
   [ "$status" -eq 0 ]
@@ -340,12 +342,14 @@ _seed_degraded() {
 }
 
 @test "fleet section: flags STALE when the last OK record is past the window" {
+  # #2160: 5h is now inside the 6h default; the seed moved to 7h to stay stale.
   source "$POLLER_LIB"
-  _seed_ok $((NOW_EPOCH - 5 * 3600))
+  _seed_ok $((NOW_EPOCH - 7 * 3600))
   run bp_fleet_section "$BUDGET_POLLER_LOG" "$NOW_EPOCH"
   [ "$status" -eq 0 ]
   [[ "$output" == *"STALE"* ]]
-  [[ "$output" == *"5h 0m"* ]]
+  [[ "$output" == *"7h 0m"* ]]
+  [[ "$output" == *"> 6h window"* ]]
 }
 
 @test "fleet section: no log renders a NO OK RECORD line without erroring" {
@@ -660,4 +664,167 @@ _chosen() { jq -r '.artifact' "$DL_DEST"; }
   _download
   [ "$status" -eq 0 ]
   [ "$(_chosen)" = "100" ]
+}
+
+# ---------------------------------------------------------------------------
+# #2160 — two cron slots, a 6h staleness default, and measured delivery
+# ---------------------------------------------------------------------------
+
+@test "workflow (#2160 AC1): exactly the two cron slots, no workflow_dispatch, unchanged read-only permissions" {
+  run yq '.on.schedule[].cron' "$WORKFLOW"
+  [ "${lines[0]}" = "17 * * * *" ]
+  [ "${lines[1]}" = "47 * * * *" ]
+  [ "${#lines[@]}" -eq 2 ]
+  # The only trigger key under `on:` is schedule (no dispatch, push, PR, ...).
+  run yq '.on | keys | join(",")' "$WORKFLOW"
+  [ "$output" = "schedule" ]
+  # The permissions block is exactly the two read scopes it had before.
+  run yq '.permissions | to_entries | map(.key + ":" + .value) | join(",")' "$WORKFLOW"
+  [ "$output" = "contents:read,actions:read" ]
+  # No job-level permissions widen it, and no write scope anywhere.
+  run yq '[.jobs[] | select(has("permissions"))] | length' "$WORKFLOW"
+  [ "$output" = "0" ]
+  run yq '[.. | select(tag == "!!str" and (. == "write" or . == "write-all"))] | length' "$WORKFLOW"
+  [ "$output" = "0" ]
+  # Still the existing secret only.
+  [ "$(grep -oE 'secrets\.[A-Z_]+' "$WORKFLOW" | sort -u)" = "secrets.CLAUDE_CODE_OAUTH_TOKEN" ]
+}
+
+@test "workflow (#2160): the firing cron expression is forwarded to the poll step" {
+  run yq '[.. | select(tag == "!!map" and has("env")) | .env.BUDGET_POLLER_CRON | select(. != null)] | .[0]' "$WORKFLOW"
+  [[ "$output" == *'${{ github.event.schedule }}'* ]]
+}
+
+@test "expected runs per day (#2160) matches the workflow's cron slots x 24" {
+  source "$POLLER_LIB"
+  local slots
+  slots="$(yq '.on.schedule | length' "$WORKFLOW")"
+  [ "$BUDGET_POLLER_EXPECTED_RUNS_PER_DAY" -eq $((slots * 24)) ]
+  [ "$BUDGET_POLLER_EXPECTED_RUNS_PER_DAY" -eq 48 ]
+}
+
+@test "fleet section (#2160): median start delay averages the two middle values for an even sample" {
+  source "$POLLER_LIB"
+  local d
+  for d in 600 1200 1800 3600; do
+    jq -cn --argjson e "$((NOW_EPOCH - d))" --argjson d "$d" \
+      '{epoch:$e, poll:"ok", http_status:200, start_delay_s:$d, line:"telemetry read OK"}' >> "$BUDGET_POLLER_LOG"
+  done
+  run bp_fleet_section "$BUDGET_POLLER_LOG" "$NOW_EPOCH"
+  [ "$status" -eq 0 ]
+  # Median of 600,1200,1800,3600 = (1200+1800)/2 = 1500s = 25m (not the upper 1800s = 30m).
+  [[ "$output" == *"median start delay 25m"* ]]
+}
+
+@test "bp_stale_hours (#2160 AC2): the default is 6h and BUDGET_POLLER_STALE_HOURS still overrides it" {
+  run bash -c 'unset BUDGET_POLLER_STALE_HOURS; source scripts/lib/budget-poller.sh; bp_stale_hours'
+  [ "$output" = "6" ]
+  run bash -c 'source scripts/lib/budget-poller.sh; BUDGET_POLLER_STALE_HOURS=3 bp_stale_hours'
+  [ "$output" = "3" ]
+  run bash -c 'source scripts/lib/budget-poller.sh; BUDGET_POLLER_STALE_HOURS=0 bp_stale_hours'
+  [ "$output" = "6" ]
+  run bash -c 'source scripts/lib/budget-poller.sh; BUDGET_POLLER_STALE_HOURS=junk bp_stale_hours'
+  [ "$output" = "6" ]
+}
+
+@test "staleness (#2160 AC2): a 5h-old OK record is fresh under the 6h default, stale under an override of 3" {
+  source "$POLLER_LIB"
+  _seed_ok $((NOW_EPOCH - 5 * 3600))
+  run bp_staleness_warning "$BUDGET_POLLER_LOG" "$NOW_EPOCH"
+  [ -z "$output" ]
+  BUDGET_POLLER_STALE_HOURS=3 run bp_staleness_warning "$BUDGET_POLLER_LOG" "$NOW_EPOCH"
+  [[ "$output" == "::warning::"*"> 3h staleness window"* ]]
+}
+
+@test "bp_build_record (#2160 AC3): records the trigger event, cron, scheduled time and start delay" {
+  source "$POLLER_LIB"
+  local now=$((NOW_EPOCH + 20 * 60 + 30)) r   # 16:20:30Z, fired by the :17 slot
+  r="$(bp_build_record "$now" 200 "" 10 20 a b allow allow false "" "" schedule '17 * * * *')"
+  [ "$(jq -r .trigger_event <<<"$r")" = "schedule" ]
+  [ "$(jq -r .trigger_cron <<<"$r")" = "17 * * * *" ]
+  [ "$(jq -r .scheduled_epoch <<<"$r")" = "$((NOW_EPOCH + 17 * 60))" ]
+  [ "$(jq -r .scheduled_for <<<"$r")" = "2026-09-15T16:17:00Z" ]
+  [ "$(jq -r .start_delay_s <<<"$r")" = "210" ]
+  [ "$(jq -r .ts <<<"$r")" = "2026-09-15T16:20:30Z" ]
+}
+
+@test "bp_build_record (#2160 AC3): a start before the slot's minute this hour is scheduled for the previous hour" {
+  source "$POLLER_LIB"
+  local now=$((NOW_EPOCH + 10 * 60)) r   # 16:10Z, fired by the :47 slot (15:47)
+  r="$(bp_build_record "$now" 200 "" 10 20 a b allow allow false "" "" schedule '47 * * * *')"
+  [ "$(jq -r .scheduled_for <<<"$r")" = "2026-09-15T15:47:00Z" ]
+  [ "$(jq -r .start_delay_s <<<"$r")" = "1380" ]
+}
+
+@test "bp_build_record (#2160 AC3): no event / non-hourly cron leaves the scheduled fields null, record intact" {
+  source "$POLLER_LIB"
+  local r
+  r="$(bp_build_record "$NOW_EPOCH" 200 "" 10 20 a b allow allow false "" "")"
+  [ "$(jq -r .poll <<<"$r")" = "ok" ]
+  [ "$(jq -r '[.trigger_event, .trigger_cron, .scheduled_for, .scheduled_epoch, .start_delay_s] | map(tostring) | join(",")' <<<"$r")" = "null,null,null,null,null" ]
+  r="$(bp_build_record "$NOW_EPOCH" 200 "" 10 20 a b allow allow false "" "" schedule '0 */2 * * *')"
+  [ "$(jq -r .trigger_event <<<"$r")" = "schedule" ]
+  [ "$(jq -r .trigger_cron <<<"$r")" = "0 */2 * * *" ]
+  [ "$(jq -r .scheduled_epoch <<<"$r")" = "null" ]
+  [ "$(jq -r .start_delay_s <<<"$r")" = "null" ]
+  r="$(bp_build_record "$NOW_EPOCH" 200 "" 10 20 a b allow allow false "" "" schedule '75 * * * *')"
+  [ "$(jq -r .scheduled_epoch <<<"$r")" = "null" ]
+}
+
+@test "poller (#2160 AC3): an end-to-end run records GITHUB_EVENT_NAME and the firing cron" {
+  export MOCK_STATUS=200
+  MOCK_BODY="$(_body 33 50)"; export MOCK_BODY
+  GITHUB_EVENT_NAME=schedule BUDGET_POLLER_CRON='47 * * * *' \
+    BUDGET_POLLER_NOW=$((NOW_EPOCH + 49 * 60)) run bash "$POLLER"
+  [ "$status" -eq 0 ]
+  [ "$(_field .trigger_event)" = "schedule" ]
+  [ "$(_field .trigger_cron)" = "47 * * * *" ]
+  [ "$(_field .scheduled_for)" = "2026-09-15T16:47:00Z" ]
+  [ "$(_field .start_delay_s)" = "120" ]
+  grep -q 'Scheduled for' "$GITHUB_STEP_SUMMARY"
+  grep -q '47 \* \* \* \*' "$GITHUB_STEP_SUMMARY"
+}
+
+@test "carry-forward (#2160 AC3): an older record without the scheduling fields still parses" {
+  source "$POLLER_LIB"
+  # A record exactly as PR 2031's poller wrote it (no trigger/scheduled fields).
+  _seed_ok $((NOW_EPOCH - 3600))
+  local prev r
+  prev="$(bp_last_ok "$BUDGET_POLLER_LOG")"
+  [ "$(jq -r .poll <<<"$prev")" = "ok" ]
+  [ "$(jq -r '.scheduled_for // "absent"' <<<"$prev")" = "absent" ]
+  r="$(bp_build_record "$NOW_EPOCH" 200 "" 36 51 "" "" allow allow false "" "$prev" schedule '17 * * * *')"
+  [ "$(jq -r .burn_basis <<<"$r")" = "previous-record" ]
+  [ "$(jq -r .burn_session_pph <<<"$r")" = "3" ]
+  run bp_fleet_section "$BUDGET_POLLER_LOG" "$NOW_EPOCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"1h 0m ago"* ]]
+  [[ "$output" == *"1 of 48 expected"* ]]
+  [[ "$output" != *"null"* ]]
+}
+
+@test "fleet section (#2160): reports runs received in the last 24h against the 48 expected" {
+  source "$POLLER_LIB"
+  local i
+  # 30 runs inside the window (ok and degraded both count), 2 outside it.
+  _seed_ok $((NOW_EPOCH - 25 * 3600))
+  _seed_ok $((NOW_EPOCH - 24 * 3600 - 1))
+  for i in $(seq 1 29); do
+    jq -cn --argjson e "$((NOW_EPOCH - i * 1800))" --argjson d "$((i * 60))" \
+      '{epoch:$e, poll:"ok", http_status:200, trigger_event:"schedule", trigger_cron:"17 * * * *", start_delay_s:$d,
+        line:"telemetry read OK, session=1% weekly_all=1%"}' >> "$BUDGET_POLLER_LOG"
+  done
+  _seed_degraded $((NOW_EPOCH - 60))
+  run bp_fleet_section "$BUDGET_POLLER_LOG" "$NOW_EPOCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"30 of 48 expected"*"(62%)"* ]]
+  # Median of 60..1740s over the 29 records that carry a delay = 900s = 15m.
+  [[ "$output" == *"median start delay 15m"* ]]
+}
+
+@test "fleet section (#2160): no log reports 0 of 48 without erroring" {
+  source "$POLLER_LIB"
+  run bp_fleet_section "$BATS_TEST_TMPDIR/missing.jsonl" "$NOW_EPOCH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0 of 48 expected"* ]]
 }
