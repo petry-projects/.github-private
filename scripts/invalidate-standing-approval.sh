@@ -36,6 +36,8 @@ _isa_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$_isa_here/lib/advisory-review-gate.sh" ] && source "$_isa_here/lib/advisory-review-gate.sh"
 # shellcheck source=scripts/lib/pr-review-miss-rate.sh
 source "$_isa_here/lib/pr-review-miss-rate.sh"
+# shellcheck source=scripts/lib/merge-queue-dequeue.sh
+source "$_isa_here/lib/merge-queue-dequeue.sh"
 
 # isa_bots_json — the trusted advisory-bot set as a JSON array (registry or default).
 isa_bots_json() {
@@ -107,7 +109,7 @@ invalidate_standing_approval() {
   local reviews
   reviews="$(isa_rest_reviews "$owner" "$name" "$number")"
 
-  local sha ids id
+  local sha ids id dismissed=0
   while IFS= read -r sha; do
     [ -n "$sha" ] || continue
     # Approving reviews stamped with this exact head SHA in their pr-review marker.
@@ -122,16 +124,26 @@ invalidate_standing_approval() {
       [ -n "$id" ] || continue
       if [ "$DRY_RUN" = "false" ]; then
         echo "[invalidate] ${pr_url}: DISMISSING approval review ${id} (head ${sha:0:8}) — accepted advisory finding after approval (#1596)."
-        gh api -X PUT "repos/${owner}/${name}/pulls/${number}/reviews/${id}/dismissals" \
+        if gh api -X PUT "repos/${owner}/${name}/pulls/${number}/reviews/${id}/dismissals" \
           -f message="Auto-dismissed: a trusted advisory reviewer found an accepted defect after this approval at ${sha:0:8} (pr-review miss, #1596). Re-review required." \
-          >/dev/null 2>&1 \
-          && echo "[invalidate]   dismissed ${id}." \
-          || echo "::warning::[invalidate] failed to dismiss review ${id} on ${pr_url}"
+          >/dev/null 2>&1; then
+          echo "[invalidate]   dismissed ${id}."
+          dismissed=$((dismissed + 1))
+        else
+          echo "::warning::[invalidate] failed to dismiss review ${id} on ${pr_url}"
+        fi
       else
         echo "[invalidate] ${pr_url}: WOULD dismiss approval review ${id} (head ${sha:0:8}) — set DRY_RUN=false to apply (#1596)."
       fi
     done <<<"$ids"
   done <<<"$shas"
+
+  # GitHub checks reviews only when a PR joins the merge queue. If a dismissal
+  # above withdrew the last approval of a queued PR, remove it from the queue
+  # (#2174). Never fails the run.
+  if [ "$dismissed" -gt 0 ]; then
+    mq_dequeue_if_unapproved "$pr_url" || true
+  fi
 }
 
 # Run when executed directly (not when sourced by tests).
