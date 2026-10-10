@@ -73,6 +73,9 @@ export AGENT_TOKEN_BUDGET_TELEMETRY_FILE="$workdir/telemetry.json"
 
 http_status="$(jq -r '.status // 0' <<<"$envelope" 2>/dev/null || printf '0')"
 retry_after="$(jq -r '.retry_after // empty' <<<"$envelope" 2>/dev/null || printf '')"
+# The upstream body, read ONLY by bp_error_fields (#2179) for a refused read's
+# error type/detail — never logged, echoed, or stored itself.
+upstream_body="$(jq -c '.body // empty' <<<"$envelope" 2>/dev/null || printf '')"
 
 # 2. Evaluate the shipped public gates (or degrade when they are unavailable).
 s_pct="" w_pct="" s_reset="" w_reset="" reason_override=""
@@ -113,7 +116,8 @@ fi
 prev_ok="$(bp_last_ok "$LOG_FILE")"
 record="$(bp_build_record "$NOW" "$http_status" "$retry_after" "$s_pct" "$w_pct" \
   "$s_reset" "$w_reset" "$s_dec" "$g_dec" "$g_enabled" "$reason_override" "$prev_ok" \
-  "${GITHUB_EVENT_NAME:-}" "${BUDGET_POLLER_CRON:-}")"
+  "${GITHUB_EVENT_NAME:-}" "${BUDGET_POLLER_CRON:-}" \
+  "$upstream_body")"
 bp_append_record "$LOG_FILE" "$record" "${BUDGET_POLLER_MAX_RECORDS:-720}"
 
 line="$(jq -r '.line' <<<"$record")"
@@ -133,7 +137,8 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     printf -- '- **Dry-run decision:** %s\n\n' "$decision"
     printf '| Field | Value |\n|---|---|\n'
     jq -r '
-      def v($x): if $x == null then "n/a" else ($x | tostring) end;
+      # Escape `|` so an upstream error_detail cannot break the table row.
+      def v($x): if $x == null then "n/a" else ($x | tostring | gsub("\\|"; "\\|")) end;
       [ ["Timestamp", .ts], ["HTTP status", .http_status], ["Retry-After (s)", .retry_after],
         ["session %", .session_pct], ["session resets_at", .session_resets_at],
         ["weekly_all %", .weekly_all_pct], ["weekly_all resets_at", .weekly_all_resets_at],
@@ -144,7 +149,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         ["burn weekly_all (pp/h)", .burn_weekly_all_pph],
         ["burn basis", .burn_basis],
         ["Trigger", .trigger_event], ["Cron that fired", .trigger_cron],
-        ["Scheduled for", .scheduled_for], ["Start delay (s)", .start_delay_s] ]
+        ["Scheduled for", .scheduled_for], ["Start delay (s)", .start_delay_s],
+        ["upstream error type", .error_type],
+        ["upstream error detail", .error_detail] ]
       | .[] | "| \(.[0]) | \(v(.[1])) |"' <<<"$record"
     printf '\nDurable log: artifact `%s` (`%s`, one JSON record per poll).\n' \
       "$BUDGET_POLLER_ARTIFACT" "$(basename "$LOG_FILE")"
