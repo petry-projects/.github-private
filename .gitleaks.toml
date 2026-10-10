@@ -195,4 +195,4 @@ regexes = ['''secret-key''']
 # placeholder prefix AIza0123456789, which no real key carries.
 [allowlist]
 description = "Suppress synthetic Google API key placeholder in the Gemini redaction test"
-regexes = ['''AIza0123456789[0-9A-Za-z_-]{16,25}''']
+regexes = ['''AIza0123456789[0-9A-Za-z_-]{16,35}''']
