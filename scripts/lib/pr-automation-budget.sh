@@ -108,6 +108,10 @@ pr_has_escalation_label() {
 # gate below honours every hold, not just NEEDS_HUMAN_REVIEW_LABEL (#2089).
 # shellcheck source=scripts/lib/hold-gate.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hold-gate.sh"
+# The escalation applies its label through hold-label.sh (#2142): REST labels API,
+# the API's message logged on failure, HOLD_LABEL_FAILED set for the run's guard.
+# shellcheck source=scripts/lib/hold-label.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hold-label.sh"
 
 # pr_hold_gate_label <labels_json>
 #   Print the first hold-gate label (hold_gate_labels) present in the JSON array
@@ -311,24 +315,31 @@ pr_automation_escalate() {
   fi
   if pr_automation_already_escalated "$pr" "$repo"; then
     echo "::notice::PR #${pr} already has a pr-automation-budget escalation — not re-posting"
+    # An earlier label failure leaves the comment without the hold: repair it
+    # (idempotent) and post the not-held note once if it still fails. Also
+    # retry the auto-merge disable in case a prior label success was followed
+    # by an auto-merge disable failure (#2151).
+    if ! apply_hold_label "$repo" "$pr" "$NEEDS_HUMAN_REVIEW_LABEL"; then
+      post_hold_failure_note "$repo" "$pr"
+    fi
+    disable_auto_merge_for_hold "$repo" "$pr" || true
     return 0
   fi
+  # Label first so the comment can say when the PR could not be held (#2142).
+  apply_hold_label "$repo" "$pr" "$NEEDS_HUMAN_REVIEW_LABEL" || true
   local body
   body="${PR_AUTOMATION_EXHAUSTION_MARKER}
 ## Automated activity budget exhausted — human attention needed
 
 This PR has reached **${MAX_PR_AUTOMATION_CYCLES}** automated actions (agent commits + review cycles + acks) since the last human interaction, without converging. To prevent a runaway loop (see #926 / the #860 post-mortem), all automated commits, reviews, and acknowledgements on this PR are now **paused**, auto-merge is disabled, and \`needs-human-review\` is applied.
 
-**Re-engaging is human-gated.** A human reviewing, commenting, or pushing to this PR resets the budget; a machine action will not. Removing \`needs-human-review\` after a human has looked is the clean way to resume."
+**Re-engaging is human-gated.** A human reviewing, commenting, or pushing to this PR resets the budget; a machine action will not. Removing \`needs-human-review\` after a human has looked is the clean way to resume.${HOLD_LABEL_NOTE}"
   if gh pr comment "$pr" --repo "$repo" --body "$body"; then
     PR_AUTOMATION_NEWLY_ESCALATED=true
   else
     echo "::warning::could not post budget-exhaustion comment on PR #${pr}"
   fi
-  gh pr edit "$pr" --repo "$repo" --add-label "$NEEDS_HUMAN_REVIEW_LABEL" 2>/dev/null \
-    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL} on PR #${pr}"
-  gh pr merge "$pr" --repo "$repo" --disable-auto 2>/dev/null \
-    || echo "::notice::auto-merge was not enabled on PR #${pr} (nothing to disable)"
+  disable_auto_merge_for_hold "$repo" "$pr" || true
   return 0
 }
 

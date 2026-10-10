@@ -5192,6 +5192,7 @@ case "\$ARGS" in
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) echo "\$*" >> "${comment_file}"; exit 0 ;;
   *"pr edit"*) echo "\$*" >> "${comment_file}"; exit 0 ;;
+  *"issues/"*"/labels"*) echo "\$*" >> "${comment_file}"; echo '[]' ;;
   *"pr merge"*) echo "\$*" >> "${merge_file}"; exit 0 ;;
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
@@ -5333,9 +5334,10 @@ GITEOF
   " 2>&1
 
   [ "$status" -eq 0 ]
-  # A needs-human label was applied and an escalation comment posted.
-  grep -q "add-label" "$comment_file"
-  grep -q "needs-human-review" "$comment_file"
+  # A needs-human label was applied (REST labels API, #2142) and an escalation
+  # comment posted.
+  grep -q "api -X POST repos/petry-projects/.github-private/issues/54/labels" "$comment_file"
+  grep -q "labels\[\]=needs-human-review" "$comment_file"
   grep -qi "not converging" "$comment_file"
   # Auto-merge is disabled and never re-enabled on the escalation path.
   grep -q "disable-auto" "$merge_file"
@@ -6018,7 +6020,7 @@ sha="${claim_sha}"
 [ "\$sha" = "HEAD" ] && sha="\$(git rev-parse HEAD)"
 reply="Fixed in fix.txt: added the fix. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\\\\\"v\\\\\":1,\\\\\"sha\\\\\":\\\\\"\${sha}\\\\\",\\\\\"files\\\\\":[\\\\\"fix.txt\\\\\"]} -->"
 case "\$ARGS" in
-  *"PATCH"*)
+  *"PATCH"*"pulls/comments/"*)
     echo "\$*" >> "$T2013_PATCH"
     echo '{}'
     ;;
@@ -6044,6 +6046,15 @@ case "\$ARGS" in
   *"pulls/54/comments"*)
     printf '%s\n' "[{\"id\":777,\"user\":{\"login\":\"donpetry-bot\"},\"created_at\":\"2099-01-01T00:00:00Z\",\"body\":\"\${reply}\"}]" \
       | jq -c --slurpfile x "$T2013_EXTRA" '. + \$x[0]'
+    ;;
+  # Hold label (#2142): REST POST; T2013_LABEL_RC makes the API refuse it.
+  *"issues/54/labels"*)
+    echo "\$*" >> "$BATS_TEST_TMPDIR/label_posts"
+    if [ "\${T2013_LABEL_RC:-0}" -ne 0 ]; then
+      echo "gh: Resource not accessible by integration (HTTP 403)" >&2
+      exit "\$T2013_LABEL_RC"
+    fi
+    echo '[{"name":"needs-human-review"}]'
     ;;
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
@@ -6081,6 +6092,7 @@ _run_2013() {
     export ACTOR='coderabbitai[bot]' COMMENT_BODY='finding'
     export BOT_USER='donpetry-bot'
     export T2013_PUSH_RC=\${T2013_PUSH_RC:-0}
+    export T2013_LABEL_RC=\${T2013_LABEL_RC:-0}
     export PATH='$STUB_BIN_DIR:$PATH'
     bash '$FIX_REVIEWS_SCRIPT'
   " _ "${1:-fix-reviews}" 2>&1
@@ -6139,6 +6151,29 @@ _run_2013() {
   [[ "$output" == *"needs-human-review"* ]]
   [ ! -s "$T2013_MUT" ]
   grep -q "pulls/comments/777" "$T2013_PATCH"
+}
+
+@test "#2142: a test-tamper escalation holds the PR through the REST labels API" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; sed -i 's/success precedence/failure precedence/' tests/existing.bats"
+  _run_2013 fix-reviews
+
+  [ ! -s "$T2013_PUSH" ]
+  grep -qF "api -X POST repos/petry-projects/.github-private/issues/54/labels" "$BATS_TEST_TMPDIR/label_posts"
+  grep -qF "labels[]=needs-human-review" "$BATS_TEST_TMPDIR/label_posts"
+  [[ "$output" != *"PR_EDIT:"*"--add-label"* ]]
+  [[ "$output" != *"could not be held"* ]]
+}
+
+@test "#2142: a refused hold label fails the run, logs the API message and says not held in the flag comment" {
+  _setup_2013 HEAD "printf 'fixed\n' > fix.txt; sed -i 's/success precedence/failure precedence/' tests/existing.bats"
+  T2013_LABEL_RC=1 _run_2013 fix-reviews
+
+  [ "$status" -ne 0 ]
+  [ ! -s "$T2013_PUSH" ]
+  # The API's message reaches the run log …
+  [[ "$output" == *"::error::"*"Resource not accessible by integration"* ]]
+  # … and the flag comment itself says the PR could not be held.
+  [[ "$output" == *"PR_COMMENT:"*"Existing test changed without justification"*"could not be held"* ]]
 }
 
 @test "#2013: fix-bot-comment applies the same test-tamper guard" {

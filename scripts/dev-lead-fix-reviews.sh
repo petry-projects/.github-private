@@ -57,6 +57,9 @@ source "$(dirname "$0")/lib/git-history.sh"
 # compute_ci_status so a failing NON-required check never stops the
 # fix/disposition pass — the same library review-one-pr.sh and the sweeps use.
 source "$(dirname "$0")/lib/ci-status.sh"
+# Hold label (#2142): every escalation applies needs-human-review through the REST
+# labels API, logs the API's message on failure, and a failed hold fails the run.
+source "$(dirname "$0")/lib/hold-label.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -86,6 +89,11 @@ if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
   echo "::error::PR_NUMBER is required"
   exit 1
 fi
+
+# A failed hold must fail the run (#2142). Installed before the budget check so a
+# budget escalation that cannot apply its label is loud too; the auto-merge trap
+# below keeps the guard as its last handler.
+trap hold_label_exit_guard EXIT
 
 # Per-PR automation budget (#926): if this PR has exhausted its lifetime
 # automation budget since the last human interaction, stop before any writes.
@@ -237,7 +245,8 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
   # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
   # cleanup onto this trap.
-  trap restore_auto_merge EXIT
+  # shellcheck disable=SC2154 # rc is set by the trap string itself
+  trap 'rc=$?; restore_auto_merge; hold_label_exit_guard "$rc"' EXIT
   hold_auto_merge
   # Resolve HEAD_SHA after holding auto-merge: for issue_comment intents
   # (on-mention, fix-bot-comment) only pr_number is provided, not head_sha.
@@ -2480,14 +2489,13 @@ Resolve the conflict manually, then remove the \`${NEEDS_HUMAN_REVIEW_LABEL:-nee
   # A PR held for human review must not auto-merge once the conflict is resolved
   # by hand: suppress the EXIT-trap auto-merge restore and disable any armed one.
   _AM_NEEDS_RESTORE=0
-  gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
   # Escalate loudly (#1890 AC #3): applying needs-human-review makes the hold gate
   # (dev-lead-intent.sh) skip every subsequent rebase sentinel for this PR, so the
-  # loop converges to a single escalation instead of re-firing indefinitely.
-  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
-    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
-    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  # loop converges to a single escalation instead of re-firing indefinitely. The
+  # label goes first so the comment can say when the PR could not be held (#2142).
+  apply_hold_label "$REPO" "$PR_NUMBER" || true
+  gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${body}${HOLD_LABEL_NOTE}" 2>/dev/null || true
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
 }
 
 # escalate_rebase_needs_human <reason>: hand a rebase off to a human immediately
@@ -2498,15 +2506,15 @@ escalate_rebase_needs_human() {
   local reason="$1"
   # Prevent the EXIT-trap auto-merge restore from re-enabling what we disable.
   _AM_NEEDS_RESTORE=0
-  post_reviews_terminal "rebase" "failed" "$reason"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    post_reviews_terminal "rebase" "failed" "$reason"
     echo "[dry-run] would add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} and disable auto-merge on PR #${PR_NUMBER}"
     return 0
   fi
-  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
-    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
-    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  # Label first so the terminal marker can say when the PR could not be held (#2142).
+  apply_hold_label "$REPO" "$PR_NUMBER" || true
+  post_reviews_terminal "rebase" "failed" "${reason}${HOLD_LABEL_NOTE}"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
 }
 
 # handle_rebase_failure <reason>: converts a rebase engine failure — a per-tier
@@ -2951,22 +2959,22 @@ flag_noop_pr() {
     return 0
   fi
   local marker="${NOOP_MARKER_PREFIX}${PR_NUMBER} intent=${intent} -->"
+  # Label first so the flag comment can say when the PR could not be held (#2142).
+  apply_hold_label "$REPO" "$PR_NUMBER" || true
   if gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
        | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
     echo "::notice::PR #${PR_NUMBER} already flagged as net-zero for intent=${intent} — not reposting"
+    post_hold_failure_note "$REPO" "$PR_NUMBER"
   else
     gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${marker}
 ## No-op fix detected — human attention needed
 
 The \`${intent}\` pass reverted this PR's own changes, so its net diff against \`${BASE_REF:-main}\` is now **empty** (zero changed files). Merging a PR that nets to zero would auto-close its \`Closes #N\` compliance issue while the underlying finding remains unfixed (#1340), and the idempotent audit would immediately re-open it.
 
-Auto-merge has been disabled and no commit was pushed. A human should restore the correct fix or close this PR." \
+Auto-merge has been disabled and no commit was pushed. A human should restore the correct fix or close this PR.${HOLD_LABEL_NOTE}" \
       || echo "::warning::could not post no-op flag comment on PR #${PR_NUMBER}"
   fi
-  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
-    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
-    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
   return 0
 }
 
@@ -3340,20 +3348,20 @@ flag_test_regression() {
     return 0
   fi
   local marker="<!-- dev-lead-test-regression pr=${PR_NUMBER} intent=${intent} -->"
+  # Label first so the flag comment can say when the PR could not be held (#2142).
+  apply_hold_label "$REPO" "$PR_NUMBER" || true
   if gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
        | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
     echo "::notice::PR #${PR_NUMBER} already flagged for a test regression for intent=${intent} — not reposting"
+    post_hold_failure_note "$REPO" "$PR_NUMBER"
   else
     gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${marker}
 ## Test suite newly red — human attention needed
 
-The \`${intent}\` pass left the test suite failing on test(s) that passed on the pre-pass head: ${tests}. A fix that breaks a passing test is wrong or incomplete, so dev-lead **did not push** this pass (#2013). Auto-merge has been disabled." \
+The \`${intent}\` pass left the test suite failing on test(s) that passed on the pre-pass head: ${tests}. A fix that breaks a passing test is wrong or incomplete, so dev-lead **did not push** this pass (#2013). Auto-merge has been disabled.${HOLD_LABEL_NOTE}" \
       || echo "::warning::could not post test-regression flag comment on PR #${PR_NUMBER}"
   fi
-  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
-    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
-    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
   return 0
 }
 
@@ -3370,22 +3378,22 @@ flag_test_tamper() {
     return 0
   fi
   local marker="<!-- dev-lead-test-tamper pr=${PR_NUMBER} intent=${intent} -->"
+  # Label first so the flag comment can say when the PR could not be held (#2142).
+  apply_hold_label "$REPO" "$PR_NUMBER" || true
   if gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
        | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
     echo "::notice::PR #${PR_NUMBER} already flagged for test tampering for intent=${intent} — not reposting"
+    post_hold_failure_note "$REPO" "$PR_NUMBER"
   else
     gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${marker}
 ## Existing test changed without justification — human attention needed
 
 The \`${intent}\` pass changed, deleted, or skipped **existing** test(s) to go with its fix: ${files}. A previously-passing test that disagrees with a change is a reason to question the change, not to edit the test, so dev-lead **did not push** this pass (#2013).
 
-If the test really is wrong, a human should make that call, or the fix should carry a \`Test-Change-Justification:\` commit trailer that cites the reason (for example, the review comment that asked for it). Auto-merge has been disabled." \
+If the test really is wrong, a human should make that call, or the fix should carry a \`Test-Change-Justification:\` commit trailer that cites the reason (for example, the review comment that asked for it). Auto-merge has been disabled.${HOLD_LABEL_NOTE}" \
       || echo "::warning::could not post test-tamper flag comment on PR #${PR_NUMBER}"
   fi
-  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
-    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
-    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
   return 0
 }
 
@@ -3440,22 +3448,22 @@ escalate_review_nonconvergence() {
     return 0
   fi
   local marker="${NONCONVERGE_MARKER_PREFIX}${PR_NUMBER} intent=${intent} -->"
+  # Label first so the flag comment can say when the PR could not be held (#2142).
+  apply_hold_label "$REPO" "$PR_NUMBER" || true
   if gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
        | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
     echo "::notice::PR #${PR_NUMBER} already escalated for review non-convergence (${intent})"
+    post_hold_failure_note "$REPO" "$PR_NUMBER"
   else
     gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${marker}
 ## Review changes not converging — human attention needed
 
 The \`${intent}\` pass has now committed **${count}** times against this review without applying the requested changes: each pass changed something, but none touched the regions the review named. Automatic retries are unlikely to converge, so this needs a human.
 
-Auto-merge has been disabled and no further automatic passes will run until a human intervenes. A human should apply the requested changes, or clarify the review." \
+Auto-merge has been disabled and no further automatic passes will run until a human intervenes. A human should apply the requested changes, or clarify the review.${HOLD_LABEL_NOTE}" \
       || echo "::warning::could not post review non-convergence comment on PR #${PR_NUMBER}"
   fi
-  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
-    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
-    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  disable_auto_merge_for_hold "$REPO" "$PR_NUMBER" || true
 }
 
 # finalize_review_application <intent> — called after commit_and_push succeeds on
