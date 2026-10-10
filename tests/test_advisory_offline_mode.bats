@@ -151,6 +151,15 @@ _steps_section() {
   grep -q 'HIGH always pairs with escalate = yes' "$PROMPTS/solution-architect/advisory.md"
 }
 
+@test "solution-architect step 2 names ADR files the way the corpus does" {
+  f="$PROMPTS/solution-architect/advisory.md"
+  # The corpus is docs/architecture/adr/NNNN-<slug>.md; there is no ADR-NNNN.md.
+  ! grep -q 'docs/architecture/adr/ADR-' "$f"
+  example="$(grep -oE '[0-9]{4}-[a-z0-9-]+\.md' "$f" | head -1)"
+  [ -n "$example" ]
+  [ -f "$ROOT/docs/architecture/adr/$example" ]
+}
+
 @test "solution-architect body shape states the risk tier explicitly (#1787 AC4)" {
   grep -q '^\*\*Risk tier:\*\* LOW | MEDIUM | HIGH' "$PROMPTS/solution-architect/advisory.md"
 }

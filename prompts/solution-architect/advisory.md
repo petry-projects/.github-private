@@ -79,9 +79,11 @@ unchanged. Skip step 3's fetches; do step 4 from the pre-fetched block.
    # From the listing, pick the ADR(s) relevant to this change and read ONLY
    # those — do not cat every ADR (the set grows; reading all of it bloats
    # context and can blow the token budget).
-   cat docs/architecture/adr/ADR-NNNN.md
+   # Files are named NNNN-<slug>.md, e.g. 0002-channel-tag-release-and-rings.md.
+   cat docs/architecture/adr/NNNN-<slug>.md
    ```
-   Identify which ADR (by number, e.g. ADR-0002) governs the change under review.
+   Identify which ADR governs the change under review and cite it as
+   `ADR-NNNN` (file `0002-…md` is cited as ADR-0002).
 
 3. **Gather the item's context**, read-only (skip this entirely in offline mode above — use the pre-fetched block instead):
    - PR: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`
