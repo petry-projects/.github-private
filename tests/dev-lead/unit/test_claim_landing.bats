@@ -253,6 +253,17 @@ second line")
   [[ "$status" -eq 1 ]]
 }
 
+@test "cl_map_sha: follows a rewrite chain to the final SHA (A->B, B->C gives C)" {
+  local map
+  map=$(printf '%s\t%s\n%s\t%s\n' "$A40" "$B40" "$B40" "$C40")
+  run cl_map_sha "$A40" "$map"
+  [[ "$status" -eq 0 ]]; [[ "$output" == "$C40" ]]
+  # A cycle terminates instead of looping forever.
+  map=$(printf '%s\t%s\n%s\t%s\n' "$A40" "$B40" "$B40" "$A40")
+  run cl_map_sha "$A40" "$map"
+  [[ "$status" -eq 0 || "$status" -eq 1 ]]
+}
+
 _earlier_comments() {
   # A finding (100) from a review bot, and our replies to it from EARLIER passes.
   jq -c -n --arg a "$A40" --arg b "$B40" '[

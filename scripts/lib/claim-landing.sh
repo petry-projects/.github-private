@@ -329,14 +329,20 @@ cl_rewrite_claim_sha() {
 # cl_map_sha <sha> <rewrites>
 #   <rewrites> is newline-separated `<old>\t<new>` rows (_PUSH_GUARD_REWRITES from
 #   git-push-guard.sh). Echoes <sha>'s rebased successor and returns 0, or returns 1
-#   when <sha> was not rewritten. Pure.
+#   when <sha> was not rewritten. Follows chains (A->B then B->C yields C), since
+#   the guard can rebase more than once in a run. Pure.
 cl_map_sha() {
   local sha="${1:-}" rewrites="${2:-}"
   [[ -z "$sha" || -z "$rewrites" ]] && return 1
-  local new
-  new=$(awk -F'\t' -v s="$sha" '$1 == s && $2 != "" { print $2; exit }' <<<"$rewrites")
-  [[ -n "$new" ]] || return 1
-  echo "$new"
+  local cur="$sha" new hops=0
+  while ((hops < 32)); do
+    new=$(awk -F'\t' -v s="$cur" '$1 == s && $2 != "" { print $2; exit }' <<<"$rewrites")
+    [[ -n "$new" && "$new" != "$cur" ]] || break
+    cur="$new"
+    hops=$((hops + 1))
+  done
+  [[ "$cur" != "$sha" ]] || return 1
+  echo "$cur"
 }
 
 # cl_select_earlier_claims <comments_json> <bot_user> <since_iso>
