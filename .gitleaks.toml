@@ -189,10 +189,10 @@ regexes = ['''secret-key''']
 
 # Synthetic Google API key placeholder in the Gemini redaction test (test_gemini_tier_view.bats).
 # The literal survives only in earlier commits of PR #2150 (30, 32 and 39 chars); the test now builds
-# it at runtime. gitleaks v8.24.3 does not apply [[allowlists]] entries (path or regex, with or without
-# targetRules) to findings from the extended default rules, so this uses the singular [allowlist]
-# table, which does. That table also ignores condition="AND", so it is kept to ONE regex: the fixed
-# placeholder prefix AIza0123456789, which no real key carries.
-[allowlist]
+# it at runtime. gitleaks v8.25.0+ supports [[allowlists]] with path scoping and AND conditions;
+# earlier versions fall back to the singular [allowlist] table without scoping.
+[[allowlists]]
 description = "Suppress synthetic Google API key placeholder in the Gemini redaction test"
 regexes = ['''AIza0123456789[0-9A-Za-z_-]{16,35}''']
+paths = ['''tests/dev-lead/unit/test_gemini_tier_view.bats''']
+condition = "AND"
