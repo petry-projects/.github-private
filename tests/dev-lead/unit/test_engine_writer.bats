@@ -618,8 +618,10 @@ STUB
   [ -s "$log" ]
   jq empty < "$log"
   local engine tier
-  engine=$(jq -r '.engine' < "$log")
-  tier=$(jq -r '.tier' < "$log")
+  # The rate-limited claude attempt may also leave a kind:"rate_limit_sample"
+  # diagnostic record (#2140); only token records are under test here.
+  engine=$(jq -r 'select(.kind != "rate_limit_sample") | .engine' < "$log")
+  tier=$(jq -r 'select(.kind != "rate_limit_sample") | .tier' < "$log")
   [ "$engine" = "gemini" ]
   [ "$tier" = "writer" ]
 }
@@ -642,8 +644,9 @@ STUB
   run run_writer "$TEST_PROMPT"
 
   [ "$status" -eq 2 ]
-  # Rate-limited → no successful completion → token log must be empty
-  [ ! -s "$log" ]
+  # Rate-limited → no successful completion → no token record. A
+  # kind:"rate_limit_sample" diagnostic (#2140) is not a token record.
+  [ -z "$(jq -c 'select(.kind != "rate_limit_sample")' < "$log")" ]
 }
 
 @test "writer: run_writer persists session output to /tmp/dev-lead-session-output.txt" {

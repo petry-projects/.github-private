@@ -97,6 +97,7 @@ jobs:
             tests/agent_ingress_markets_package.bats \
             tests/test_vendored_installed_tools.bats \
             tests/fleet_report.bats \
+            tests/test_rate_limit_samples.bats \
             tests/fleet_stub_drift.bats \
             tests/fleet_stub_remediate.bats \
             tests/fleet_stub_registry.bats \
@@ -215,6 +216,7 @@ jobs:
             tests/test_post_pr_review_meta_stamp.bats \
             tests/test_post_pr_review_approval_verification.bats \
             tests/test_post_pr_review_escalation.bats \
+            tests/test_merge_queue_dequeue.bats \
             tests/test_release_registry.bats \
             tests/test_readme_refresh_helpers.bats \
             tests/test_readme_refresh_push.bats \
