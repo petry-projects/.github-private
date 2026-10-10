@@ -128,14 +128,14 @@ _samples() {
   run generate_rate_limit_samples_report "$BATS_TEST_TMPDIR/a.jsonl"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Unparsed rate-limit messages"* ]]
-  [[ "$output" == *"None"* ]]
+  [[ "$output" == *"No unparsed rate-limit samples"* ]]
 }
 
 @test "fleet section renders with no files at all" {
   run generate_rate_limit_samples_report
   [ "$status" -eq 0 ]
   [[ "$output" == *"Unparsed rate-limit messages"* ]]
-  [[ "$output" == *"None"* ]]
+  [[ "$output" == *"No unparsed rate-limit samples"* ]]
 }
 
 @test "fleet section renders samples with count, first-seen time and escaped text" {
@@ -150,7 +150,7 @@ EOF
   run generate_rate_limit_samples_report "$BATS_TEST_TMPDIR/a.jsonl" "$BATS_TEST_TMPDIR/b.jsonl"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Unparsed rate-limit messages"* ]]
-  [[ "$output" != *"None"* ]]
+  [[ "$output" != *"No unparsed rate-limit samples"* ]]
   [[ "$output" == *"2 distinct"* ]]
   # Shape 111: seen twice, first seen at the earlier ts, earliest sample shown.
   [[ "$output" == *"2 occurrence(s), first seen 2026-10-07T09:30:00Z"* ]]

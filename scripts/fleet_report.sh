@@ -864,7 +864,7 @@ generate_rate_limit_samples_report() {
 
   printf '## Unparsed rate-limit messages\n\n'
   if [ "$samples" = "[]" ]; then
-    printf '_None — every rate-limit message in the window carried a reset time the parser could read._\n'
+    printf '_No unparsed rate-limit samples were found in the available ledger data._\n'
     return 0
   fi
   printf '%s distinct message shape(s) the reset parser could not read (redacted, truncated):\n\n' \

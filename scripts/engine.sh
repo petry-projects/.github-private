@@ -2509,9 +2509,10 @@ RATE_LIMIT_SAMPLE_MAX_BYTES="${RATE_LIMIT_SAMPLE_MAX_BYTES:-500}"
 # Called only when the reset parser found no reset time (#2140). Records one
 # sample of the rate-limit line(s) to the token ledger via
 # emit_rate_limit_sample_record so a future parser (e.g. the weekly cap, #1863)
-# is built from a real message, not a guess. Keeps only the first 3 lines that
-# match _rate_limit_pattern, passes them through redact_secrets BEFORE truncating
-# to RATE_LIMIT_SAMPLE_MAX_BYTES (truncating first could cut a token below its
+# is built from a real message, not a guess. Redacts the whole stream with
+# redact_secrets first (so multi-line secrets such as PEM blocks are masked before
+# any line filtering), then keeps only the first 3 lines that match
+# _rate_limit_pattern, then truncates to RATE_LIMIT_SAMPLE_MAX_BYTES (truncating first could cut a token below its
 # redaction pattern's minimum length and leak the fragment), and fingerprints the
 # shape with digits normalised so retries of the same message de-duplicate.
 # Records nothing without a ledger or without redact_secrets. Never changes what
@@ -2523,8 +2524,8 @@ _record_unparsed_rate_limit() {
     return 0
   fi
   local sample shape
-  sample=$(grep -iE "$(_rate_limit_pattern)" 2>/dev/null | head -n 3 \
-    | redact_secrets | head -c "$RATE_LIMIT_SAMPLE_MAX_BYTES" || true)
+  sample=$(redact_secrets | grep -iE "$(_rate_limit_pattern)" 2>/dev/null | head -n 3 \
+    | head -c "$RATE_LIMIT_SAMPLE_MAX_BYTES" || true)
   [ -n "$sample" ] || return 0
   shape=$(printf '%s' "$sample" | sed -E 's/[0-9]+/N/g' | cksum)
   shape=${shape%% *}
