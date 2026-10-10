@@ -166,7 +166,7 @@ sweep_earlier_claims() {
 
   local id state claim finding_at sha files facts on_ref touches commit_date own cumulative verdict
   local body new_body deepened=false retracted=0 restored=0 failed=0 known_rc
-  while IFS=$'\t' read -r id state claim finding_at; do
+  while IFS=$'\x1f' read -r id state claim finding_at; do
     [ -z "$id" ] && continue
     sha=""
     if [ -z "$claim" ]; then

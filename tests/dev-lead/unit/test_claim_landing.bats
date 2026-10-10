@@ -291,7 +291,7 @@ _earlier_comments() {
   # we cannot verify (skipped); 104 has a malformed claim (empty payload -> the
   # caller retracts it); 105 is another account; 106 belongs to this pass.
   local expected
-  expected=$(printf '101\tclaimed\t{"v":1,"sha":"%s","files":["f"]}\t2026-10-01T08:00:00Z\n102\tretracted\t{"v":1,"sha":"%s","files":["f"]}\t2026-10-01T08:00:00Z\n104\tclaimed\t\t2026-10-01T08:00:00Z' "$A40" "$B40")
+  expected=$(printf '101\x1fclaimed\x1f{"v":1,"sha":"%s","files":["f"]}\x1f2026-10-01T08:00:00Z\n102\x1fretracted\x1f{"v":1,"sha":"%s","files":["f"]}\x1f2026-10-01T08:00:00Z\n104\x1fclaimed\x1f\x1f2026-10-01T08:00:00Z' "$A40" "$B40")
   [[ "$output" == "$expected" ]]
 }
 
@@ -307,7 +307,7 @@ _earlier_comments() {
   json=$(jq -c -n --arg a "$A40" '[{id: 7, user: {login: "donpetry-bot"}, created_at: "2026-10-01T09:00:00Z", in_reply_to_id: 999,
      body: ("x\n<!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\"v\":1,\"sha\":\"" + $a + "\",\"files\":[\"f\"]} -->")}]')
   run cl_select_earlier_claims "$json" "donpetry-bot" "2026-10-02T10:00:00Z"
-  [[ "$output" == "$(printf '7\tclaimed\t{"v":1,"sha":"%s","files":["f"]}\t' "$A40")" ]]
+  [[ "$output" == "$(printf '7\x1fclaimed\x1f{"v":1,"sha":"%s","files":["f"]}\x1f' "$A40")" ]]
 }
 
 @test "cl_earlier_claim_verdict: on the remote head, touches its files, committed after the finding -> kept rc0" {

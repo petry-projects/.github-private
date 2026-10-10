@@ -381,13 +381,13 @@ cl_select_earlier_claims() {
            else empty end) as $state
         | [(.id | tostring), $state, ($b | @base64),
            (if .in_reply_to_id == null then "" else ($at[.in_reply_to_id | tostring] // "") end)]
-        | @tsv
+        | join("\u001f")
       else empty end
     ' <<<"$comments_json" 2>/dev/null) || return 1
   [[ -z "$rows" ]] && return 0
 
   local id state body_b64 finding_at body claim rest
-  while IFS=$'\t' read -r id state body_b64 finding_at; do
+  while IFS=$'\x1f' read -r id state body_b64 finding_at; do
     [[ -z "$id" ]] && continue
     body=$(base64 --decode <<<"$body_b64" 2>/dev/null || printf '')
     if [[ "$state" == "retracted" ]]; then
@@ -396,7 +396,7 @@ cl_select_earlier_claims() {
     else
       claim=$(acv_parse_claim "$body") || claim=""
     fi
-    printf '%s\t%s\t%s\t%s\n' "$id" "$state" "$claim" "$finding_at"
+    printf '%s\x1f%s\x1f%s\x1f%s\n' "$id" "$state" "$claim" "$finding_at"
   done <<<"$rows"
 }
 
