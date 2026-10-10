@@ -93,7 +93,7 @@ ssg_declined_body() {
   printf '## Declined — synced org-standard stub is read-only here\n\n'
   if [[ -n "$list" ]]; then
     printf 'The `%s` pass changed a stub this standards-sync PR copies verbatim from the org template:\n\n%s\n' "$intent" "$list"
-    printf 'A suggestion to change a synced stub is declined in this repo: change the template in `%s` instead, and the next sync carries it here. dev-lead **did not push** this pass, so the PR still matches the template (#2185).\n' "$_SSG_TEMPLATE_REPO"
+    printf 'A suggestion to change a synced stub is declined in this repo: change the template in `%s` instead, and the next sync carries it here. dev-lead **did not push** this pass, so the PR was not changed by this pass (#2185).\n' "$_SSG_TEMPLATE_REPO"
   else
     printf 'The `%s` pass changed a synced org-standard stub on this standards-sync PR, and whether the change restores the template could not be verified (the pre-pass head, the merge base, or the PR could not be read). dev-lead **did not push** this pass (#2185).\n' "$intent"
   fi
