@@ -19,9 +19,12 @@
 #              touching it wrote (the sync commit), i.e. a restore to the template;
 #     drift    any other change. The harness refuses to push, answers the bot as
 #              declined with a pointer to the template, and holds the PR.
-#   A stub the PR did not touch may not change at all. Files with no such header,
-#   or a SOURCE OF TRUTH outside petry-projects/.github/standards/, are out of
-#   scope, and so are PRs without the label.
+#   A stub the PR did not touch may not change at all. A synced stub can also lack
+#   the header (standards/workflows/dev-lead.yml has none), so on a labeled PR
+#   every path the PR's own commits changed before the pass (<merge-base>..<pre>)
+#   is synced content too, header or not, under the same restore rule. Other
+#   header-less files, or a SOURCE OF TRUTH outside petry-projects/.github/standards/,
+#   are out of scope, and so are PRs without the label.
 #
 # PURITY / TESTABILITY (ADR-0004)
 #   ssg_template_path, ssg_has_sync_label and ssg_declined_body are PURE.
@@ -81,7 +84,11 @@ ssg_declined_body() {
   local intent="${1:-}" rows="${2:-}" path tpl list=""
   while IFS=$'\t' read -r path tpl; do
     [[ -z "${path:-}" ]] && continue
-    list+="- \`${path}\` — template: [\`${_SSG_TEMPLATE_REPO}/${tpl}\`](https://github.com/${_SSG_TEMPLATE_REPO}/blob/main/${tpl})"$'\n'
+    if [[ -n "${tpl:-}" ]]; then
+      list+="- \`${path}\` — template: [\`${_SSG_TEMPLATE_REPO}/${tpl}\`](https://github.com/${_SSG_TEMPLATE_REPO}/blob/main/${tpl})"$'\n'
+    else
+      list+="- \`${path}\` — no template header; see [\`standards/\`](https://github.com/${_SSG_TEMPLATE_REPO}/tree/main/standards) in \`${_SSG_TEMPLATE_REPO}\`"$'\n'
+    fi
   done <<<"$rows"
   printf '## Declined — synced org-standard stub is read-only here\n\n'
   if [[ -n "$list" ]]; then
@@ -117,15 +124,17 @@ _ssg_changed_stubs() {
 }
 
 # ssg_pass_touches_stubs <pre_pass_sha> [head]
-#   0 when the pass changed a synced stub, or when that cannot be determined (the
+#   0 when the pass changed a file that may be synced content (a header stub, or
+#   on a labeled PR any file the PR already carried, which needs the merge base to
+#   tell, so any changed file qualifies), or when that cannot be determined (the
 #   caller then reads the PR and ssg_scan_pass decides). 1 only when the pass
-#   provably touches no synced stub. Impure.
+#   changed no file. Impure.
 ssg_pass_touches_stubs() {
-  local pre="${1:-}" head="${2:-HEAD}" stubs
+  local pre="${1:-}" head="${2:-HEAD}" files
   [[ -n "$pre" ]] || return 0
   git cat-file -e "${pre}^{commit}" 2>/dev/null || return 0
-  stubs=$(_ssg_changed_stubs "$pre" "$head") || return 0
-  [[ -n "$stubs" ]]
+  files=$(git -c core.quotePath=false diff --no-renames --name-only "$pre" "$head" 2>/dev/null) || return 0
+  [[ -n "$files" ]]
 }
 
 # ssg_scan_pass <pre_pass_sha> [head] <merge_base_sha>
@@ -139,9 +148,9 @@ ssg_scan_pass() {
     echo "unknown"
     return 2
   fi
-  local stubs path tpl first ref_blob head_blob drift=""
-  stubs=$(_ssg_changed_stubs "$pre" "$head") || { echo "unknown"; return 2; }
-  if [[ -z "$stubs" ]]; then
+  local files path tpl pr_paths="" first ref_blob head_blob drift=""
+  files=$(git -c core.quotePath=false diff --no-renames --name-only "$pre" "$head" 2>/dev/null) || { echo "unknown"; return 2; }
+  if [[ -z "$files" ]]; then
     echo "clean"
     return 0
   fi
@@ -149,10 +158,17 @@ ssg_scan_pass() {
     echo "unknown"
     return 2
   fi
-  while IFS=$'\t' read -r path tpl; do
+  # Every path the PR's own commits touched before the pass: synced content.
+  pr_paths=$(git -c core.quotePath=false log --no-renames --name-only --format= "${mb}..${pre}" 2>/dev/null) \
+    || { echo "unknown"; return 2; }
+  while IFS= read -r path; do
     [[ -z "$path" ]] && continue
+    tpl=$(_ssg_file_template "$pre" "$path") || tpl=$(_ssg_file_template "$head" "$path") || tpl=""
+    if [[ -z "$tpl" ]] && ! grep -qxF -- "$path" <<<"$pr_paths"; then
+      continue
+    fi
     # The content the sync commit wrote: the first PR commit that touched the
-    # stub. A stub the PR never touched is pinned to its pre-pass content.
+    # file. A stub the PR never touched is pinned to its pre-pass content.
     first=$(git --literal-pathspecs log --reverse --format=%H "${mb}..${pre}" -- "$path" 2>/dev/null | awk 'NR == 1') \
       || { echo "unknown"; return 2; }
     ref_blob=$(git --literal-pathspecs rev-parse -q --verify "${first:-$pre}:${path}" 2>/dev/null) || ref_blob=""
@@ -161,7 +177,7 @@ ssg_scan_pass() {
       continue
     fi
     drift+="${path}"$'\t'"${tpl}"$'\n'
-  done <<<"$stubs"
+  done <<<"$files"
   if [[ -z "$drift" ]]; then
     echo "clean"
     return 0
@@ -172,7 +188,7 @@ ssg_scan_pass() {
 }
 
 # ssg_evaluate <pre_pass_sha> <head> <pr_json> [head_ref]
-#   The guard's single entry point. A pass that touches no synced stub is clean
+#   The guard's single entry point. A pass that changes no file is clean
 #   without reading <pr_json>. Otherwise <pr_json> (the GitHub pulls API object)
 #   must parse: a PR without the sync label is clean, a sync PR is scanned
 #   against its merge base with origin/<base.ref>. Same output and return codes
@@ -185,10 +201,10 @@ ssg_evaluate() {
     echo "clean"
     return 0
   fi
-  if ! labels=$(jq -er '[.labels[]?.name // empty] | join("\n")' <<<"$pr_json" 2>/dev/null); then
+  labels=$(jq -er '[.labels[]?.name // empty] | join("\n")' <<<"$pr_json" 2>/dev/null) || {
     echo "unknown"
     return 2
-  fi
+  }
   if ! ssg_has_sync_label "$labels"; then
     echo "clean"
     return 0

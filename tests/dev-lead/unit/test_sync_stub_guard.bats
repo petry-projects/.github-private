@@ -170,7 +170,7 @@ _bot_drift() {
 
 @test "ssg_scan_pass: the sync PR's other files and .github-private stubs are unaffected -> clean" {
   _mk_sync_pr
-  echo "more" >> docs/sync.md
+  echo "more" >> README.md
   echo "  # note" >> .github/workflows/token-report.yml
   echo "x" > new.txt
   git add -A; git commit -q -m "fix(bot): docs"
@@ -196,19 +196,17 @@ _bot_drift() {
   [[ "$output" == "unknown" ]]
 }
 
-@test "ssg_scan_pass: a pass touching no stub is clean without a merge base" {
+@test "ssg_scan_pass: a pass changing no file is clean without a merge base" {
   _mk_sync_pr
-  echo "more" >> docs/sync.md
-  git add -A; git commit -q -m "fix(bot): docs"
+  git commit -q --allow-empty -m "fix(bot): nothing"
   run ssg_scan_pass "$PRE" HEAD ""
   [[ "$status" -eq 0 ]]
   [[ "$output" == "clean" ]]
 }
 
-@test "ssg_pass_touches_stubs: true for a stub change or an unknown base, false otherwise" {
+@test "ssg_pass_touches_stubs: true for any file change or an unknown base, false for an empty pass" {
   _mk_sync_pr
-  echo "more" >> docs/sync.md
-  git add -A; git commit -q -m "docs"
+  git commit -q --allow-empty -m "nothing"
   run ssg_pass_touches_stubs "$PRE" HEAD
   [[ "$status" -eq 1 ]]
   _bot_drift
@@ -253,10 +251,9 @@ PLAIN_PR_JSON='{"base":{"ref":"main"},"labels":[{"name":"enhancement"}]}'
   [[ "$output" == "clean" ]]
 }
 
-@test "ssg_evaluate: a pass touching no stub never needs the PR JSON -> clean" {
+@test "ssg_evaluate: a pass changing no file never needs the PR JSON -> clean" {
   _mk_sync_pr
-  echo "more" >> docs/sync.md
-  git add -A; git commit -q -m "docs"
+  git commit -q --allow-empty -m "nothing"
   run ssg_evaluate "$PRE" HEAD "" feat
   [[ "$status" -eq 0 ]]
   [[ "$output" == "clean" ]]
@@ -277,6 +274,85 @@ PLAIN_PR_JSON='{"base":{"ref":"main"},"labels":[{"name":"enhancement"}]}'
   run ssg_evaluate "$PRE" HEAD "$SYNC_PR_JSON" feat
   [[ "$status" -eq 2 ]]
 }
+
+# ---------------------------------------------------------------------------
+# Header-less synced stubs (dev-lead.yml has no SOURCE OF TRUTH header)
+# ---------------------------------------------------------------------------
+
+HL=".github/workflows/dev-lead.yml"
+
+_headerless_body() {
+  cat <<'EOF'
+name: dev-lead
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  dispatch:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable
+EOF
+}
+
+# _mk_headerless_pr: the sync commit also writes a header-less dev-lead.yml.
+_mk_headerless_pr() {
+  _mk_sync_pr
+  _headerless_body > "$HL"
+  git add -A; git commit -q -m "chore: sync dev-lead stub"
+  PRE="$(git rev-parse HEAD)"
+}
+
+_pin_uses() {
+  sed -i -e 's#@dev-lead/v1-stable#@0123456789abcdef0123456789abcdef01234567#' "$HL"
+  git add -A; git commit -q -m "fix(bot): pin uses"
+}
+
+@test "ssg_scan_pass: a header-less file the sync commit wrote, SHA-pinned by a bot pass -> drift, no template named" {
+  _mk_headerless_pr
+  _pin_uses
+  run ssg_scan_pass "$PRE" HEAD "$MB"
+  [[ "$status" -eq 1 ]]
+  [[ "${lines[0]}" == "drift" ]]
+  [[ "${lines[1]}" == "${HL}"$'\t' ]]
+}
+
+@test "ssg_scan_pass: restoring the header-less file to the sync content -> clean" {
+  _mk_headerless_pr
+  _pin_uses
+  PRE="$(git rev-parse HEAD)"
+  _headerless_body > "$HL"
+  git add -A; git commit -q -m "fix(reviews): restore"
+  run ssg_scan_pass "$PRE" HEAD "$MB"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clean" ]]
+}
+
+@test "ssg_scan_pass: a header-less file the PR never touched, edited by the pass -> clean" {
+  _mk_sync_pr
+  echo "  # extra" >> .github/workflows/token-report.yml
+  printf 'name: other\n' > .github/workflows/other.yml
+  git add -A; git commit -q -m "fix(bot): x"
+  run ssg_scan_pass "$PRE" HEAD "$MB"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clean" ]]
+}
+
+@test "ssg_evaluate: the header-less drift on a standards-sync PR -> drift rc1; on a plain PR -> clean" {
+  _mk_headerless_pr
+  _mk_remote
+  _pin_uses
+  run ssg_evaluate "$PRE" HEAD "$SYNC_PR_JSON" feat
+  [[ "$status" -eq 1 ]]
+  [[ "${lines[1]}" == "${HL}"$'\t' ]]
+  run ssg_evaluate "$PRE" HEAD "$PLAIN_PR_JSON" feat
+  [[ "$status" -eq 0 ]]
+}
+
+@test "ssg_declined_body: a row with no template points at standards/ in petry-projects/.github" {
+  run ssg_declined_body "fix-bot-comment" ".github/workflows/dev-lead.yml"
+  [[ "$output" == *'`.github/workflows/dev-lead.yml` — no template header'* ]]
+  [[ "$output" == *"petry-projects/.github/tree/main/standards"* ]]
+}
+
 
 # ---------------------------------------------------------------------------
 # ssg_declined_body — the reply that answers the bot as declined
