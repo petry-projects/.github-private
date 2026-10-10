@@ -166,7 +166,7 @@ unchanged. Skip step 3's fetches; do step 4 from the pre-fetched block.
        usually **MEDIUM**, **HIGH** if it also breaks consumers.
    - **HIGH always pairs with escalate = yes.** If you would not escalate it, it
      is not HIGH.
-   - **When you rate a change aligned, escalate is no.** "Aligned" plus
+   - **When you rate a change aligned, escalate = no.** "Aligned" plus
      "Escalate? yes" contradicts itself; recheck which one is wrong.
 
 ## Output — how you deliver the advisory

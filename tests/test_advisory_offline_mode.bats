@@ -146,9 +146,13 @@ _steps_section() {
 
 @test "solution-architect: 'no ADR governs' is not itself an escalation (#1787 AC3)" {
   steps="$(_steps_section "$PROMPTS/solution-architect/advisory.md")"
-  grep -q 'No recorded ADR governs the change' <<<"$steps"
-  grep -q 'A missing ADR is a' <<<"$steps"
-  grep -q 'not a reason to escalate' <<<"$steps"
+  # The no-ADR bullet as one line, so a rewrap cannot split the asserted text.
+  bullet="$(awk '/No recorded ADR governs the change/ { on=1; print; next }
+                 on && /^   - / { exit }
+                 on { print }' <<<"$steps" | tr '\n' ' ' | tr -s ' ')"
+  [ -n "$bullet" ]
+  grep -q '\*\*escalate = no\*\*' <<<"$bullet"
+  grep -q 'A missing ADR is a gap to name, not a reason to escalate' <<<"$bullet"
 }
 
 @test "solution-architect: HIGH always pairs with escalate = yes" {
@@ -158,7 +162,12 @@ _steps_section() {
 @test "solution-architect step 2 names ADR files the way the corpus does" {
   f="$PROMPTS/solution-architect/advisory.md"
   # The corpus is docs/architecture/adr/NNNN-<slug>.md; there is no ADR-NNNN.md.
-  ! grep -q 'docs/architecture/adr/ADR-' "$f"
+  # A bare `! grep` mid-test cannot fail it (errexit ignores negated commands),
+  # so fail explicitly.
+  if grep -q 'docs/architecture/adr/ADR-' "$f"; then
+    echo "prompt must not reference docs/architecture/adr/ADR-NNNN.md" >&2
+    false
+  fi
   example="$(grep -oE '[0-9]{4}-[a-z0-9-]+\.md' "$f" | head -1)"
   [ -n "$example" ]
   [ -f "$ROOT/docs/architecture/adr/$example" ]
