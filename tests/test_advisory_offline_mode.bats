@@ -171,6 +171,15 @@ _steps_section() {
   example="$(grep -oE '[0-9]{4}-[a-z0-9-]+\.md' "$f" | head -1)"
   [ -n "$example" ]
   [ -f "$ROOT/docs/architecture/adr/$example" ]
+  # The persona runs this command, so it must work as written: no `<…>`
+  # placeholder (the shell reads it as a redirection), and it must match a file.
+  cmd="$(grep -E '^[[:space:]]*cat docs/architecture/adr/' "$f" | head -1 | sed 's/^[[:space:]]*cat //')"
+  [ -n "$cmd" ]
+  if [[ "$cmd" == *"<"* ]]; then
+    echo "ADR read command contains a <placeholder>: $cmd" >&2
+    false
+  fi
+  compgen -G "$ROOT/$cmd" >/dev/null
 }
 
 @test "solution-architect body shape states the risk tier explicitly (#1787 AC4)" {

@@ -80,7 +80,8 @@ unchanged. Skip step 3's fetches; do step 4 from the pre-fetched block.
    # those — do not cat every ADR (the set grows; reading all of it bloats
    # context and can blow the token budget).
    # Files are named NNNN-<slug>.md, e.g. 0002-channel-tag-release-and-rings.md.
-   cat docs/architecture/adr/NNNN-<slug>.md
+   # Read one by its number (here ADR-0002):
+   cat docs/architecture/adr/0002-*.md
    ```
    Identify which ADR governs the change under review and cite it as
    `ADR-NNNN` (file `0002-…md` is cited as ADR-0002).
