@@ -47,7 +47,7 @@ _mq_read_state() {
     | .headRefOid as $h
     | {id, state, head: $h,
        queued: (.mergeQueueEntry != null),
-       approved: ([.latestOpinionatedReviews.nodes[]?
+       approved: ([(.latestOpinionatedReviews.nodes // [])[]?
                    | select(.state == "APPROVED" and (.commit.oid // "") == $h)] | length > 0)}
   ' 2>/dev/null
 }
@@ -58,10 +58,10 @@ _mq_read_state() {
 #   post anyway: a missing notice is worse than a duplicate.
 _mq_post_notice() {
   local owner="$1" name="$2" number="$3" pr_url="$4" head="$5" body="$6"
-  local marker="${MQ_DEQUEUE_MARKER_PREFIX}${head} -->" found
-  if found=$(gh api --paginate "repos/$owner/$name/issues/$number/comments" 2>/dev/null \
-      | jq -s -r --arg m "$marker" 'flatten | map(select((.body // "") | contains($m))) | length' 2>/dev/null) \
-     && [ -n "$found" ]; then
+  local marker="${MQ_DEQUEUE_MARKER_PREFIX}${head} -->" found status_found=0
+  found=$(gh api --paginate "repos/$owner/$name/issues/$number/comments" 2>/dev/null \
+      | jq -s -r --arg m "$marker" 'flatten | map(select((.body // "") | contains($m))) | length' 2>/dev/null) || status_found=$?
+  if [ "$status_found" -eq 0 ] && [ -n "$found" ]; then
     if [ "$found" -gt 0 ]; then
       echo "  merge-queue: notice for ${head:0:8} already posted on $pr_url — not posting again"
       return 0
@@ -92,8 +92,9 @@ mq_dequeue_if_unapproved() {
     return 0
   fi
 
-  local st
-  if ! st=$(_mq_read_state "$owner" "$name" "$number"); then
+  local st status_st=0
+  st=$(_mq_read_state "$owner" "$name" "$number") || status_st=$?
+  if [ "$status_st" -ne 0 ]; then
     echo "::warning::merge-queue: could not read the merge-queue and review state of $pr_url — cannot tell whether a queued PR lost its last approval; check the queue by hand (#2174)"
     return 0
   fi
@@ -120,7 +121,10 @@ mq_dequeue_if_unapproved() {
 
   echo "  merge-queue: $pr_url is queued with no approval standing for head ${head:0:8} — dequeuing (#2174)"
   local err_file err rc=0
-  err_file=$(mktemp)
+  err_file=$(mktemp -t "mq.XXXXXX") || {
+    echo "::warning::merge-queue: failed to create temporary file for error logging"
+    return 0
+  }
   gh api graphql -f id="$pr_id" -f query='
     mutation($id: ID!) {
       dequeuePullRequest(input: {id: $id}) { mergeQueueEntry { id } }
@@ -145,11 +149,16 @@ EOF
 
   # The call failed. If the PR merged or left the queue in the meantime, the
   # dequeue is moot: a no-op, never an error.
-  local st2
-  if st2=$(_mq_read_state "$owner" "$name" "$number") \
-     && { [ "$(jq -r '.state' <<<"$st2")" != "OPEN" ] || [ "$(jq -r '.queued' <<<"$st2")" != "true" ]; }; then
-    echo "  merge-queue: $pr_url merged or left the queue before the dequeue call — nothing to do"
-    return 0
+  local st2 status2=0
+  st2=$(_mq_read_state "$owner" "$name" "$number") || status2=$?
+  if [ "$status2" -eq 0 ]; then
+    local st2_state st2_queued
+    st2_state=$(jq -r '.state' <<<"$st2")
+    st2_queued=$(jq -r '.queued' <<<"$st2")
+    if [ "$st2_state" != "OPEN" ] || [ "$st2_queued" != "true" ]; then
+      echo "  merge-queue: $pr_url merged or left the queue before the dequeue call — nothing to do"
+      return 0
+    fi
   fi
 
   echo "::warning::merge-queue: dequeuePullRequest failed for $pr_url (head ${head:0:8}) — a maintainer must remove it from the merge queue by hand. API said: ${err}"

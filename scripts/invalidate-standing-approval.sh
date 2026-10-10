@@ -123,12 +123,13 @@ invalidate_standing_approval() {
     while IFS= read -r id; do
       [ -n "$id" ] || continue
       if [ "$DRY_RUN" = "false" ]; then
+        # Count the attempt, not the success: a call can fail after GitHub applied it.
+        dismissed=$((dismissed + 1))
         echo "[invalidate] ${pr_url}: DISMISSING approval review ${id} (head ${sha:0:8}) — accepted advisory finding after approval (#1596)."
         if gh api -X PUT "repos/${owner}/${name}/pulls/${number}/reviews/${id}/dismissals" \
           -f message="Auto-dismissed: a trusted advisory reviewer found an accepted defect after this approval at ${sha:0:8} (pr-review miss, #1596). Re-review required." \
           >/dev/null 2>&1; then
           echo "[invalidate]   dismissed ${id}."
-          dismissed=$((dismissed + 1))
         else
           echo "::warning::[invalidate] failed to dismiss review ${id} on ${pr_url}"
         fi
