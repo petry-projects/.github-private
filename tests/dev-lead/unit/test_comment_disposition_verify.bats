@@ -575,3 +575,26 @@ Also `real_token`.'
   [ "$status" -eq 0 ]
   [ "$output" = "--emit-gone" ]
 }
+
+# ── #2152: the lib dir must survive the caller's cd into the PR worktree ──────
+
+@test "#2152: cdv_body_has_findings is cwd-independent when sourced by a relative path" {
+  # dev-lead-fix-reviews.sh runs as `bash .dev-lead/scripts/...` and cds into the
+  # PR worktree before this is called. A no-finding notice must still read as
+  # no-finding (1); resolving the lib dir at call time failed closed to 0.
+  local root="$BATS_TEST_TMPDIR/ws"
+  mkdir -p "$root/.dev-lead" "$root/pr-worktree"
+  ln -s "$SCRIPT_DIR" "$root/.dev-lead/scripts"
+  local notice="> [!NOTE] > Gemini is unable to generate a review for this pull request due to the file types involved not being currently supported."
+  run bash -c "cd '$root' && source .dev-lead/scripts/lib/comment-disposition-verify.sh && cd pr-worktree && cdv_body_has_findings \"\$1\"" _ "$notice"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "#2152: a finding-bearing body still reads as finding-bearing after the cd" {
+  local root="$BATS_TEST_TMPDIR/ws"
+  mkdir -p "$root/.dev-lead" "$root/pr-worktree"
+  ln -s "$SCRIPT_DIR" "$root/.dev-lead/scripts"
+  run bash -c "cd '$root' && source .dev-lead/scripts/lib/comment-disposition-verify.sh && cd pr-worktree && cdv_body_has_findings '**Actionable comments posted: 2**'"
+  [ "$status" -eq 0 ]
+}

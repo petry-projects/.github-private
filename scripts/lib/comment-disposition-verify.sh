@@ -38,13 +38,20 @@ readonly _CDV_MARKER_SUFFIX=' -->'
 # unverifiable → parse fails closed rather than guessing.
 readonly _CDV_VALID_DISPOSITIONS='fixed invalid out-of-scope answered informational'
 
+# This library's own directory, resolved ONCE at source time. The caller is run
+# by a relative path (`bash .dev-lead/scripts/...`) and later cds into the PR
+# worktree, so a function resolving BASH_SOURCE at call time gets a path that no
+# longer exists and its registry read fails closed (#2152).
+_CDV_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
+readonly _CDV_LIB_DIR
+
 # The post-disposition BOT-reply classification (AC7 loop safety) reuses the
 # review-thread verifier's acknowledgement/finding discriminators so there is a
 # single source of truth. Source it only if the caller has not already (the main
 # script sources both, so this never double-sources or re-declares readonly vars).
 if ! declare -F acv_bot_comment_is_acknowledgement >/dev/null 2>&1; then
   # shellcheck source=addressed-claim-verify.sh
-  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/addressed-claim-verify.sh"
+  source "$_CDV_LIB_DIR/addressed-claim-verify.sh"
 fi
 
 # cdv_parse_disposition <reply_body>
@@ -501,11 +508,10 @@ cdv_disposition_is_stale() {
 #   so an `informational` disposition can never be certified on a body we could not
 #   classify. Pure apart from reading the registry file.
 cdv_body_has_findings() {
-  local body="${1:-}" lib_dir pattern result
-  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local body="${1:-}" pattern result
   pattern="$(
     # shellcheck source=reviewer-sources.sh
-    source "$lib_dir/reviewer-sources.sh" 2>/dev/null \
+    source "$_CDV_LIB_DIR/reviewer-sources.sh" 2>/dev/null \
       && reviewer_sources_finding_section_pattern 2>/dev/null
   )" || return 0
   [[ -n "$pattern" ]] || return 0
