@@ -114,6 +114,20 @@ teardown() {
   printf '%s' "$output" | tr '\n' ' ' | grep -Eq "$re"
 }
 
+@test "markets §3: pr-auto-review uses a per-event slot, not a shared per-SHA slot" {
+  # The deployed markets ingress (#2171) gives each check_suite / workflow_run
+  # its own slot so a run on a shared commit never cancels another PR's review
+  # (the #1126 hazard). Pin the branch order and the absence of head_sha.
+  run yq '.jobs["pr-auto-review"].concurrency.group' "$INGRESS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == pr-auto-review-* ]]
+  [[ "$output" != *"head_sha"* ]]
+  local re="pull_request\\.number.*check_suite\\.id.*workflow_run\\.id.*'none'"
+  printf '%s' "$output" | tr '\n' ' ' | grep -Eq "$re"
+  run yq '.jobs["pr-auto-review"].concurrency["cancel-in-progress"]' "$INGRESS"
+  [ "$output" = "true" ]
+}
+
 @test "markets §3: ci-failure-analyst concurrency is unchanged" {
   run yq -r '.jobs["ci-failure-analyst"].concurrency.group' "$INGRESS"
   [ "$output" = 'ci-failure-analyst-${{ github.event.check_run.head_sha }}' ]
