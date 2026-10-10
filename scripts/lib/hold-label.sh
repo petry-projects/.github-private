@@ -29,6 +29,7 @@
 
 HOLD_LABEL_FAILED="${HOLD_LABEL_FAILED:-0}"
 HOLD_LABEL_NOTE=""
+ADD_LABEL_ERR=""
 
 # _hold_label_api_message <raw gh output> — reduce gh's combined output to the
 # API's message on one line: prefer gh's own `gh: … (HTTP nnn)` line, then the
@@ -48,7 +49,6 @@ _hold_label_api_message() {
 #   (`gh issue edit` / `gh pr edit --add-label` fail under the workflow token).
 #   Returns 0 when applied. Otherwise logs ::error:: with the API's message,
 #   leaves it in ADD_LABEL_ERR, and returns 1. Touches no hold state.
-ADD_LABEL_ERR=""
 add_label_rest() {
   local repo="$1" number="$2" label="$3" out
   ADD_LABEL_ERR=""

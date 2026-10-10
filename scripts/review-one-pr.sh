@@ -170,6 +170,7 @@ _diagnose_gh_is_write() {
 if [ "${PR_REVIEW_DIAGNOSE:-false}" = "true" ]; then
   DRY_RUN=true FORCE_REVIEW=false FORCE_RE_REVIEW=false
   export DRY_RUN FORCE_REVIEW FORCE_RE_REVIEW
+  # gh — diagnostic wrapper that enforces read-only mode when PR_REVIEW_DIAGNOSE is true.
   gh() {
     if _diagnose_gh_is_write "$@"; then
       echo "    diagnose: refused a GitHub write (gh $1 ${2:-}) — diagnose mode is read-only" >&2
