@@ -136,8 +136,11 @@ METADATA_ONLY=$(jq -r '.metadata_only // false' "$VERDICT_JSON")
 # alone and nothing was posted. Normalize only the present-tense word inside the
 # head-SHA v1 marker; a missing or contradictory decision still fails closed.
 if [ "$DECISION" = "approve" ]; then
-  NORMALIZED_BODY=$(printf '%s' "$BODY" | sed -E \
+  # -z treats the body as one record so a marker wrapped across lines still
+  # matches; the trailing sentinel x keeps $(...) from stripping trailing newlines.
+  NORMALIZED_BODY=$(printf '%sx' "$BODY" | sed -E -z \
     "s/(<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]][^>]*decision=)approve([[:space:]]|-->)/\1approved\2/")
+  NORMALIZED_BODY="${NORMALIZED_BODY%x}"
   if [ "$NORMALIZED_BODY" != "$BODY" ]; then
     echo "  approval marker said decision=approve — normalized to decision=approved from the verdict (#2169)"
     BODY="$NORMALIZED_BODY"
