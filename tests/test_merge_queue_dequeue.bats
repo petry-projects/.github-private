@@ -176,9 +176,10 @@ seed_prior_bot_approval() {
     "LGTM <!-- pr-review-agent v1 sha=$SHA decision=approved risk=LOW -->"
 }
 
+# Counts the success and the failure notice alike (distinct per-outcome markers).
 marker_count() {
-  jq --arg m "<!-- pr-review-agent dequeued sha=$SHA -->" \
-    '[.[] | select(.body | contains($m))] | length' "$COMMENTS_FILE"
+  jq --arg m "<!-- pr-review-agent dequeue" --arg sha "sha=$SHA -->" \
+    '[.[] | select((.body | contains($m)) and (.body | contains($sha)))] | length' "$COMMENTS_FILE"
 }
 
 dequeue_calls() { grep -c dequeuePullRequest "$CALLS" || true; }
@@ -293,6 +294,18 @@ fix_request_verdict() {
   [ "$(jq length "$COMMENTS_FILE")" -eq 1 ]
 }
 
+@test "a failure notice is not masked by an earlier success notice at the same head" {
+  run_lib
+  [ "$(marker_count)" -eq 1 ]
+  echo true > "$QUEUED_FILE"
+  export DEQUEUE_RC=1
+  run_lib
+  [ "$status" -eq 0 ]
+  [ "$(marker_count)" -eq 2 ]
+  jq -e --arg m "<!-- pr-review-agent dequeue-failed sha=$SHA -->" \
+    'map(select(.body | contains($m))) | length == 1' "$COMMENTS_FILE"
+}
+
 @test "dequeue call fails → warning, one manual-removal comment, exit 0" {
   export DEQUEUE_RC=1
   run_lib
@@ -393,7 +406,7 @@ fix_request_verdict() {
   echo "$output" >&2
   [ "$status" -eq 0 ]
   [ "$(marker_count)" -eq 1 ]
-  jq -r --arg m "<!-- pr-review-agent dequeued sha=$SHA -->" \
+  jq -r --arg m "<!-- pr-review-agent dequeue-failed sha=$SHA -->" \
     '.[] | select(.body | contains($m)) | .body' "$COMMENTS_FILE" | grep -qi 'manually'
 }
 
@@ -456,4 +469,23 @@ isa_node() {
   [ -f "$wf" ]
   run grep -niE 'dequeue|mergeQueue|merge-queue|merge_queue' "$wf"
   [ "$status" -ne 0 ]
+}
+
+# ── Static: every approval-dismissal site is paired with the dequeue (#2174) ──
+
+@test "every dismissal site in scripts/ is followed by mq_dequeue_if_unapproved" {
+  local f n sites
+  sites=$(grep -rlE 'dismissPullRequestReview|/dismissals' "$REPO_ROOT/scripts" \
+    | while read -r f; do grep -vE '^\s*#' "$f" | grep -qE 'dismissPullRequestReview|/dismissals' && echo "$f"; done)
+  [ -n "$sites" ]
+  for f in $sites; do
+    grep -qF 'lib/merge-queue-dequeue.sh' "$f"
+    grep -vE '^\s*#' "$f" | grep -qF 'mq_dequeue_if_unapproved'
+  done
+  # review-one-pr.sh dismisses inside branches: each dismissal is followed by the
+  # call within its own branch.
+  local r="$REPO_ROOT/scripts/review-one-pr.sh"
+  [ "$(grep -c 'dismissPullRequestReview' "$r")" -eq 2 ]
+  [ "$(grep -A4 'dismissPullRequestReview' "$r" | grep -c '^[0-9]*-\s*mq_dequeue_if_unapproved ')" -eq 2 ] \
+    || [ "$(grep -A4 'dismissPullRequestReview' "$r" | grep -c 'mq_dequeue_if_unapproved "\$PR_URL" || true')" -eq 2 ]
 }

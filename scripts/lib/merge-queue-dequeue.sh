@@ -12,13 +12,17 @@
 # caller just did: a re-review that dismissed the old approval and posted a new
 # one leaves an approval standing, so the PR stays queued.
 #
-# Sourced by scripts/post-pr-review.sh and scripts/invalidate-standing-approval.sh.
+# Sourced by scripts/post-pr-review.sh, scripts/invalidate-standing-approval.sh and
+# scripts/review-one-pr.sh (its comment gate and maintainer-thread gate dismissals).
 # Every failure path logs and returns 0 — this must never fail the caller's run.
 
-# Marker on the single notice posted per head SHA. The `pr-review-agent` prefix
+# Marker on the single notice posted per head SHA and outcome. The failure notice
+# has its own marker so an earlier success notice at the same head never masks it.
+# The `pr-review-agent` prefix
 # keeps it out of maintainer-comment-gate.sh's blocker set; the absence of `v1`
 # keeps it out of the review-marker regexes (cleanup, cycle counting).
 MQ_DEQUEUE_MARKER_PREFIX='<!-- pr-review-agent dequeued sha='
+MQ_DEQUEUE_FAILED_MARKER_PREFIX='<!-- pr-review-agent dequeue-failed sha='
 
 # _mq_read_state <owner> <name> <number>
 #   Print one compact JSON object {id, state, head, queued, approved} from the
@@ -52,13 +56,14 @@ _mq_read_state() {
   ' 2>/dev/null
 }
 
-# _mq_post_notice <owner> <name> <number> <pr_url> <head> <body>
+# _mq_post_notice <owner> <name> <number> <pr_url> <head> <body> [marker_prefix]
 #   Post <body> unless a comment carrying this head's marker already exists, so
 #   repeat runs at one head post one notice. If the comments cannot be listed,
 #   post anyway: a missing notice is worse than a duplicate.
 _mq_post_notice() {
   local owner="$1" name="$2" number="$3" pr_url="$4" head="$5" body="$6"
-  local marker="${MQ_DEQUEUE_MARKER_PREFIX}${head} -->" found status_found=0
+  local marker_prefix="${7:-$MQ_DEQUEUE_MARKER_PREFIX}"
+  local marker="${marker_prefix}${head} -->" found status_found=0
   found=$(gh api --paginate "repos/$owner/$name/issues/$number/comments" 2>/dev/null \
       | jq -s -r --arg m "$marker" 'flatten | map(select((.body // "") | contains($m))) | length' 2>/dev/null) || status_found=$?
   if [ "$status_found" -eq 0 ] && [ -n "$found" ]; then
@@ -163,7 +168,7 @@ EOF
 
   echo "::warning::merge-queue: dequeuePullRequest failed for $pr_url (head ${head:0:8}) — a maintainer must remove it from the merge queue by hand. API said: ${err}"
   body=$(cat <<EOF
-${MQ_DEQUEUE_MARKER_PREFIX}${head} -->
+${MQ_DEQUEUE_FAILED_MARKER_PREFIX}${head} -->
 ## Action needed: remove this PR from the merge queue manually
 
 The automated review withdrew its approval while this PR was in the merge queue, and no other approval stands for the current head commit \`${head}\`. GitHub checks reviews only when a PR joins the queue, so the queue can still merge this PR. The automatic removal failed.
@@ -171,6 +176,6 @@ The automated review withdrew its approval while this PR was in the merge queue,
 **A maintainer must remove this PR from the merge queue by hand** (the merge box on the PR page, "Remove from queue"). After that, the PR needs an approval for its head commit before it can rejoin the queue.
 EOF
 )
-  _mq_post_notice "$owner" "$name" "$number" "$pr_url" "$head" "$body"
+  _mq_post_notice "$owner" "$name" "$number" "$pr_url" "$head" "$body" "$MQ_DEQUEUE_FAILED_MARKER_PREFIX"
   return 0
 }

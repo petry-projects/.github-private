@@ -447,10 +447,12 @@ stops the merge: PR 2084 was approved, enqueued, had that approval dismissed, an
 - **The fleet dequeues when it withdraws the last approval.** `mq_dequeue_if_unapproved`
   (`scripts/lib/merge-queue-dequeue.sh`) runs after every dismissal in the run **and** after the run's
   new verdict is posted, in `scripts/post-pr-review.sh` (approve and fix-request paths) and in
-  `scripts/invalidate-standing-approval.sh` (live mode, when it dismissed something). It reads the
+  `scripts/invalidate-standing-approval.sh` (live mode, when it dismissed something), and in
+  `scripts/review-one-pr.sh` after its comment-gate and maintainer-thread-gate dismissals. It reads the
   **live** PR: if the PR is open, has a `mergeQueueEntry`, and no writer's latest review is `APPROVED`
   on the current head commit (bot **or** human), it calls the GraphQL `dequeuePullRequest` mutation and
-  posts one comment carrying `<!-- pr-review-agent dequeued sha=<head> -->`. A re-review that dismisses
+  posts one comment carrying `<!-- pr-review-agent dequeued sha=<head> -->` (a failed dequeue uses
+  `<!-- pr-review-agent dequeue-failed sha=<head> -->`, so a success notice never masks it). A re-review that dismisses
   the old approval and posts a new one leaves an approval standing, so the PR stays queued.
 - **It never fails the run.** A PR that is not queued, already merged, or left the queue before the
   call is a no-op. A failed dequeue logs a `::warning::` and posts one comment asking a maintainer to
