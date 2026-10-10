@@ -183,6 +183,93 @@ _field() { _last | jq -r "$1"; }
 }
 
 # ---------------------------------------------------------------------------
+# #2179 — a refused read records the upstream error type / detail
+# ---------------------------------------------------------------------------
+
+_err_body() {
+  # $1 = error.type, $2 = error.message (any characters; JSON-encoded by jq)
+  jq -cn --arg t "$1" --arg m "$2" '{type:"error", error:{type:$t, message:$m}}'
+}
+
+@test "403 permission_error: record carries error_type and error_detail, poll/reason/line unchanged" {
+  export MOCK_STATUS=403
+  MOCK_BODY="$(_err_body permission_error "OAuth token does not meet scope requirement user:profile")"
+  export MOCK_BODY
+  run bash "$POLLER"
+  [ "$status" -eq 0 ]
+  [ "$(_field .error_type)" = "permission_error" ]
+  [ "$(_field .error_detail)" = "OAuth token does not meet scope requirement user:profile" ]
+  [ "$(_field .poll)" = "degraded" ]
+  [ "$(_field .reason)" = "http-403" ]
+  [ "$(_field .line)" = "telemetry read DEGRADED, status=403 reason=http-403" ]
+  [ "$(_field .would_pause)" = "false" ]
+  [ "$(_field .decision_window)" = "none" ]
+  grep -q '| upstream error type | permission_error |' "$GITHUB_STEP_SUMMARY"
+  grep -q '| upstream error detail | OAuth token does not meet scope requirement user:profile |' "$GITHUB_STEP_SUMMARY"
+}
+
+@test "error_detail: a credential-shaped string and a newline never survive; 500 chars are cut to 200" {
+  local secret long
+  # Built at run time so no credential-shaped literal sits in the repository.
+  secret="sk-ant-$(printf 'x%.0s' {1..30})"
+  export MOCK_STATUS=403
+  MOCK_BODY="$(_err_body permission_error "$(printf 'bad token %s\nsecond line' "$secret")")"
+  export MOCK_BODY
+  run bash "$POLLER"
+  [ "$status" -eq 0 ]
+  [ "$(_field .error_type)" = "permission_error" ]
+  [[ "$(_field .error_detail)" == *"REDACTED"* ]]
+  [[ "$(_field .error_detail)" == *"second line"* ]]
+  run grep -qF "$secret" "$BUDGET_POLLER_LOG" "$GITHUB_STEP_SUMMARY"
+  [ "$status" -eq 1 ]
+  [ "$(_last | jq '.error_detail | test("[[:cntrl:]]")')" = "false" ]
+
+  long="$(printf 'a%.0s' {1..500})"
+  MOCK_BODY="$(_err_body permission_error "$long")"; export MOCK_BODY
+  run bash "$POLLER"
+  [ "$status" -eq 0 ]
+  [ "$(_last | jq '.error_detail | length')" = "200" ]
+
+  MOCK_BODY="$(_err_body permission_error "a | b")"; export MOCK_BODY
+  run bash "$POLLER"
+  [ "$status" -eq 0 ]
+  grep -qF '| upstream error detail | a \| b |' "$GITHUB_STEP_SUMMARY"
+}
+
+@test "error fields are null and the poll still succeeds: 200, empty, non-JSON, invalid error.type" {
+  export MOCK_STATUS=200
+  MOCK_BODY="$(_body 33 50)"; export MOCK_BODY
+  run bash "$POLLER"
+  [ "$status" -eq 0 ]
+  [ "$(_field .poll)" = "ok" ]
+  [ "$(_field .error_type)" = "null" ]
+  [ "$(_field .error_detail)" = "null" ]
+
+  local body
+  for body in "" "this is not json" "$(_err_body 'Permission-Error!' 'nope')" '{"error":"unavailable"}'; do
+    export MOCK_STATUS=403 MOCK_BODY="$body"
+    run bash "$POLLER"
+    [ "$status" -eq 0 ]
+    [ "$(_field .poll)" = "degraded" ]
+    [ "$(_field .reason)" = "http-403" ]
+    [ "$(_field .line)" = "telemetry read DEGRADED, status=403 reason=http-403" ]
+    [ "$(_field .error_type)" = "null" ]
+    [ "$(_field .error_detail)" = "null" ]
+    [ "$(_field 'has("error_type") and has("error_detail")')" = "true" ]
+  done
+}
+
+@test "bp_error_fields: never fails, and a 200 body with an error object still yields nulls" {
+  run bash -c 'source scripts/lib/budget-poller.sh
+    bp_error_fields 200 "{\"error\":{\"type\":\"x\",\"message\":\"y\"}}"; echo
+    bp_error_fields 403 "[1,2]"; echo
+    bp_error_fields 403 "\"str\""; echo
+    bp_error_fields 403 "{\"error\":{\"type\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"message\":7}}"'
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | jq -s 'all(.[]; .error_type == null and .error_detail == null)')" = "true" ]
+}
+
+# ---------------------------------------------------------------------------
 # AC #5 — burn rate against the previous record, incl. the first-ever poll
 # ---------------------------------------------------------------------------
 
