@@ -2524,7 +2524,8 @@ _record_unparsed_rate_limit() {
     return 0
   fi
   local sample shape
-  sample=$(redact_secrets | grep -iE "$(_rate_limit_pattern)" 2>/dev/null | head -n 3 \
+  sample=$(jq -r '.result // empty' 2>/dev/null | redact_secrets \
+    | grep -iE "$(_rate_limit_pattern)" 2>/dev/null | head -n 3 \
     | head -c "$RATE_LIMIT_SAMPLE_MAX_BYTES" || true)
   [ -n "$sample" ] || return 0
   shape=$(printf '%s' "$sample" | sed -E 's/[0-9]+/N/g' | cksum)

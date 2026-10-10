@@ -258,36 +258,38 @@ emit_rate_limit_sample_record() {
 
   local engine="${1:-}" shape="${2:-}" sample="${3:-}"
   [ -n "$shape" ] && [ -n "$sample" ] || return 0
-  # Shape is a numeric checksum and records are minified, so a fixed-string grep
-  # finds a prior record without spawning jq over the whole ledger. Match both
-  # kind and shape fields on the same record to avoid matching an unrelated
-  # ledger field that happens to contain the same shape string (#2164).
-  if [ -f "$TOKEN_LOG_FILE" ] && grep -qE '"kind":"rate_limit_sample".*"shape":"'"${shape}"'"' "$TOKEN_LOG_FILE" 2>/dev/null; then
-    return 0
-  fi
 
-  local ts run_id record
-  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
-  run_id="${GITHUB_RUN_ID:-}"
+  local lock_file="${TOKEN_LOG_FILE}.lock"
+  (
+    flock -x 9 2>/dev/null || true
+    # Check must happen inside lock to prevent TOCTOU race with concurrent writers.
+    if [ -f "$TOKEN_LOG_FILE" ] && grep -qE '"kind":"rate_limit_sample".*"shape":"'"${shape}"'"' "$TOKEN_LOG_FILE" 2>/dev/null; then
+      return 0
+    fi
 
-  record=$(jq -cn \
-    --arg ts "$ts" \
-    --arg workflow "${TOKEN_WORKFLOW:-}" \
-    --arg engine "$engine" \
-    --arg shape "$shape" \
-    --arg sample "$sample" \
-    --arg run_id "$run_id" \
-    '{
-      kind: "rate_limit_sample",
-      ts: $ts,
-      workflow: $workflow,
-      engine: $engine,
-      shape: $shape,
-      sample: $sample,
-      run_id: $run_id
-    }' 2>/dev/null) || return 0
+    local ts run_id record
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    run_id="${GITHUB_RUN_ID:-}"
 
-  printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
+    record=$(jq -cn \
+      --arg ts "$ts" \
+      --arg workflow "${TOKEN_WORKFLOW:-}" \
+      --arg engine "$engine" \
+      --arg shape "$shape" \
+      --arg sample "$sample" \
+      --arg run_id "$run_id" \
+      '{
+        kind: "rate_limit_sample",
+        ts: $ts,
+        workflow: $workflow,
+        engine: $engine,
+        shape: $shape,
+        sample: $sample,
+        run_id: $run_id
+      }' 2>/dev/null) || return 0
+
+    printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
+  ) 9>"$lock_file" 2>/dev/null || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

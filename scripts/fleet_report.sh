@@ -851,6 +851,12 @@ persona_optout_alert_json() {
 # (or no files) it prints a "None" line. Malformed lines are skipped.
 generate_rate_limit_samples_report() {
   local samples
+  if [ $# -eq 0 ]; then
+    printf '## Unparsed rate-limit messages\n\n'
+    printf '_No ledger data available._\n'
+    return 0
+  fi
+
   samples=$(cat "$@" 2>/dev/null </dev/null | jq -cR '
     fromjson? | select(type == "object" and .kind == "rate_limit_sample"
                        and (.shape // "") != "" and (.sample // "") != "")' \
@@ -869,7 +875,7 @@ generate_rate_limit_samples_report() {
   fi
   printf '%s distinct message shape(s) the reset parser could not read (redacted, truncated):\n\n' \
     "$(jq 'length' <<< "$samples")"
-  jq -r '.[] |
+  jq -r '.[:100] | .[] |
     "#### Shape `\(.shape)` — \(.count) occurrence(s), first seen \(.first_seen)\n\n<pre>\(
       .sample | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;"))</pre>\n"' \
     <<< "$samples"
