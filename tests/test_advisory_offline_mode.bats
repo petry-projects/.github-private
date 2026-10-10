@@ -123,6 +123,38 @@ _steps_section() {
   grep -Eiq 'Cite an ADR by number, or say there is none' "$PROMPTS/solution-architect/advisory.md"
 }
 
+# --- solution-architect escalation calibration (#1787) ----------------------
+# All three held-out failures in #1787 were wrong escalate decisions on otherwise
+# correct advisories. The calibration below is what fixes them; these checks keep
+# it from being silently dropped by a later edit or template sync.
+
+@test "solution-architect calibrates escalation inside its Steps section (#1787 AC1)" {
+  steps="$(_steps_section "$PROMPTS/solution-architect/advisory.md")"
+  grep -q 'Calibrating the risk tier and escalation' <<<"$steps"
+}
+
+@test "solution-architect: a conforming change is LOW / escalate = no (#1787 AC2)" {
+  steps="$(_steps_section "$PROMPTS/solution-architect/advisory.md")"
+  bullet="$(grep -A3 'The change conforms to an accepted ADR' <<<"$steps")"
+  grep -q '\*\*LOW\*\*' <<<"$bullet"
+  grep -q '\*\*escalate = no\*\*' <<<"$bullet"
+}
+
+@test "solution-architect: 'no ADR governs' is not itself an escalation (#1787 AC3)" {
+  steps="$(_steps_section "$PROMPTS/solution-architect/advisory.md")"
+  grep -q 'No recorded ADR governs the change' <<<"$steps"
+  grep -q 'A missing ADR is a' <<<"$steps"
+  grep -q 'not a reason to escalate' <<<"$steps"
+}
+
+@test "solution-architect: HIGH always pairs with escalate = yes" {
+  grep -q 'HIGH always pairs with escalate = yes' "$PROMPTS/solution-architect/advisory.md"
+}
+
+@test "solution-architect body shape states the risk tier explicitly (#1787 AC4)" {
+  grep -q '^\*\*Risk tier:\*\* LOW | MEDIUM | HIGH' "$PROMPTS/solution-architect/advisory.md"
+}
+
 # --- engine-parity tier in scorer.json (AC #3) ------------------------------
 
 @test "qa-lead scorer declares the persona (Opus) engine tier — the #1696 reference" {
