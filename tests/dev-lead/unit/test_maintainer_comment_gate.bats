@@ -575,6 +575,31 @@ _codeant_low_risk_body() {
   [ "$status" -eq 1 ]
 }
 
+@test "#2178: a CodeAnt body with a **Suggestion:** is finding-bearing" {
+  source "$SCRIPT_DIR/lib/comment-disposition-verify.sh"
+  run cdv_body_has_findings "$(_codeant_low_risk_body)"$'\n\n**Suggestion:** check the exit status.'
+  [ "$status" -eq 0 ]
+}
+
+@test "#2178: a CodeAnt 'PR Risk: Medium Risk' body is finding-bearing" {
+  source "$SCRIPT_DIR/lib/comment-disposition-verify.sh"
+  run cdv_body_has_findings $'## CodeAnt PR Risk: Medium Risk\n\n- This needs attention before merging.'
+  [ "$status" -eq 0 ]
+}
+
+@test "#2178: the clean CodeAnt Low Risk body is not finding-bearing" {
+  source "$SCRIPT_DIR/lib/comment-disposition-verify.sh"
+  run cdv_body_has_findings "$(_codeant_low_risk_body)"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2178: a CodeAnt body with a suggestion dispositioned informational does NOT clear → 1" {
+  local body
+  body="$(_codeant_low_risk_body)"$'\n\n**Suggestion:** `resolve_pin` ignores a failed tag lookup.'
+  _run_check "$(_edit_json codeant-ai "$body" true null "$(_disp 2026-10-01T19:23:54Z informational)")"
+  [ "$status" -eq 1 ]
+}
+
 @test "#2008: maintainer_gate_merge_edit_times merges lastEditedAt by comment id" {
   local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
   cat > "$bin/gh" <<'SHIM'

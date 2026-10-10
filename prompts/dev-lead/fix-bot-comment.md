@@ -220,7 +220,7 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
 - Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
 - Never disposition a CodeRabbit summary `informational` when any section (Security Architecture Review, Actionable comments, Outside diff range, Nitpicks) carries a finding. A rate-limit block covers only its own section (#2008)
 - Never revert or undo the PR's own committed changes to "address" a neutral overview/summary comment — that produces a net-zero diff that silently cancels the fix (#1340)
-- Never leave a neutral overview issue comment (e.g. CodeAnt's `PR Risk: Low Risk` summary) reply-less: post exactly one `informational` disposition on it, and only when it carries no finding or suggestion (#2178)
+- Never leave a neutral overview issue comment (e.g. CodeAnt's `PR Risk: Low Risk` summary) reply-less: post exactly one `informational` disposition on it, and only when it carries no finding or suggestion (#2178). A CodeAnt overview that is not the clean Low Risk form (a `**Suggestion:**` marker, or a `PR Risk:` level other than `Low Risk`) gets a real disposition (`answered` or `invalid` with evidence, or a fix), never `informational` — the harness refuses to verify `informational` against it
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
 - For every thread you fix, post a reply naming the specific change, ending with the addressed-marker — never reply-less
