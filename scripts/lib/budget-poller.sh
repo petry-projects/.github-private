@@ -365,7 +365,7 @@ bp_delivery_line() {
       | "- **Scheduled delivery (last 24h):** \($n) of \($exp) expected runs received"
         + " (\(($n * 100 / $exp) | floor)%)"
         + (if ($d | length) > 0
-           then "; median start delay \(((if ($d | length) % 2 == 0 then ($d[($d | length) / 2 - 1] + $d[($d | length) / 2]) / 2 else $d[($d | length) / 2 | floor] end) / 60) | floor)m"
+           then "; median start delay \(((if ($d | length) % 2 == 0 then ($d[(($d | length) / 2 | floor) - 1] + $d[($d | length) / 2 | floor]) / 2 else $d[($d | length) / 2 | floor] end) / 60) | floor)m"
            else "" end)' 2>/dev/null || true
   return 0
 }
