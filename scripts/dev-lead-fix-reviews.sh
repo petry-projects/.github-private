@@ -105,19 +105,6 @@ if [ -n "${PR_NUMBER:-}" ] && [ "${DEV_LEAD_DRY_RUN:-false}" != "true" ] \
   exit 0
 fi
 
-# sweep_earlier_claims — the start-of-pass sweep over EARLIER passes' claim replies
-# (#2032). retract_unlanded_claims runs only inside the pass that posted a reply, so
-# a run cancelled or killed after its model replied (a concurrency cancel, a lost
-# runner, a budget kill; see #1741) left its false "Fixed" replies standing. Before
-# this pass posts anything, every claim reply OUR account posted before
-# PASS_START_ISO is checked against the remote head with cl_earlier_claim_verdict:
-#   - a claimed reply whose commit is not on the remote head, does not touch its
-#     claimed files, or was committed before the comment it answers is retracted;
-#   - a retracted reply whose claim now passes is restored (cl_restore_body), so a
-#     wrongly retracted fix recovers without a new commit.
-# It never retracts on an unknown reference: when the remote head cannot be read,
-# or a cited commit is missing from a checkout that is still shallow, it skips.
-# Best-effort: returns 1 on a listing/PATCH failure; the caller does not stop.
 # github_knows_commit <sha> — does GitHub have <sha> in this repo? A commit that was
 # pushed stays retrievable by its full SHA after a force-push; one never pushed is
 # unknown. Returns 0 known, 1 unknown (HTTP 404/422), 2 any other failure (#2032).
@@ -133,6 +120,19 @@ github_knows_commit() {
   return 2
 }
 
+# sweep_earlier_claims — the start-of-pass sweep over EARLIER passes' claim replies
+# (#2032). retract_unlanded_claims runs only inside the pass that posted a reply, so
+# a run cancelled or killed after its model replied (a concurrency cancel, a lost
+# runner, a budget kill; see #1741) left its false "Fixed" replies standing. Before
+# this pass posts anything, every claim reply OUR account posted before
+# PASS_START_ISO is checked against the remote head with cl_earlier_claim_verdict:
+#   - a claimed reply whose commit is not on the remote head, does not touch its
+#     claimed files, or was committed before the comment it answers is retracted;
+#   - a retracted reply whose claim now passes is restored (cl_restore_body), so a
+#     wrongly retracted fix recovers without a new commit.
+# It never retracts on an unknown reference: when the remote head cannot be read,
+# or a cited commit is missing from a checkout that is still shallow, it skips.
+# Best-effort: returns 1 on a listing/PATCH failure; the caller does not stop.
 sweep_earlier_claims() {
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
     echo "[dry-run] would sweep earlier passes' claim replies on PR #${PR_NUMBER:-}"
