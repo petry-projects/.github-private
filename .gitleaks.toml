@@ -193,6 +193,6 @@ regexes = ['''secret-key''']
 # earlier versions fall back to the singular [allowlist] table without scoping.
 [[allowlists]]
 description = "Suppress synthetic Google API key placeholder in the Gemini redaction test"
-regexes = ['''AIza0123456789[0-9A-Za-z_-]{16,35}''']
-paths = ['''tests/dev-lead/unit/test_gemini_tier_view.bats''']
 condition = "AND"
+paths = ['''^tests/dev-lead/unit/test_gemini_tier_view\.bats$''']
+regexes = ['''AIza0123456789[0-9A-Za-z_-]{16,35}''']
