@@ -61,8 +61,10 @@ setup() {
 
 @test "ssg_has_sync_label: matches the standards-sync label exactly" {
   ssg_has_sync_label $'dependencies\nstandards-sync'
-  ! ssg_has_sync_label $'dependencies\nstandards-sync-legacy'
-  ! ssg_has_sync_label ""
+  run ssg_has_sync_label $'dependencies\nstandards-sync-legacy'
+  [[ "$status" -eq 1 ]]
+  run ssg_has_sync_label ""
+  [[ "$status" -eq 1 ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -415,8 +417,10 @@ _pin_uses() {
   # Scoped to bot-driven passes; maintainer-driven intents (review-changes,
   # human-pr, on-mention, human) are an explicit override and are not guarded.
   awk '/^[[:space:]]*fix-bot-comment\|fix-reviews\)$/,/;;/' <<<"$body" | grep -q 'ssg_evaluate'
-  ! awk '/^[[:space:]]*case "\$intent" in/,/esac/' <<<"$body" \
-    | grep -B12 'ssg_evaluate' | grep -qE 'review-changes|human-pr|on-mention'
+  if awk '/^[[:space:]]*case "\$intent" in/,/esac/' <<<"$body" \
+    | grep -B12 'ssg_evaluate' | grep -qE 'review-changes|human-pr|on-mention'; then
+    return 1
+  fi
   grep -A12 'ssg_evaluate' <<<"$body" | grep -q 'flag_sync_stub_drift'
   grep -A14 'ssg_evaluate' <<<"$body" | grep -q 'return 4'
 }
