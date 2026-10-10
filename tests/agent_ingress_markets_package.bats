@@ -125,6 +125,7 @@ teardown() {
   local re="pull_request\\.number.*check_suite\\.id.*workflow_run\\.id.*'none'"
   printf '%s' "$output" | tr '\n' ' ' | grep -Eq "$re"
   run yq '.jobs["pr-auto-review"].concurrency["cancel-in-progress"]' "$INGRESS"
+  [ "$status" -eq 0 ]
   [ "$output" = "true" ]
 }
 

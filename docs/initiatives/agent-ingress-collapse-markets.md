@@ -227,10 +227,10 @@ jobs:
     concurrency:
       group: >-
         pr-auto-review-${{
-        github.event.pull_request.number
-        || github.event.check_suite.id
-        || github.event.workflow_run.id
-        || 'none'
+          github.event.pull_request.number
+          || github.event.check_suite.id
+          || github.event.workflow_run.id
+          || 'none'
         }}
       cancel-in-progress: true
     permissions:
