@@ -826,3 +826,15 @@ jsonschema.validate(json.load(open(sys.argv[1])), json.load(open(sys.argv[2])))'
   [[ "$output" == *"| \`m'x\\|y\` | mi'n\\|z |"* ]]
   [[ "$output" == *"\`h'm\`"* ]]
 }
+
+@test "history: a backslash before a pipe in a model name cannot unescape the pipe" {
+  _caps 'x\|y free 10 none 20'
+  local dir="$BATS_TEST_TMPDIR/state" in="$BATS_TEST_TMPDIR/in.jsonl"
+  TOKEN_LOG_FILE="$in" _call_at 1 'x\|y' $(( NOW - 60 ))
+  export GEMINI_TIER_STATE_DIR="$dir" GEMINI_RECORDS_IN="$in"
+  run bash "$TIER_REPORT"
+  [ "$status" -eq 0 ]
+  # an odd run of backslashes before the pipe: the pipe stays escaped in the cell
+  local re='\| 2026-[0-9-]+ \| 1 \| `x(\\\\)*\\\|y` \| 1 \|'
+  [[ "$output" =~ $re ]]
+}

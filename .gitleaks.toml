@@ -195,4 +195,4 @@ regexes = ['''secret-key''']
 description = "Suppress synthetic Google API key placeholder in the Gemini redaction test"
 condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_gemini_tier_view\.bats$''']
-regexes = ['''AIza0123456789[0-9A-Za-z_-]{16,35}''']
+regexes = ['''AIza0123456789[0-9A-Za-z_-]{25}''']

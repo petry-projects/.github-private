@@ -70,7 +70,8 @@ gtr_merge_store() {
 
 # _gtr_md <text> — text safe inside a Markdown table cell.
 _gtr_md() {
-  local s="${1//|/\\|}"
+  local s="${1//\\/\\\\}"
+  s="${s//|/\\|}"
   s="${s//\`/\'}"
   printf '%s' "$s"
 }
@@ -129,7 +130,7 @@ gtr_render() {
   printf '|---|---:|---|---:|---:|---:|---:|---|\n'
   jq -r '.[] | . as $d
       | if (.rows | length) == 0 then "| \($d.day) | - | _no Gemini activity in the ledger_ | | | | | |"
-        else .rows[] | "| \($d.day) | \(.key_index) | `\(.model | gsub("[|]"; "\\|") | gsub("`"; "'"'"'"))` | \(.calls) | \(.rejected) | \(.peak_per_min) | \(.rate_limit_events) | \(if .cap_hit then "**yes**" else "no" end) |"
+        else .rows[] | "| \($d.day) | \(.key_index) | `\(.model | gsub("[\\\\]"; "\\\\") | gsub("[|]"; "\\|") | gsub("`"; "'"'"'"))` | \(.calls) | \(.rejected) | \(.peak_per_min) | \(.rate_limit_events) | \(if .cap_hit then "**yes**" else "no" end) |"
         end' "$hist"
   printf '\n'
 
