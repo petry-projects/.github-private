@@ -2918,12 +2918,19 @@ commit_and_push() {
     # incubator#164 shape). Restoring a stub to what the sync commit wrote is
     # allowed. Maintainer-driven intents (review-changes/human-pr, on-mention,
     # human) are the explicit override and are not guarded. The PR is read only
-    # when the pass touched a stub; an unreadable PR fails closed (rc 2).
+    # when the pass touched a stub; an unreadable PR fails closed only for header stubs.
     case "$intent" in
       fix-bot-comment|fix-reviews)
         local ssg_pr="" ssg_out ssg_rc=0
         if ssg_pass_touches_stubs "${RESOLUTION_BASE_SHA:-}" HEAD && [ -n "${PR_NUMBER:-}" ] && [ -n "${REPO:-}" ]; then
-          ssg_pr=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" 2>/dev/null) || ssg_pr=""
+          # Bounded retry: unreadable = non-zero exit or output that is not a JSON object.
+          local ssg_try
+          for ssg_try in 1 2 3; do
+            ssg_pr=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" 2>/dev/null) || ssg_pr=""
+            jq -e 'type == "object"' <<<"$ssg_pr" >/dev/null 2>&1 && break
+            ssg_pr=""
+            [ "$ssg_try" -lt 3 ] && sleep "${SSG_RETRY_SLEEP:-2}"
+          done
         fi
         ssg_out=$(ssg_evaluate "${RESOLUTION_BASE_SHA:-}" HEAD "$ssg_pr" "${HEAD_REF:-}") || ssg_rc=$?
         if [ "$ssg_rc" -ne 0 ]; then

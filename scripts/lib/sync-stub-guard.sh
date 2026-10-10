@@ -190,7 +190,7 @@ ssg_scan_pass() {
 # ssg_evaluate <pre_pass_sha> <head> <pr_json> [head_ref]
 #   The guard's single entry point. A pass that changes no file is clean
 #   without reading <pr_json>. Otherwise <pr_json> (the GitHub pulls API object)
-#   must parse: a PR without the sync label is clean, a sync PR is scanned
+#   must parse (see the unreadable-PR rule below): a PR without the sync label is clean, a sync PR is scanned
 #   against its merge base with origin/<base.ref>. Same output and return codes
 #   as ssg_scan_pass; an unreadable PR or unresolvable merge base is `unknown`.
 #   Impure.
@@ -201,10 +201,25 @@ ssg_evaluate() {
     echo "clean"
     return 0
   fi
-  labels=$(jq -er '[.labels[]?.name // empty] | join("\n")' <<<"$pr_json" 2>/dev/null) || {
-    echo "unknown"
-    return 2
-  }
+  # Unreadable = not a JSON object. An object without `labels` is a readable,
+  # unlabeled PR. Accepted gap: a standards-sync PR whose header-less stub drifts
+  # during an API outage is not caught (only header stubs fail closed).
+  if ! jq -e 'type == "object"' <<<"$pr_json" >/dev/null 2>&1; then
+    local stubs="" stubs_rc=0
+    if git cat-file -e "${pre}^{commit}" 2>/dev/null; then
+      stubs=$(_ssg_changed_stubs "$pre" "$head") || stubs_rc=$?
+    else
+      stubs_rc=2
+    fi
+    if [[ "$stubs_rc" -ne 0 || -n "$stubs" ]]; then
+      echo "unknown"
+      return 2
+    fi
+    echo "::warning::Sync-stub guard: PR could not be read, so the sync-stub check was skipped (no header stub touched) (#2185)" >&2
+    echo "clean"
+    return 0
+  fi
+  labels=$(jq -r '[.labels[]?.name // empty] | join("\n")' <<<"$pr_json" 2>/dev/null) || labels=""
   if ! ssg_has_sync_label "$labels"; then
     echo "clean"
     return 0

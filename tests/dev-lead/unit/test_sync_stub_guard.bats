@@ -268,6 +268,31 @@ PLAIN_PR_JSON='{"base":{"ref":"main"},"labels":[{"name":"enhancement"}]}'
   [[ "$status" -eq 2 ]]
 }
 
+@test "ssg_evaluate: an unreadable PR with only an ordinary file changed is clean (warning, no hold)" {
+  _mk_sync_pr
+  echo "more" >> README.md
+  git add -A; git commit -q -m "fix(bot): docs"
+  local out
+  out=$(ssg_evaluate "$PRE" HEAD "" feat 2>"$BATS_TEST_TMPDIR/err")
+  [[ "$out" == "clean" ]]
+  grep -q '::warning::.*sync-stub check was skipped' "$BATS_TEST_TMPDIR/err"
+  out=$(ssg_evaluate "$PRE" HEAD "not json" feat 2>/dev/null)
+  [[ "$out" == "clean" ]]
+}
+
+@test "ssg_evaluate: an object with no labels key is a readable, unlabeled PR -> clean" {
+  _mk_sync_pr
+  _bot_drift
+  run ssg_evaluate "$PRE" HEAD '{"base":{"ref":"main"}}' feat
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clean" ]]
+}
+
+@test "Wiring: the harness retries an unreadable PR read a bounded number of times" {
+  grep -q 'ssg_try' "$HARNESS"
+  grep -q 'SSG_RETRY_SLEEP' "$HARNESS"
+}
+
 @test "ssg_evaluate: a sync PR whose merge base cannot be resolved fails closed -> unknown rc2" {
   _mk_sync_pr
   _bot_drift   # no origin: the merge base with origin/main is unresolvable
