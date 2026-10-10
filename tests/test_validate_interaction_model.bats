@@ -325,6 +325,68 @@ setup() {
   [ "$output" = "alpha:hands-off" ]
 }
 
+# ---------------------------------------------------------------------------
+# #2187: the shared persona-mention router also subscribes the pull_request EVENT
+# surface. It dispatches only personas whose manifest enables a pull_request
+# surface, so only THOSE contracts are charged with the router's pull_request.
+# ---------------------------------------------------------------------------
+
+# _router_tree <dir> <pr_surface_enabled:true|false|absent> <contract_events...>
+_router_tree() {
+  local d="$1" enabled="$2" ev; shift 2
+  mkdir -p "$d/.github/workflows" "$d/personas/alpha"
+  printf 'on:\n  issue_comment:\n    types: [created]\n  pull_request:\n    types: [opened, ready_for_review, reopened]\njobs: {}\n' \
+    > "$d/.github/workflows/persona-mention.yml"
+  {
+    printf 'id: alpha\ntriggers:\n  surfaces:\n'
+    if [ "$enabled" != "absent" ]; then
+      printf '    - surface: pull_request\n      events: [opened]\n      enabled: %s\n' "$enabled"
+    fi
+    printf '    - surface: mention\n      events: [created]\n      enabled: true\n'
+  } > "$d/personas/alpha/persona.yml"
+  {
+    printf 'role: alpha\nkind: persona\nworkflows:\n  - .github/workflows/persona-mention.yml\ninteraction:\n  triggers:\n    events:\n'
+    for ev in "$@"; do printf '      - %s\n' "$ev"; done
+    printf '    timers: []\n  idempotency_key: "k"\n  concurrency_lane: "l"\n'
+  } > "$d/personas/alpha/interaction.yml"
+}
+
+@test "imv_persona_serves_pr_surface: true only for an ENABLED pull_request surface" {
+  _router_tree "$BATS_TEST_TMPDIR/on" true issue_comment pull_request
+  run imv_persona_serves_pr_surface "$BATS_TEST_TMPDIR/on" alpha
+  [ "$status" -eq 0 ]
+  _router_tree "$BATS_TEST_TMPDIR/off" false issue_comment
+  run imv_persona_serves_pr_surface "$BATS_TEST_TMPDIR/off" alpha
+  [ "$status" -ne 0 ]
+  _router_tree "$BATS_TEST_TMPDIR/none" absent issue_comment
+  run imv_persona_serves_pr_surface "$BATS_TEST_TMPDIR/none" alpha
+  [ "$status" -ne 0 ]
+  run imv_persona_serves_pr_surface "$BATS_TEST_TMPDIR/none" missing
+  [ "$status" -ne 0 ]
+}
+
+@test "#2187: a mention-only persona is not charged with the router's pull_request" {
+  _router_tree "$BATS_TEST_TMPDIR/t" absent issue_comment
+  run imv_v_contracts "$BATS_TEST_TMPDIR/t"
+  [ -z "$output" ]
+}
+
+@test "#2187: a mention-only persona declaring pull_request still diverges (FAIL[c])" {
+  _router_tree "$BATS_TEST_TMPDIR/t" false issue_comment pull_request
+  run imv_v_contracts "$BATS_TEST_TMPDIR/t"
+  [[ "$output" == *"FAIL[c]"* ]]
+}
+
+@test "#2187: a persona enabling pull_request must declare the router's pull_request (FAIL[c])" {
+  _router_tree "$BATS_TEST_TMPDIR/t" true issue_comment
+  run imv_v_contracts "$BATS_TEST_TMPDIR/t"
+  [[ "$output" == *"FAIL[c]"* ]]
+  [[ "$output" == *"pull_request"* ]]
+  _router_tree "$BATS_TEST_TMPDIR/u" true issue_comment pull_request
+  run imv_v_contracts "$BATS_TEST_TMPDIR/u"
+  [ -z "$output" ]
+}
+
 @test "imv_escalation_label_from parses a := default assignment" {
   tmp="$(mktemp)"
   printf ': "${NEEDS_HUMAN_REVIEW_LABEL:=needs-human-review}"\n' > "$tmp"
