@@ -129,7 +129,7 @@ gtr_render() {
   printf '|---|---:|---|---:|---:|---:|---:|---|\n'
   jq -r '.[] | . as $d
       | if (.rows | length) == 0 then "| \($d.day) | - | _no Gemini activity in the ledger_ | | | | | |"
-        else .rows[] | "| \($d.day) | \(.key_index) | `\(.model | gsub("[|]"; "\\|"))` | \(.calls) | \(.rejected) | \(.peak_per_min) | \(.rate_limit_events) | \(if .cap_hit then "**yes**" else "no" end) |"
+        else .rows[] | "| \($d.day) | \(.key_index) | `\(.model | gsub("[|]"; "\\|") | gsub("`"; "'"'"'"))` | \(.calls) | \(.rejected) | \(.peak_per_min) | \(.rate_limit_events) | \(if .cap_hit then "**yes**" else "no" end) |"
         end' "$hist"
   printf '\n'
 
@@ -149,7 +149,7 @@ gtr_render() {
     local ts sk sm sc sx
     while IFS=$'\t' read -r ts sk sm sc sx; do
       sx="$(_gq_redact_line "$sx")"
-      printf '| %s | %s | `%s` | %s | %s |\n' "$ts" "$sk" "$sm" "$sc" "$(_gtr_md "$sx")"
+      printf '| %s | %s | `%s` | %s | %s |\n' "$ts" "$sk" "$(_gtr_md "$sm")" "$(_gtr_md "$sc")" "$(_gtr_md "$sx")"
     done <<< "$samples"
     printf '\n'
   fi

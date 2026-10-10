@@ -405,6 +405,7 @@ gq_retry_hint_sec() {
 #                                              cannot run this model today — cap 0
 #                                              (`unavailable`) or the daily cap is
 #                                              used up (`exhausted`, until the reset)
+#                                              or the rolling minute is full (`cooling`)
 #   use\t<VAR_NAME>\t<index>                  — try, in this order: keys with measured
 #                                              headroom first, then constrained ones
 #                                              (unknown limits / at-or-above threshold)

@@ -920,8 +920,9 @@ on it is the follow-up actuation work.
   and cools to the reset. Any other text is treated as per-minute. No error-body format is
   relied on.
 - **Rotation drops keys that cannot run.** For the model being called,
-  `gq_rotation_plan` reports a key that is `unavailable` (cap 0) or `exhausted` as
-  `skip`, with the reason, and never calls it. The same key is still used for another
+  `gq_rotation_plan` reports a key that is `unavailable` (cap 0), `exhausted`, or
+  `cooling` (its rolling minute is full, until a stated time) as `skip`, with the
+  reason, and does not call it. The same key is still used for another
   model it has capacity for. Keys that are only over the threshold, and `unknown` keys,
   are still tried last; an unfilled caps file never becomes a hard block. If every key is
   dropped, the rule for "all keys cooling down" applies and the chain moves to the next

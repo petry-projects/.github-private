@@ -251,7 +251,7 @@ _attempt_at() {
   [ "$(jq -r '.rejected' <<< "$output")" = "true" ]
   [ "$(jq -r '.model' <<< "$output")" = "m-a" ]
   [ "$(jq -r 'has("body") or has("response")' <<< "$output")" = "false" ]
-  ! grep -q fake-secret "$TOKEN_LOG_FILE"
+  ! grep -q fake-secret "$TOKEN_LOG_FILE" || false
   run gq_remaining 1 m-a
   [ "$(jq -r .used.rpd <<< "$output")" = "1" ]
   [ "$(jq -r .used.rpm <<< "$output")" = "1" ]
@@ -273,7 +273,7 @@ _attempt_at() {
   [ "$output" = "1 gemini-3.8-flash true" ]
   run jq -r 'select(.kind == "gemini_rejection_sample") | .sample' "$TOKEN_LOG_FILE"
   [[ "$output" == *"429 too many requests"* ]]
-  ! grep -q "fake-secret" "$TOKEN_LOG_FILE"
+  ! grep -q "fake-secret" "$TOKEN_LOG_FILE" || false
 
   # A second identical rejection adds an attempt but no second sample.
   : > "$KEY_RECORD"
@@ -567,7 +567,7 @@ print("valid")' "$snap" "$SCHEMA"
   [ "$(jq -r '.window.day_end' "$snap")" = "$DAY_END" ]
   [ "$(jq -r '.generated_epoch' "$snap")" = "$NOW" ]
   # No key value anywhere — only indexes.
-  ! grep -q "fake-secret" "$snap"
+  ! grep -q "fake-secret" "$snap" || false
   [ "$(jq -r '[.tiers[].pairs[].key_index] | unique | join(",")' "$snap")" = "1,2" ]
 }
 
@@ -758,7 +758,7 @@ jsonschema.validate(json.load(open(sys.argv[1])), json.load(open(sys.argv[2])))'
   _source_lib
   local f="$BATS_TEST_TMPDIR/err"
   echo "request id 14293 failed" > "$f"
-  ! gq_is_quota_rejection "$f"
+  ! gq_is_quota_rejection "$f" || false
   echo "HTTP 429" > "$f"
   gq_is_quota_rejection "$f"
 }
@@ -812,4 +812,17 @@ jsonschema.validate(json.load(open(sys.argv[1])), json.load(open(sys.argv[2])))'
   unset -f jq
   [ "$status" -ne 0 ]
   [ "$(cat "$dir/history.jsonl")" = "$before" ]
+}
+
+@test "report: backticks and pipes in a forged model or scope cannot break out of the table cell" {
+  _caps "1 m-a free 10 none 20"
+  local dir="$BATS_TEST_TMPDIR/state" in="$BATS_TEST_TMPDIR/in.jsonl"
+  jq -cn --arg ts "$(_iso $(( NOW - 300 )))" \
+    '{kind:"gemini_rejection_sample", ts:$ts, engine:"gemini", key_index:1, model:"m`x|y", scope:"mi`n|z", sample:"s"}' >> "$in"
+  TOKEN_LOG_FILE="$in" _call_at 1 'h`m' $(( NOW - 60 ))
+  export GEMINI_TIER_STATE_DIR="$dir" GEMINI_RECORDS_IN="$in"
+  run bash "$TIER_REPORT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"| \`m'x\\|y\` | mi'n\\|z |"* ]]
+  [[ "$output" == *"\`h'm\`"* ]]
 }
