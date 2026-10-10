@@ -36,6 +36,8 @@ POST_PR_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$POST_PR_SCRIPT_DIR/lib/pr-metadata-digest.sh"
 # shellcheck source=lib/verify-approval-review.sh
 source "$POST_PR_SCRIPT_DIR/lib/verify-approval-review.sh"
+# shellcheck source=lib/merge-queue-dequeue.sh
+source "$POST_PR_SCRIPT_DIR/lib/merge-queue-dequeue.sh"
 
 # The account this run acts as and the secret holding its PAT — named in the
 # #1874 loud-failure diagnostic so a stranded approval points straight at the
@@ -543,6 +545,11 @@ if [ "$DECISION" = "approve" ]; then
   # newest review has landed. Best-effort: failures here don't break the run.
   mark_prior_agent_items_obsolete "$PR_URL"
 
+  # The cleanup above dismissed the prior approval. The new one normally stands,
+  # so this is a no-op; it dequeues only if no approval stands for the head on the
+  # live PR (#2174). Never fails the run.
+  mq_dequeue_if_unapproved "$PR_URL" || true
+
   # Only a VERIFIED-present approval may trigger the deferred partial-evidence
   # announcement (#1874 AC3). On INDETERMINATE we could not confirm the review
   # object exists, so announcing would claim approval evidence that was never
@@ -671,6 +678,11 @@ COMMENT_END
     # Supersede prior agent reviews/comments now that the newest fix-request
     # has landed. A new fix-request also invalidates any prior approval.
     mark_prior_agent_items_obsolete "$PR_URL"
+
+    # GitHub checks reviews only when a PR joins the merge queue. If the dismissal
+    # above withdrew the last approval of a queued PR, remove it from the queue
+    # (#2174). Never fails the run.
+    mq_dequeue_if_unapproved "$PR_URL" || true
 
     # A fix-request re-engages the cascade, so clear a prior AUTOMATION-set hold —
     # a PR left carrying needs-human-review while the author works is a stale hold

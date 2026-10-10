@@ -36,6 +36,10 @@
 #                              — the slot an hourly `M * * * *` cron was meant to run
 #                                for (the latest :M at or before the poll) and the
 #                                poll's delay past it; null for any other cron (#2160)
+#   error_type, error_detail   — on a non-200 only (#2179): the upstream
+#                                `.error.type` (allow-listed) and its redacted,
+#                                control-stripped, 200-char `.error.message`;
+#                                else null. Never the whole body.
 #   dry_run                    — always true
 #   line                       — the greppable liveness / degraded line
 #
@@ -43,8 +47,12 @@
 #   telemetry read OK, session=N% weekly_all=M%
 #   telemetry read DEGRADED, status=S reason=R
 #
-# Sourced (`# shellcheck source=scripts/lib/budget-poller.sh`); runs nothing at
-# source time and calls `set` on nothing.
+# Sourced (`# shellcheck source=scripts/lib/budget-poller.sh`); at source time it
+# only sources scripts/lib/redact.sh (definitions only) and calls `set` on nothing.
+
+# Resolved at source time: a caller may run by a relative path and cd later (#2152).
+# shellcheck source=scripts/lib/redact.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)/redact.sh" 2>/dev/null || true
 
 # Hours after the last OK record before the fleet monitor warns (AC #4). 6, not
 # 3: GitHub delivers only ~40% of scheduled ticks in this repo, so a 3h gap is
@@ -118,18 +126,62 @@ bp_last_record() {
 }
 
 # ---------------------------------------------------------------------------
+# bp_error_fields <http_status> <upstream_body> — echo
+# {"error_type":…,"error_detail":…} for a refused read (#2179), from the body
+# the adapter already carries. Both null on a 200, a missing / non-JSON body, no
+# `.error` object, or an `.error.type` outside ^[a-z_]{1,48}$. error_detail is
+# `.error.message` with control characters stripped, passed through
+# redact_secrets (before AND after the newlines go, so neither a multi-line PEM
+# block nor a token split across lines survives), and cut to 200 characters;
+# null when redaction is unavailable. Never fails and never prints the body.
+# ---------------------------------------------------------------------------
+bp_error_fields() {
+  local http="${1:-}" body="${2:-}" etype="" msg="" out
+  local nulls='{"error_type":null,"error_detail":null}'
+  if [ "$http" = "200" ] || [ -z "$body" ]; then
+    printf '%s' "$nulls"
+    return 0
+  fi
+  etype="$(jq -r 'if type == "object" and (.error | type) == "object"
+      and (.error.type | type) == "string" and (.error.type | test("^[a-z_]{1,48}$"))
+    then .error.type else empty end' <<<"$body" 2>/dev/null)" || etype=""
+  if ! [[ "$etype" =~ ^[a-z_]{1,48}$ ]]; then
+    printf '%s' "$nulls"
+    return 0
+  fi
+  if declare -F redact_secrets >/dev/null; then
+    # Keep only \n for the first pass (redact_secrets' PEM range is line-based).
+    msg="$(jq -r '.error?.message | if type == "string"
+        then gsub("[\u0000-\u0009\u000b-\u001f\u007f-\u009f]"; "") else empty end' \
+        <<<"$body" 2>/dev/null | redact_secrets 2>/dev/null | { tr -d '\n'; echo; } | redact_secrets 2>/dev/null)" || msg=""
+  fi
+  out="$(jq -cn --arg t "$etype" --arg m "$msg" '
+    ($m | gsub("[\u0000-\u001f\u007f-\u009f]"; "") | .[0:200]) as $d
+    | {error_type: $t, error_detail: (if $d == "" then null else $d end)}' 2>/dev/null)" || out=""
+  if [ -n "$out" ] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s' "$out"
+  else
+    printf '%s' "$nulls"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # bp_build_record — PURE. Assemble the JSON record. Named args via env-free
 # positional order:
 #   1 now_epoch  2 http_status  3 retry_after  4 session_pct  5 weekly_pct
 #   6 session_resets_at  7 weekly_resets_at  8 session_decision
 #   9 glide_decision  10 glide_config_enabled  11 reason_override  12 prev_ok_record
 #   13 trigger_event  14 trigger_cron  (optional, #2160)
+#   15 upstream_body (the envelope's `.body`, read only by bp_error_fields)
 # Empty strings mean "absent" (null in the record).
 # ---------------------------------------------------------------------------
 bp_build_record() {
   local now="$1" http="$2" retry="$3" s_pct="$4" w_pct="$5" s_reset="$6" w_reset="$7"
   local s_dec="$8" g_dec="$9" g_enabled="${10}" reason_override="${11}" prev="${12:-}"
   local t_event="${13:-}" t_cron="${14:-}"
+  local err
+  err="$(bp_error_fields "$http" "${15:-}")"
   [ -n "$prev" ] && jq -e 'type == "object"' <<<"$prev" >/dev/null 2>&1 || prev='null'
   # A malformed clock must not abort the record (`--argjson` would fail under set -e).
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
@@ -142,7 +194,7 @@ bp_build_record() {
     --arg s_dec "$s_dec" --arg g_dec "$g_dec" \
     --arg g_enabled "$g_enabled" --arg reason_override "$reason_override" \
     --arg t_event "$t_event" --arg t_cron "$t_cron" \
-    --argjson prev "$prev" '
+    --argjson prev "$prev" --argjson err "$err" '
     def num($s): if ($s | test("^[0-9]+$")) then ($s | tonumber) else null end;
     def str($s): if $s == "" then null else $s end;
     # Burn rate (pp/h) for one window vs the previous OK record. Null on the
@@ -211,6 +263,8 @@ bp_build_record() {
         scheduled_for: (if $sched == null then null else ($sched | todate) end),
         scheduled_epoch: $sched,
         start_delay_s: (if $sched == null then null else $now - $sched end),
+        error_type: $err.error_type,
+        error_detail: $err.error_detail,
         dry_run: true,
         line: ( if $poll == "ok"
                 then "telemetry read OK, session=\($sp)% weekly_all=\($wp)%"
