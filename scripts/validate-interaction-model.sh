@@ -579,9 +579,9 @@ imv_v_contracts() {
       # it only when that persona's manifest enables a pull_request surface. A
       # mention-only persona is not served pull_request by the router, so its
       # contract is not charged with it.
-      local role status=0
-      role="$(imv_c_role "$c")" || status=$?
-      if [ "$status" -eq 0 ] && [ "$wf" = ".github/workflows/persona-mention.yml" ] \
+      local role
+      role="$(imv_c_role "$c")"
+      if [ "$wf" = ".github/workflows/persona-mention.yml" ] \
          && ! imv_persona_serves_pr_surface "$root" "$role"; then
         actual_events+="$(imv_on_event_set "$root/$wf" | grep -vx 'pull_request' || true)"$'\n'
       else
