@@ -456,15 +456,27 @@ maintainer_gate_head_committer_date() {
 #   not minimized RESOLVED, so the harness never tries to disposition a comment the
 #   gate does not count. <comments_array_json> is the harness's issue-comment nodes,
 #   each {id, author{login}, authorAssociation, body, isMinimized, minimizedReason}.
-#   Unreadable input echoes nothing and returns non-zero.
+#   Filters out clean registered info-status comments matching check_maintainer_comments
+#   so the gate and candidate filter never disagree. Unreadable input echoes nothing
+#   and returns non-zero.
 maintainer_gate_open_comment_ids() {
-  local comments="${1:-}" bot_user="${2:-donpetry-bot}"
+  local comments="${1:-}" bot_user="${2:-donpetry-bot}" info_patterns finding_re
+  info_patterns="$(_maintainer_gate_info_patterns_json)"
+  finding_re="$(_maintainer_gate_finding_re)"
   printf '%s' "$comments" | jq -r \
     --arg botuser "$bot_user" \
-    --arg markers "$_MAINTAINER_GATE_AGENT_MARKERS" "$_MAINTAINER_GATE_SCOPE_JQ_DEFS"'
+    --arg markers "$_MAINTAINER_GATE_AGENT_MARKERS" \
+    --arg findre "$finding_re" \
+    --argjson infopatterns "$info_patterns" "$_MAINTAINER_GATE_SCOPE_JQ_DEFS"'
       if type != "array" then error("not an array") else . end
       | [ .[] | objects
           | select(in_gate_scope)
+          | (.author?.login // "" | tostring | if endswith("[bot]") then .[0:-5] else . end) as $lbare
+          | ((.body // "") | tostring | test($findre)) as $findings
+          | select(
+              ($infopatterns[$lbare] // null) as $p
+              | ($p == null) or $findings or (((.body // "") | test($p)) | not)
+            )
           | select(((.isMinimized // false) == true)
                    and (((.minimizedReason // "") | ascii_downcase) == "resolved") | not)
           | .id ]
