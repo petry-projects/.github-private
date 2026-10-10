@@ -55,6 +55,23 @@ _samples() {
   [ "$(_samples | wc -l)" -eq 1 ]
 }
 
+@test "a single-line JSON envelope is unwrapped to its .result text" {
+  printf '%s\n' '{"type":"result","is_error":true,"result":"You'"'"'ve hit your weekly limit · resets Mon 9am"}' > "$CAPTURE"
+  parse_reset_time_files "$CAPTURE"
+  [ "$(_samples | wc -l)" -eq 1 ]
+  sample="$(_samples | jq -r '.sample')"
+  [[ "$sample" == *"hit your weekly limit"* ]]
+  [[ "$sample" != *'"type"'* ]]
+}
+
+@test "JSON stdout followed by a plain-text stderr line is still recorded" {
+  printf '%s\n' '{"type":"result","result":"working"}' \
+    "You've hit your weekly limit · resets Mon 9am" > "$CAPTURE"
+  parse_reset_time_files "$CAPTURE"
+  [ "$(_samples | wc -l)" -eq 1 ]
+  [[ "$(_samples | jq -r '.sample')" == *"hit your weekly limit"* ]]
+}
+
 @test "distinct message shapes are each recorded" {
   printf '%s\n' "You've hit your weekly limit · resets Mon 9am" > "$CAPTURE"
   parse_reset_time_files "$CAPTURE"
@@ -135,7 +152,7 @@ _samples() {
   run generate_rate_limit_samples_report
   [ "$status" -eq 0 ]
   [[ "$output" == *"Unparsed rate-limit messages"* ]]
-  [[ "$output" == *"No unparsed rate-limit samples"* ]]
+  [[ "$output" == *"No ledger data available"* ]]
 }
 
 @test "fleet section renders samples with count, first-seen time and escaped text" {

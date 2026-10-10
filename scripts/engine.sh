@@ -2524,7 +2524,9 @@ _record_unparsed_rate_limit() {
     return 0
   fi
   local sample shape
-  sample=$(jq -r '.result // empty' 2>/dev/null | redact_secrets \
+  sample=$(redact_secrets \
+    | jq -Rr '. as $l | (try fromjson catch null)
+      | if type == "object" and (.result | type) == "string" then .result else $l end' 2>/dev/null \
     | grep -iE "$(_rate_limit_pattern)" 2>/dev/null | head -n 3 \
     | head -c "$RATE_LIMIT_SAMPLE_MAX_BYTES" || true)
   [ -n "$sample" ] || return 0
