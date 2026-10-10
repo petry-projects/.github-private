@@ -243,6 +243,55 @@ emit_lsp_coldstart_record() {
   printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
 }
 
+# emit_rate_limit_sample_record <engine> <shape> <sample>
+# Appends one kind:"rate_limit_sample" record to TOKEN_LOG_FILE (#2140): the
+# already-redacted, truncated text of a rate-limit message the reset parser could
+# not read, so a future parser (e.g. a weekly cap, #1863) is built from a real
+# sample. <shape> is a digit-insensitive fingerprint of <sample>; a shape already
+# in this run's ledger is skipped, so each distinct message is recorded once per
+# run, not once per attempt. The caller MUST redact <sample> first — this
+# function writes it verbatim. token_report.sh and the fleet monitor's token
+# aggregate skip non-"token_usage" kinds, so this never pollutes cost reporting.
+# No-op when TOKEN_LOG_FILE is unset; swallows I/O errors so it never aborts a run.
+emit_rate_limit_sample_record() {
+  [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
+
+  local engine="${1:-}" shape="${2:-}" sample="${3:-}"
+  [ -n "$shape" ] && [ -n "$sample" ] || return 0
+
+  local lock_file="${TOKEN_LOG_FILE}.lock"
+  (
+    flock -x 9 2>/dev/null || true
+    # Check must happen inside lock to prevent TOCTOU race with concurrent writers.
+    if [ -f "$TOKEN_LOG_FILE" ] && grep -qE '"kind":"rate_limit_sample".*"shape":"'"${shape}"'"' "$TOKEN_LOG_FILE" 2>/dev/null; then
+      return 0
+    fi
+
+    local ts run_id record
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    run_id="${GITHUB_RUN_ID:-}"
+
+    record=$(jq -cn \
+      --arg ts "$ts" \
+      --arg workflow "${TOKEN_WORKFLOW:-}" \
+      --arg engine "$engine" \
+      --arg shape "$shape" \
+      --arg sample "$sample" \
+      --arg run_id "$run_id" \
+      '{
+        kind: "rate_limit_sample",
+        ts: $ts,
+        workflow: $workflow,
+        engine: $engine,
+        shape: $shape,
+        sample: $sample,
+        run_id: $run_id
+      }' 2>/dev/null) || return 0
+
+    printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
+  ) 9>"$lock_file" 2>/dev/null || true
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Real-usage capture (replaces the char/4 estimate when an engine reports usage)
 #
