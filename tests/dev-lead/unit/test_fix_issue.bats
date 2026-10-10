@@ -419,6 +419,7 @@ case "\$cmd" in
   api)
     case "\$*" in
       *"pulls?state=open"*) echo "0" ;;
+      *"-X POST"*"/labels"*) printf '%s\n' "\$*" >> "${LABEL_FILE}"; echo '[]' ;;
       *comments*)           printf '%s' '${PRIOR_COMMENTS_JSON}' ;;
       *"users/"*)           echo '{"id":12345}' ;;
       *"issues/"*)          echo '{"title":"Test Issue","body":"body"}' ;;
@@ -1235,6 +1236,7 @@ case "\$*" in
   *"pr edit"*)         echo "\$*" >> "$LABEL_RECORD"; exit 0 ;;
   *"label create"*)    exit 0 ;;
   *"pulls?state=open"*) echo "0" ;;
+  *"-X POST"*"issues/42/labels"*) echo "\$*" >> "$LABEL_RECORD"; echo '[]' ;;
   *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
   *"api"*"users/"*)    echo '{"id":12345}' ;;
   *"issue comment"*)   exit 0 ;;
@@ -1250,7 +1252,10 @@ GHEOF
 
   [ "$status" -eq 0 ]
   # The opened PR must be made auto-rebase-eligible from creation.
-  grep -q "add-label auto-rebase:ready" "$LABEL_RECORD"
+  # Posted via the REST labels endpoint: `gh pr edit --add-label` fails under the
+  # workflow token (#2142), so it must not be the path used.
+  grep -q "api -X POST repos/.*/issues/42/labels -f labels\[\]=auto-rebase:ready" "$LABEL_RECORD"
+  ! grep -q "pr edit" "$LABEL_RECORD"
 }
 
 # ── empty net-diff guard (#1786, slice 1 of #1620) ────────────────────────────
@@ -1335,6 +1340,7 @@ case "\$cmd" in
   api)
     case "\$*" in
       *"pulls?state=open"*) echo "0" ;;
+      *"-X POST"*"/labels"*) printf '%s\n' "\$*" >> "${NDG_LABEL_FILE}"; echo '[]' ;;
       *"users/"*)           echo '{"id":12345}' ;;
       *comments*)           echo "[]" ;;
       *"issues/"*)          echo '{"title":"Test","body":"body"}' ;;
@@ -1374,7 +1380,7 @@ GHEOF
   # The branch was NOT pushed (never open/publish an empty-net-diff branch).
   [ ! -s "$NDG_PUSH_FILE" ]
   # Issue labelled dev-lead:needs-human.
-  grep -q "add-label dev-lead:needs-human" "$NDG_LABEL_FILE"
+  grep -q "labels\[\]=dev-lead:needs-human" "$NDG_LABEL_FILE"
   # No durable completion claim was posted.
   run grep -q "status=completed" "$NDG_COMMENT_FILE"
   [ "$status" -eq 1 ]
