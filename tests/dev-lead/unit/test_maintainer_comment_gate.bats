@@ -540,6 +540,41 @@ _disp() {
   [ "$status" -eq 1 ]
 }
 
+# ────────────────────────────────────────────────────────────────────
+# #2178: a neutral bot overview (CodeAnt "PR Risk: Low Risk") carries no finding.
+# codeant-ai has no info_status_pattern, so the gate does not auto-clear it.
+# dev-lead dispositions it `informational` and the harness then minimizes it
+# RESOLVED. That disposition must clear the gate. A CodeAnt comment that carries a
+# finding still blocks until it gets a real disposition.
+# ────────────────────────────────────────────────────────────────────
+
+# The live body of petry-projects/.github PR #1269, comment IC_kwDORyesfc8AAAABauHIXQ.
+_codeant_low_risk_body() {
+  printf '%s' '## CodeAnt PR Risk: Low Risk
+
+- The PR appears safe to merge: audit and deployment share a per-tier current-major pin check and handle stale pins and failed tag lookups explicitly.
+- Regression tests cover stale and current pins, partial major rollouts, failed tag probes, and agreement between audit and deployment.
+
+**Assessed commit:** `685b1eeb36aa`'
+}
+
+@test "#2178: an undispositioned CodeAnt 'PR Risk: Low Risk' overview blocks (no pattern auto-clears it) → 1" {
+  _run_check "$(_edit_json codeant-ai "$(_codeant_low_risk_body)" false null)"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2178: a CodeAnt 'PR Risk: Low Risk' overview dispositioned informational and minimized RESOLVED clears → 0" {
+  _run_check "$(_edit_json codeant-ai "$(_codeant_low_risk_body)" true null "$(_disp 2026-10-01T19:23:54Z informational)")"
+  [ "$status" -eq 0 ]
+}
+
+@test "#2178: a CodeAnt comment carrying a finding, undispositioned, still blocks → 1" {
+  local body
+  body="$(_codeant_low_risk_body)"$'\n\n**Suggestion:** `resolve_pin` ignores a failed tag lookup and returns the stale major — check the exit status.'
+  _run_check "$(_edit_json codeant-ai "$body" false null)"
+  [ "$status" -eq 1 ]
+}
+
 @test "#2008: maintainer_gate_merge_edit_times merges lastEditedAt by comment id" {
   local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
   cat > "$bin/gh" <<'SHIM'
