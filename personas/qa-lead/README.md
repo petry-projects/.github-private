@@ -47,18 +47,25 @@ is a Class 1 (event-driven) caller that fires on
 `pull_request: [opened, ready_for_review]` — `synchronize` is deliberately not
 wired, so a PR gets one advisory as it enters review, not one per push.
 
-This surface is served **locally in `.github-private`** today — the workflow is
-self-contained (it `source`s a repo-local gate script and calls the local
-persona runtime), **not** a fleet-deployable thin caller stub, so it cannot ship
-to another repo by the standards sweep. [ADR-0009](../../docs/architecture/adr/0009-qa-lead-pull-request-surface-routes-through-the-shared-router.md)
+That local workflow is self-contained (it `source`s a repo-local gate script and
+calls the local persona runtime), **not** a fleet-deployable thin caller stub,
+so it cannot ship to another repo by the standards sweep. [ADR-0009](../../docs/architecture/adr/0009-qa-lead-pull-request-surface-routes-through-the-shared-router.md)
 records the decision (#1869) to route the `pull_request` event through the
 shared `persona-mention` router instead of publishing a second runtime, so the
-surface reaches beyond this repo. The router change is cross-repo; this local
-workflow is retired only **after** it lands on the `persona-mention/v1-next`
-channel and the #1745 stop-marker semantics are verified on a
-`pull_request`-sourced dispatch.
+surface reaches beyond this repo. That router path is live on the
+`persona-mention/v1-next` channel, and this repo's
+[`persona-mention.yml`](../../.github/workflows/persona-mention.yml) stub
+subscribes `pull_request` (#2187).
 
-It reuses the **one** persona runtime
+So the `pull_request` surface is currently served by **both** paths: the local
+`qa-lead-pr-advisory.yml` and the router. Both call the shared runtime with
+`surface: pull_request`, so they share **one** per-(persona, repo, PR)
+concurrency group and the same already-advised marker check. A PR gets one
+advisory, not two. The local workflow is retired in a separate issue, only
+**after** the router path is verified on real PRs, including the #1745
+stop-marker semantics on a `pull_request`-sourced dispatch.
+
+The local workflow reuses the **one** persona runtime
 ([`persona-runner-reusable.yml`](../../.github/workflows/persona-runner-reusable.yml)) —
 there is no qa-lead-specific runner. Before invoking it, a pure gate
 ([`scripts/qa-lead-advisory-gate.sh`](../../scripts/qa-lead-advisory-gate.sh),
