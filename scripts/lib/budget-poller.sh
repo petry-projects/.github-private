@@ -151,14 +151,14 @@ bp_error_fields() {
   fi
   if declare -F redact_secrets >/dev/null; then
     # Keep only \n for the first pass (redact_secrets' PEM range is line-based).
-    msg="$(jq -r '.error.message | if type == "string"
+    msg="$(jq -r '.error?.message | if type == "string"
         then gsub("[\u0000-\u0009\u000b-\u001f\u007f-\u009f]"; "") else empty end' \
-        <<<"$body" 2>/dev/null | redact_secrets 2>/dev/null | tr -d '\n' | redact_secrets 2>/dev/null)" || msg=""
+        <<<"$body" 2>/dev/null | redact_secrets 2>/dev/null | { tr -d '\n'; echo; } | redact_secrets 2>/dev/null)" || msg=""
   fi
   out="$(jq -cn --arg t "$etype" --arg m "$msg" '
     ($m | gsub("[\u0000-\u001f\u007f-\u009f]"; "") | .[0:200]) as $d
     | {error_type: $t, error_detail: (if $d == "" then null else $d end)}' 2>/dev/null)" || out=""
-  if jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
+  if [ -n "$out" ] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
     printf '%s' "$out"
   else
     printf '%s' "$nulls"
