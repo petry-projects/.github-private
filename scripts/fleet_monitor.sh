@@ -16,7 +16,7 @@
 #   LOOKBACK_DAYS   — days of history to consider (default: 1)
 #   BUDGET_POLLER_REPO        — repo whose budget-poller-log artifact is read
 #                               (default: petry-projects/.github-private, #2029)
-#   BUDGET_POLLER_STALE_HOURS — warn when the last OK poll is older (default: 3)
+#   BUDGET_POLLER_STALE_HOURS — warn when the last OK poll is older (default: 6)
 #   GITHUB_ENV      — written by Actions runner
 #   GITHUB_STEP_SUMMARY — written by Actions runner (1 MB hard limit per job)
 
@@ -579,10 +579,11 @@ done
 
 # ---------------------------------------------------------------------------
 # 2f. Dry-run budget poller liveness (#2029, slice 2 of #1565)
-# Read the newest `budget-poller-log` artifact the hourly Budget Poller uploads
-# and report the age of the last OK telemetry record, the dry-run decision (which
+# Read the newest `budget-poller-log` artifact the twice-hourly Budget Poller
+# uploads and report the age of the last OK telemetry record, runs received in
+# the last 24h against the 48 expected (#2160), the dry-run decision (which
 # window, what percent), and the burn rate. A last OK record older than
-# BUDGET_POLLER_STALE_HOURS (default 3) — or none at all — raises a `::warning::`
+# BUDGET_POLLER_STALE_HOURS (default 6) — or none at all — raises a `::warning::`
 # so a silently dead feed is visible. Best-effort and read-only: a missing
 # artifact or API error renders "no OK record", never fails the monitor.
 # ---------------------------------------------------------------------------
