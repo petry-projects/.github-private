@@ -286,7 +286,7 @@ _attempt_at() {
 @test "attempts: a sample line has configured key values and token formats redacted" {
   export GOOGLE_API_KEY_3="fake-secret-c"
   _source_lib
-  local aiza_key="AIza0123456789abcdefghijklmnop"
+  local aiza_key="AIza0123456789abcdefghijklmnopqr"
   aiza_key="${aiza_key}stuvwxy"
   run _gq_redact_line "error for fake-secret-c and ${aiza_key} end"
   [[ "$output" != *"fake-secret-c"* ]]

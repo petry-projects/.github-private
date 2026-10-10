@@ -133,6 +133,7 @@ gtr_render() {
     printf '| First seen | Key | Model | Treated as | Message |\n|---|---:|---|---|---|\n'
     local ts sk sm sc sx
     while IFS=$'\t' read -r ts sk sm sc sx; do
+      sx="$(_gq_redact_line "$sx")"
       printf '| %s | %s | `%s` | %s | %s |\n' "$ts" "$sk" "$sm" "$sc" "$(_gtr_md "$sx")"
     done <<< "$samples"
     printf '\n'

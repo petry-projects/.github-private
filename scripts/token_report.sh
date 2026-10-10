@@ -321,11 +321,21 @@ render_gemini_quota() {
 
 # export_gemini_records <jsonl_dir>
 # Prints every Gemini ledger record (engine "gemini") from the collected JSONL, one
-# compact object per line. Pure: no network.
+# compact object per line. Rejection samples are redacted to remove any unredacted credentials
+# from untrusted collected artifacts. Pure: no network.
 export_gemini_records() {
   local files=("$1"/*.jsonl)
   [ -e "${files[0]}" ] || return 0
-  jq -c 'select(type == "object" and .engine == "gemini")' "${files[@]}" 2>/dev/null || true
+  while IFS= read -r line; do
+    local sample
+    sample="$(jq -r '.sample // empty' <<< "$line" 2>/dev/null || true)"
+    if [ -n "$sample" ]; then
+      sample="$(_gq_redact_line "$sample")"
+      jq -c ".sample = \"$sample\"" <<< "$line" 2>/dev/null || echo "$line"
+    else
+      echo "$line"
+    fi
+  done < <(jq -c 'select(type == "object" and .engine == "gemini")' "${files[@]}" 2>/dev/null || true)
 }
 
 # render_token_report <jsonl_dir> <lookback_days> <repo_count> <artifact_count> [generated_at]
