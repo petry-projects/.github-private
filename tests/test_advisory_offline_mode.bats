@@ -135,7 +135,11 @@ _steps_section() {
 
 @test "solution-architect: a conforming change is LOW / escalate = no (#1787 AC2)" {
   steps="$(_steps_section "$PROMPTS/solution-architect/advisory.md")"
-  bullet="$(grep -A3 'The change conforms to an accepted ADR' <<<"$steps")"
+  # The whole bullet, from its opening line to the next sibling bullet, so a
+  # rewrap of the paragraph cannot move the asserted text out of range.
+  bullet="$(awk '/The change conforms to an accepted ADR/ { on=1; print; next }
+                 on && /^   - / { exit }
+                 on { print }' <<<"$steps")"
   grep -q '\*\*LOW\*\*' <<<"$bullet"
   grep -q '\*\*escalate = no\*\*' <<<"$bullet"
 }
