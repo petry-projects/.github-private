@@ -43,6 +43,19 @@ setup() {
   [[ "$output" == *"pull_request"* ]]
 }
 
+@test "prc_surface_is_mention_only: pull_request stays rejected though the real router subscribes it (#2187)" {
+  # The router's on: block now carries the pull_request EVENT surface, but
+  # PRC_ROUTER_EVENTS is the router's MENTION events only: a mention-only
+  # persona may not widen onto pull_request just because the router serves it.
+  local router
+  router="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/.github/workflows/persona-mention.yml"
+  run prc_router_serves_events "$router" "pull_request"
+  [ "$status" -eq 0 ]
+  run prc_surface_is_mention_only "issue_comment,pull_request"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pull_request"* ]]
+}
+
 @test "prc_surface_is_mention_only: rejects an added schedule/cron surface" {
   run prc_surface_is_mention_only "issue_comment,schedule"
   [ "$status" -ne 0 ]
