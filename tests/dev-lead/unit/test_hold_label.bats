@@ -191,3 +191,9 @@ EOF
   [ "$rc" -eq 1 ]
   [ "$HOLD_LABEL_FAILED" = "1" ]
 }
+
+@test "hold_label_exit_guard: a failure recorded in a subshell reaches the guard via HOLD_LABEL_FAILED_FILE" {
+  f="$BATS_TEST_TMPDIR/failed"
+  HOLD_LABEL_FAILED_FILE="$f" LABEL_RC=1 run bash -c "source '$LIB'; x=\$(apply_hold_label owner/repo 77 2>/dev/null || true); trap 'rc=\$?; hold_label_exit_guard \"\$rc\"' EXIT; exit 0"
+  [ "$status" -ne 0 ]
+}

@@ -60,6 +60,14 @@ add_label_rest() {
   return 1
 }
 
+# _hold_label_mark_failed — record a failed hold. Also touches
+# HOLD_LABEL_FAILED_FILE when set, so a failure inside a command substitution
+# (a subshell whose variables are lost) still reaches the parent's exit guard.
+_hold_label_mark_failed() {
+  HOLD_LABEL_FAILED=1
+  [ -z "${HOLD_LABEL_FAILED_FILE:-}" ] || : > "$HOLD_LABEL_FAILED_FILE" 2>/dev/null || true
+}
+
 # apply_hold_label <repo> <number> [label]
 #   Add the hold label through add_label_rest. Returns 0 when the label is
 #   applied. Otherwise sets HOLD_LABEL_FAILED=1 and HOLD_LABEL_NOTE, and
@@ -74,7 +82,7 @@ apply_hold_label() {
   fi
   msg="$ADD_LABEL_ERR"
   echo "::error::PR #${number} is flagged but NOT held (#2142)"
-  HOLD_LABEL_FAILED=1
+  _hold_label_mark_failed
   HOLD_LABEL_NOTE="
 
 > [!WARNING]
@@ -100,7 +108,7 @@ post_hold_failure_note() {
     return 0
   fi
   echo "::error::could not post the not-held note on PR #${number}"
-  HOLD_LABEL_FAILED=1
+  _hold_label_mark_failed
   return 1
 }
 
@@ -118,12 +126,12 @@ disable_auto_merge_for_hold() {
     --jq '.autoMergeRequest != null' 2>/dev/null || echo unknown)
   if [ "$active" = "true" ]; then
     echo "::error::could not disable auto-merge on PR #${number}: $(_hold_label_api_message "$out") — it may merge despite escalation (#2142)"
-    HOLD_LABEL_FAILED=1
+    _hold_label_mark_failed
     return 1
   fi
   if [ "$active" = "unknown" ]; then
     echo "::error::could not verify auto-merge status on PR #${number}: $(_hold_label_api_message "$out") — unable to confirm hold (#2142)"
-    HOLD_LABEL_FAILED=1
+    _hold_label_mark_failed
     return 1
   fi
   echo "::notice::auto-merge not disabled on PR #${number} (not enabled, or refused): $(_hold_label_api_message "$out")"
@@ -136,6 +144,9 @@ disable_auto_merge_for_hold() {
 #   trap 'rc=$?; restore_auto_merge; hold_label_exit_guard "$rc"' EXIT
 hold_label_exit_guard() {
   local rc=${1:-$?}
+  if [ "${HOLD_LABEL_FAILED:-0}" != "1" ] && [ -n "${HOLD_LABEL_FAILED_FILE:-}" ] && [ -e "$HOLD_LABEL_FAILED_FILE" ]; then
+    HOLD_LABEL_FAILED=1
+  fi
   [ "${HOLD_LABEL_FAILED:-0}" = "1" ] || return 0
   echo "::error::a dev-lead escalation could not be held (needs-human-review not applied) — failing the run (#2142)"
   [ "$rc" -ne 0 ] || rc=1

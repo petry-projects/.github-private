@@ -1460,13 +1460,26 @@ main() {
   echo "[retry] done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
+# hold_label_exit_guard_then_cleanup <rc> — remove the failure-marker file after
+# the guard has read it, then apply the guard.
+hold_label_exit_guard_then_cleanup() {
+  local rc="$1"
+  if [ -n "${HOLD_LABEL_FAILED_FILE:-}" ] && [ -e "$HOLD_LABEL_FAILED_FILE" ]; then
+    export HOLD_LABEL_FAILED=1
+    rm -f "$HOLD_LABEL_FAILED_FILE"
+  fi
+  hold_label_exit_guard "$rc"
+}
+
 # Run main only when executed directly (bash dev-lead-retry.sh), not when sourced
 # by unit tests that exercise individual functions (scan_issue_for_retry, etc.).
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   # A failed hold (#2142) must fail the scan even though escalation is `|| true`.
-  # Capture the exit code at the start of the trap so hold_label_exit_guard
-  # preserves the original script exit status (#2142).
+  # Escalations run inside command substitutions, so a failed hold is also
+  # recorded in a file that survives the subshell; the guard reads it.
+  HOLD_LABEL_FAILED_FILE=$(mktemp -u)
+  export HOLD_LABEL_FAILED_FILE
   # shellcheck disable=SC2154  # rc is set by the trap string itself
-  trap 'rc=$?; hold_label_exit_guard "$rc"' EXIT
+  trap 'rc=$?; hold_label_exit_guard_then_cleanup "$rc"' EXIT
   main "$@"
 fi

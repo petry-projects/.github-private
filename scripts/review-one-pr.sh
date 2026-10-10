@@ -216,9 +216,9 @@ review_one_pr_cleanup() {
 }
 
 # A failed hold (#2142) must fail the run. Set the trap early, before any work
-# that might trigger enforce_pr_budget.
-# shellcheck disable=SC2154  # rc is set by the trap string itself
-trap 'rc=$?; review_one_pr_cleanup' EXIT
+# that might trigger enforce_pr_budget. The trap must call the function directly:
+# a prefix like `rc=$?;` would reset $? to 0 before the function captures it.
+trap review_one_pr_cleanup EXIT
 
 echo "==> $PR_URL"
 
