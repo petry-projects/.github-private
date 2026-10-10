@@ -696,7 +696,8 @@ jobs:
         with:
           name: gemini-tier-snapshot
           path: .gemini-tier-state/snapshot.json
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Annotate clean run
