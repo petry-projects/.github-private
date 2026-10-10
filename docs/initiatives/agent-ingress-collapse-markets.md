@@ -36,6 +36,11 @@ of per-role Class-1 caller stubs on `main`, read live on 2026-09-29:
 | `pr-review-mention.yml` | `…/.github/…/pr-review-mention-reusable.yml@pr-review-mention/v2-stable` |
 | `ci-failure-analyst.yml` | `…/.github-private/…/ci-failure-analyst-reusable.yml@79747178007d3238bb3afddf7f4d952a293987bd` |
 
+**Later pin bump (#2171):** Dependabot bumped markets `main`'s
+`ci-failure-analyst.yml` stub to `@b58510275dd1cbbd13c0733c15265d51fd63b992`
+(markets `e390f85`, 2026-10-06). §3 carries that pin so the collapse does not
+revert it. See §5b.
+
 > **Gap (named, not silently carried):** the delivery brief cites a baseline doc
 > at `docs/initiatives/agent-ingress-collapse-baseline.md`. That file **does not
 > exist** on `main`. The authoritative baseline is the pair above (the canonical
@@ -117,6 +122,11 @@ reconstructs that role's original subscription.
 > head plus event-payload parts only, and each `cancel-in-progress` is a literal
 > boolean. The `pr-auto-review` and `pr-review` blocks were re-rendered to those
 > bounds (#2038). §4b states what this changes for non-PR events.
+>
+> **Synced to the deployed file (#2171).** The YAML below matches the
+> `agent-ingress.yml` that markets#513 ships. It differs from the first ratified
+> text (#2039) in the `pr-auto-review` group (per-event slot, §4b) and the
+> `ci-failure-analyst` pin (§5b). The maintainer accepted both changes.
 
 ```yaml
 # ─────────────────────────────────────────────────────────────────────────────
@@ -211,13 +221,16 @@ jobs:
       || github.event_name == 'check_suite'
       || github.event_name == 'workflow_run'
     # Workflow-level concurrency in the source stub → job-level here, bounded per
-    # ADR-0010. PR events keep their per-PR slot; check_suite / workflow_run
-    # share one slot per head SHA (no run_id — see §4b).
+    # ADR-0010: literal role prefix, payload parts only (no run_id), literal bool.
+    # PR events keep their per-PR slot; check_suite / workflow_run use their own
+    # event ids so runs on a shared commit never cancel another PR's review (§4b).
     concurrency:
       group: >-
-        pr-auto-review-ready-check-${{
-          (github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number))
-          || format('sha-{0}', github.event.check_suite.head_sha || github.event.workflow_run.head_sha)
+        pr-auto-review-${{
+        github.event.pull_request.number
+        || github.event.check_suite.id
+        || github.event.workflow_run.id
+        || 'none'
         }}
       cancel-in-progress: true
     permissions:
@@ -297,7 +310,7 @@ jobs:
       actions: read
       contents: read
       checks: read
-    uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@79747178007d3238bb3afddf7f4d952a293987bd  # DEFECTIVE PIN — bare SHA, see §5
+    uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@b58510275dd1cbbd13c0733c15265d51fd63b992  # DEFECTIVE PIN — bare SHA, see §5
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -364,9 +377,9 @@ accepted ADR is immutable. ADR-0010 is the delivered form of that reading.
 
 | Role | `group` (leading literal) | `cancel-in-progress` | Pinned reusable's groups | Collision |
 | --- | --- | --- | --- | --- |
-| `pr-auto-review` | `pr-auto-review-ready-check-…` | `true` | none (`pr-auto-review-reusable.yml@pr-auto-review/v1-stable`) | none |
+| `pr-auto-review` | `pr-auto-review-…` (per-event slot, §4b) | `true` | none (`pr-auto-review-reusable.yml@pr-auto-review/v1-stable`) | none |
 | `pr-review` | `pr-review-…` | `true` | `pr-review-pr-{…}`, `pr-review-batch` (`pr-review.yml@pr-review/stable`) | none (see the `enumerate` note in §4b) |
-| `ci-failure-analyst` | `ci-failure-analyst-…` (unchanged) | `false` (unchanged) | none (`ci-failure-analyst-reusable.yml@7974717…`) | none |
+| `ci-failure-analyst` | `ci-failure-analyst-…` (unchanged) | `false` (unchanged) | none (`ci-failure-analyst-reusable.yml@b585102…`) | none |
 | `dev-lead`, `pr-review-mention` | no caller block | — | — | — |
 
 Both guards pass on the §3 ingress as rendered: `scripts/validate-ingress-if.sh`
@@ -379,36 +392,45 @@ unnoticed.
 ### 4b. What changes versus the source stubs (the cost of dropping `run_id`)
 
 ADR-0010 forbids the `github.run_id` and `inputs.*` fallbacks. Without
-`run_id`, an event that names no PR no longer gets its own slot that is never
-cancelled. Each role resolves this as follows.
+`run_id`, an event that names no PR needs a different key for its slot. Each
+role resolves this as follows.
 
 **`pr-auto-review`.** The source stub used `pr-auto-review-ready-check-pr-<n>`
 for `pull_request` and `pull_request_review`, with cancel enabled. It gave every
 `check_suite` and `workflow_run` event a unique `…-unique-<run_id>` slot that was
 never cancelled.
 
-- PR events are **unchanged**. They use `pr-auto-review-ready-check-pr-<n>` with
-  `cancel-in-progress: true`.
-- Non-PR events now **share one slot per commit**:
-  `pr-auto-review-ready-check-sha-<head_sha>`, keyed on
-  `check_suite.head_sha` or `workflow_run.head_sha`. Uniqueness is not kept in
-  the reusable, because `pr-auto-review-reusable.yml` declares no concurrency at
-  its pin.
-- **Behavior change:** a later `check_suite` or `workflow_run` completion for
-  the **same head SHA** now cancels an in-flight readiness check for that SHA.
-  Before, both ran to completion. Events for different SHAs still run in
-  parallel. PR events and non-PR events still never share a slot (`pr-…` and
-  `sha-…`).
-- **Why the cancellation is acceptable:** the readiness check only reads the
-  state of that commit. The later event sees at least as many completed checks,
-  so the cancelled run's answer was already stale. The visible cost is a
-  `cancelled` run in the Actions log when several suites complete close
-  together.
+- PR events keep **one slot per PR**, `pr-auto-review-<n>`, with
+  `cancel-in-progress: true`. A newer push or review still supersedes an
+  in-flight check for the same PR. Only the slot name changed (the
+  `ready-check-pr-` infix is gone).
+- Non-PR events get **one slot per event**: `pr-auto-review-<check_suite.id>` or
+  `pr-auto-review-<workflow_run.id>`. Each delivered `check_suite` or
+  `workflow_run` carries its own id, so it is never cancelled by a different
+  event. This is close to the stub's unique per-run slot, read from the event
+  payload instead of `run_id`. Uniqueness is not kept in the reusable, because
+  `pr-auto-review-reusable.yml` declares no concurrency at its pin.
+- **What this changes from the earlier §4b text (#2038):** that text keyed
+  non-PR events on `head_sha` (`pr-auto-review-ready-check-sha-<head_sha>`). A
+  later `check_suite` or `workflow_run` for the same commit cancelled an
+  in-flight readiness check for that commit. **That no longer happens.** Every
+  non-PR event runs to completion, as it did under the source stub.
+- **Why (#1126):** the source stub documents the hazard. When several PRs share
+  a commit, a `check_suite` or `workflow_run` cannot say which PR it is for
+  (`pull_requests[0]` is indeterminate), so one PR's events cancelled the other
+  PR's. A per-commit slot brings that cross-PR cancellation back. A per-event
+  slot does not. The cost is that close-together suites for one commit each run
+  a readiness check instead of collapsing to the latest one.
 - **Why not `cancel-in-progress: false`:** the value is one literal for the
   whole job. `false` would make PR events queue behind a run for a stale head
   instead of superseding it, which changes the source stub's PR-event behavior.
-- **Edge case:** a payload with no `head_sha` (not expected for these two
-  events) resolves to the single literal slot `pr-auto-review-ready-check-sha-`.
+- **Edge cases:** a re-run of the same workflow run or check suite reuses its
+  id, so its completion event can cancel the earlier run for that id. That is
+  harmless, because both read the same run. A payload with none of the three
+  fields (not expected for these events) resolves to the literal slot
+  `pr-auto-review-none`. PR numbers and event ids share the `pr-auto-review-`
+  namespace. Event ids are far larger than any markets PR number, so the two do
+  not overlap in practice.
 
 **`pr-review`.** The source stub used
 `pr-review-<PR number | check_suite PR | inputs.pr_url | client_payload.pr_url | run_id>`
@@ -465,7 +487,18 @@ inline with `# DEFECTIVE PIN`. Neither is silently carried:
   issue against the `pr-review` reusable owner; **do not** bundle into the
   collapse PR.
 
-### 5b. `ci-failure-analyst` → `@79747178007d3238bb3afddf7f4d952a293987bd` (bare SHA aliased to `main`)
+### 5b. `ci-failure-analyst` → `@b58510275dd1cbbd13c0733c15265d51fd63b992` (bare SHA aliased to `main`)
+
+- **Pin bump (#2171):** the first ratified §3 pinned
+  `@79747178007d3238bb3afddf7f4d952a293987bd`. Dependabot then bumped markets
+  `main`'s stub to `@b58510275dd1cbbd13c0733c15265d51fd63b992` (markets
+  `e390f85`, `139.33.0` → `139.43.0`). §3 now carries the bumped pin, so the
+  collapse moves the stub's current pin and does not revert the bump. The
+  reusable at `b585102…` declares no `concurrency:` and only the
+  `CLAUDE_CODE_OAUTH_TOKEN` secret, so the ADR-0010 collision result (§4a) is
+  unchanged. The test snapshot
+  `tests/fixtures/agent-ingress/markets-pinned-reusables/ci-failure-analyst-reusable.yml`
+  records the new pin.
 
 - **Defect:** a frozen commit SHA (commented `# main`), not a moving channel tag
   — a direct ADR-0002 violation. It pins to a raw commit that will never advance
@@ -579,11 +612,19 @@ can block a merge:
 
 - **State A — ingress added, stubs not yet deleted (double-dispatch window).**
   Both `agent-ingress.yml` and the old stubs fire → each role runs *twice* per
-  event. Wasteful and log-noisy, but not a correctness or gating failure (agentic
-  roles are idempotent per-head-SHA; `pr-review`/`pr-auto-review` concurrency
-  groups collapse duplicates only where the old and new groups coincide — PR-keyed
-  events; the old `check_suite`/`workflow_run` stub groups were unique per run, so
-  those events may still double-run in this window). **Rollback:** revert the ingress add; the stubs
+  event. Wasteful and log-noisy, but not a gating failure (no collapsing role is a
+  required check). The roles do not all have idempotent side effects, so duplicates are not
+  limited to read-only work (see below). Concurrency groups collapse duplicates only
+  where the old and new group strings are equal. For `pr-review` they are
+  (`pr-review-<PR number>` in both), so PR-keyed duplicates still collapse; the old
+  `check_suite`/`workflow_run` stub groups were unique per run, so those events may
+  still double-run. For `pr-auto-review` they are not (old stub
+  `pr-auto-review-ready-check-pr-<n>`, new ingress `pr-auto-review-<n>`), so in State A
+  it double-runs for **all** its events, PR events included. Its reusable can dispatch
+  the review agent (`repository_dispatch`), so duplicate runs can enqueue duplicate
+  review dispatches. The pinned `pr-review-mention` reusable can also post duplicate
+  acknowledgement comments and dispatch duplicate review events. State A is therefore
+  not limited to duplicate read-only work. **Rollback:** revert the ingress add; the stubs
   alone resume normal single dispatch.
 - **State B — stubs deleted, ingress not yet added (coverage gap window).**
   No event-driven agent runs in markets until the ingress lands. No required
@@ -696,7 +737,7 @@ docs/initiatives/agent-ingress-collapse-markets.md
 ## Known follow-ups (do NOT bundle into this PR — §5)
 - pr-review pin `@pr-review/stable` is a stale bare-tier channel — repoint after
   a `pr-review/v<MAJOR>-stable` channel is published.
-- ci-failure-analyst pin is a bare SHA (`7974717…` # main) — repoint to a moving
+- ci-failure-analyst pin is a bare SHA (`b585102…` # main) — repoint to a moving
   `ci-failure-analyst/v<MAJOR>-stable` channel.
 
 ## Rollback (§8c)
