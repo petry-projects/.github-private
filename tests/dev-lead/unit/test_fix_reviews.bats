@@ -6812,3 +6812,131 @@ _fbc_reply() {  # $1=disposition-tail $2=createdAt
   ! grep -q "the harness rejects a \`fixed\` sha from an earlier pass" "$SCRIPT_DIR/prompts/dev-lead/fix-reviews.md"
   ! grep -q "only verifies a \`fixed\` sha from the pass that cites it" "$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md"
 }
+
+# ── #2079 AC4: a pass's own marker-less "no change" skip note must never resolve ──
+# dev-lead posts skip notes as the SAME account the maintainer uses, with no marker.
+# Attribution is by IDENTITY: a gh shim on the model's PATH records the node id of each
+# addPullRequestReviewThreadReply the pass posts, and the harness (stamp_pass_replies)
+# appends `<!-- dev-lead:reply -->` to ONLY those ids before either resolver reads the
+# thread. The gh stub models GitHub: the stamping mutation rewrites the body the next
+# thread read returns. The no-change path is gated on DEV_LEAD_NOCHANGE_EPOCH.
+
+_nochange_resolver_case() {
+  # $1 = pass mode: pass-reply | maintainer | unattributed
+  # $2 = epoch: set | unset
+  local mode="$1" epoch="${2:-set}"
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  MUTATIONS_FILE="$BATS_TEST_TMPDIR/mutations"
+  PATCH_FILE="$BATS_TEST_TMPDIR/patches"
+  BODY_FILE="$BATS_TEST_TMPDIR/maintainer-body"
+  : > "$MUTATIONS_FILE"
+  : > "$PATCH_FILE"
+  if [ "$mode" = "maintainer" ]; then
+    printf 'No change needed, false positive.' > "$BODY_FILE"
+  else
+    : > "$BODY_FILE"
+  fi
+  rm -f /tmp/dev-lead-session-output.txt
+
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+  NC_BASE_SHA="$(git -C "$tmpdir" rev-parse HEAD)"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$MUTATIONS_FILE"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"updatePullRequestReviewComment"*)
+    for a in "\$@"; do case "\$a" in body=*) printf '%s' "\${a#body=}" > "$BODY_FILE"; echo "\$a" >> "$PATCH_FILE" ;; esac; done
+    echo '{"data":{"updatePullRequestReviewComment":{"pullRequestReviewComment":{"id":"PRRC_77"}}}}'
+    ;;
+  *"addPullRequestReviewThreadReply"*)
+    for a in "\$@"; do case "\$a" in body=*) printf '%s' "\${a#body=}" > "$BODY_FILE" ;; esac; done
+    if [ "$mode" = "unattributed" ]; then echo '{}'; else echo '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"PRRC_77"}}}}'; fi
+    ;;
+  *"PullRequestReviewComment{body}"*)
+    jq -cn --rawfile b "$BODY_FILE" '{data:{node:{body:\$b}}}'
+    ;;
+  *"fullDatabaseId"*) echo '{"data":{"node":{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}' ;;
+  *"PullRequestReviewThread"*)
+    jq -cn --rawfile b "$BODY_FILE" '{data:{node:{isResolved:false,path:"fix.txt",comments:{pageInfo:{hasNextPage:false},nodes:[
+      {author:{login:"gemini-code-assist",__typename:"Bot"},authorAssociation:"NONE",body:"Missing a guard.",createdAt:"2098-01-01T00:00:00Z"},
+      {author:{login:"don-petry",__typename:"User"},authorAssociation:"MEMBER",body:\$b,createdAt:"2099-01-01T00:00:00Z"}]}}}}'
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_nochange_bot","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
+    ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${NC_BASE_SHA}"},"auto_merge":null}' ;;
+  *"pr checkout"*|*"pr comment"*|*"pr merge"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # The model stub posts its skip note through gh (the recording shim is first on PATH).
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Addressed feedback."
+printf 'fixed\n' > fix.txt
+if [ "$NC_MODE" != "maintainer" ]; then
+  gh api graphql -f query='mutation { addPullRequestReviewThreadReply(input:{}) { comment { id } } }' \
+    -f tid=PRRT_nochange_bot -f body='No change needed in this pass: the guard already exists.' >/dev/null
+fi
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  local epoch_export="unset DEV_LEAD_NOCHANGE_EPOCH"
+  [ "$epoch" = "set" ] && epoch_export="export DEV_LEAD_NOCHANGE_EPOCH=2026-10-10T00:00:00Z"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false NC_MODE='$mode'
+    export PR_NUMBER=54 HEAD_SHA=$NC_BASE_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]'
+    export BOT_USER='don-petry'
+    $epoch_export
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+}
+
+@test "resolve_addressed_bot_threads (#2079 AC4): a marker-less 'No change needed' reply posted by this pass is stamped and does NOT resolve the thread" {
+  _nochange_resolver_case pass-reply set
+  grep -q 'dev-lead:reply' "$PATCH_FILE"
+  grep -q 'dev-lead:reply' "$BODY_FILE"
+  ! grep -q "PRRT_nochange_bot" "$MUTATIONS_FILE"
+}
+
+@test "resolve_addressed_bot_threads (#2079 AC4): a maintainer comment the pass did not post stays byte-identical and still resolves the thread" {
+  _nochange_resolver_case maintainer set
+  [ ! -s "$PATCH_FILE" ]
+  [ "$(cat "$BODY_FILE")" = "No change needed, false positive." ]
+  grep -q "PRRT_nochange_bot" "$MUTATIONS_FILE"
+}
+
+@test "resolve_addressed_bot_threads (#2079 AC4): a pass reply whose id cannot be attributed disables the no-change path" {
+  _nochange_resolver_case unattributed set
+  ! grep -q "PRRT_nochange_bot" "$MUTATIONS_FILE"
+}
+
+@test "resolve_addressed_bot_threads (#2079 AC4): an unset DEV_LEAD_NOCHANGE_EPOCH resolves nothing on a no-change verdict" {
+  _nochange_resolver_case maintainer unset
+  ! grep -q "PRRT_nochange_bot" "$MUTATIONS_FILE"
+}

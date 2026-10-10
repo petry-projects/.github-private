@@ -112,6 +112,109 @@ cl_select_pass_claims() {
   done <<<"$rows"
 }
 
+# cl_install_reply_recorder <record_file> [real_gh]
+#   Attribution by IDENTITY, not by time window (#2079 AC4). dev-lead posts as the SAME
+#   account the maintainer uses, so "our login since the pass start" would also match a
+#   comment the human posts mid-pass. Instead a `gh` shim is installed in a fresh
+#   directory (echoed on stdout; the caller prepends it to the engine's PATH). The shim
+#   forwards every call to the real gh unchanged and, for an
+#   reply-creating call (the GraphQL reply mutation, any */replies* REST path,
+#   in_reply_to, or a query/payload read from --input / @file), appends the posted reply's node id to
+#   <record_file> (or the literal UNATTRIBUTED when the response carries no id, so the
+#   caller can fail closed). The record file is created empty. Returns 1 on failure.
+cl_install_reply_recorder() {
+  local record="${1:-}" real="${2:-}"
+  [[ -z "$record" ]] && return 1
+  [[ -z "$real" ]] && { real=$(command -v gh 2>/dev/null) || real=""; }
+  [[ -z "$real" ]] && return 1
+  local dir
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/dev-lead-recorder.XXXXXX") || return 1
+  : > "$record" || return 1
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'real=%q\nrec=%q\n' "$real" "$record"
+    cat <<'SHIM'
+flag=0
+tmpin=""
+check() {
+  case "$1" in
+    *addPullRequestReviewThreadReply*|*/replies*|*in_reply_to*) flag=1 ;;
+  esac
+}
+check "$*"
+prev=""
+for a in "$@"; do
+  f=""
+  [ "$prev" = "--input" ] && f=$a
+  case "$a" in
+    --input=*) f=${a#--input=} ;;
+    *=@*) f=${a#*=@} ;;
+    @*) f=${a#@} ;;
+  esac
+  if [ -n "$f" ]; then
+    if [ "$f" = "-" ]; then
+      if [ -z "$tmpin" ]; then
+        tmpin=$(mktemp)
+        cat > "$tmpin"
+      fi
+      check "$(cat "$tmpin")"
+    elif [ -r "$f" ]; then
+      check "$(cat "$f")"
+    else
+      flag=1
+    fi
+  fi
+  prev=$a
+done
+run_real() {
+  if [ -n "$tmpin" ]; then "$real" "$@" < "$tmpin"; else "$real" "$@"; fi
+}
+if [ "$flag" -eq 1 ]; then
+  rc=0
+  out=$(run_real "$@") || rc=$?
+  printf '%s\n' "$out"
+  if [ "$rc" -eq 0 ]; then
+    id=$(jq -r '(.data.addPullRequestReviewThreadReply.comment.id // .node_id // empty) | tostring' <<<"$out" 2>/dev/null || true)
+    printf '%s\n' "${id:-UNATTRIBUTED}" >> "$rec"
+  fi
+  [ -n "$tmpin" ] && rm -f "$tmpin"
+  exit "$rc"
+fi
+if [ -n "$tmpin" ]; then
+  rc=0
+  run_real "$@" || rc=$?
+  rm -f "$tmpin"
+  exit "$rc"
+fi
+exec "$real" "$@"
+SHIM
+  } > "$dir/gh"
+  chmod +x "$dir/gh"
+  printf '%s\n' "$dir"
+}
+
+# cl_recorded_reply_ids <record_file>
+#   Emits the unique node ids the recorder captured, one per line. Returns 1 when the
+#   record is missing or holds an UNATTRIBUTED entry (a reply whose id is unknown, so
+#   nothing can be trusted: the no-change path must be disabled). Pure.
+cl_recorded_reply_ids() {
+  local record="${1:-}"
+  [[ -n "$record" && -f "$record" ]] || return 1
+  if grep -qx 'UNATTRIBUTED' "$record"; then
+    return 1
+  fi
+  { grep -v '^[[:space:]]*$' "$record" || true; } | sort -u
+  return 0
+}
+
+# cl_reply_stamp_body <body>
+#   The stamped form of an unmarked pass reply: the original text followed by the
+#   `<!-- dev-lead:reply -->` marker, which review_thread_is_agent_authored
+#   recognises, so the reply can never again be read as a maintainer verdict. Pure.
+cl_reply_stamp_body() {
+  printf '%s\n\n<!-- dev-lead:reply -->\n' "${1:-}"
+}
+
 # cl_retract_body <body> <reason>
 #   The retracted form of a claim reply. Removes the addressed-marker and the claim
 #   comment (so neither the thread gate nor another bot can treat it as a fix),
