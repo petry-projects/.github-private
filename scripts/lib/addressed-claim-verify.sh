@@ -63,6 +63,29 @@ readonly _ACV_CLAIM_SUFFIX=' -->'
 # merge" shape) rather than any human chatter, so a neutral "thanks" never blocks.
 readonly _ACV_DISPOSITION_RE_UPPER='(REQUIRED|MUST BE (FIXED|ADDRESSED|RESOLVED|CHANGED)|CHANGES REQUIRED|BLOCKING|REQUEST(ING|ED)? CHANGES)'
 
+# A maintainer "no change needed" disposition (#1743, #2079) — the mirror image of the
+# blocking disposition above. Matched case-insensitively against a marker-less
+# maintainer comment. It PERMITS resolution of a false-positive bot thread, the
+# missing half of the #1692 REQUIRED gate (which WITHHOLDS resolution). Kept as
+# conservative as the blocking regex: it recognises an explicit false-positive /
+# wontfix / not-applicable assertion, not any human chatter, so a neutral "thanks"
+# never clears a thread. Note "no change required" contains the substring REQUIRED
+# and so also matches _ACV_DISPOSITION_RE_UPPER; the caller must resolve that
+# collision in favour of the no-change intent.
+readonly _ACV_NOCHANGE_RE_UPPER='(NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT)|NOT APPLICABLE|BY DESIGN|INTENDED BEHAVIOU?R)'
+
+# A NEGATED (or quoted-then-rejected) no-change phrase is NOT an affirmative no-change
+# disposition (#1799). The broad phrase match above treats any occurrence of e.g.
+# "FALSE POSITIVE" as authorization, so "this is not a false positive" or "I wouldn't
+# call it working as intended" would wrongly clear a bot thread a maintainer actually
+# wants fixed. This recognises a negator within a few words before a no-change phrase;
+# acv_latest_nochange_disposition checks it FIRST and lets such a comment fall through
+# to "not a disposition" (fail closed -> the thread stays open for the maintainer). A
+# phrase that itself begins with a negator ("NOT A BUG", "NO CHANGE NEEDED") only
+# trips the guard when ANOTHER negator precedes it, so the bare affirmative forms are
+# never clobbered.
+readonly _ACV_NOCHANGE_NEGATION_RE_UPPER='(CANNOT|CAN.?T|COULD ?NOT|COULDN.?T|WILL NOT|WON.?T|WOULD ?NOT|WOULDN.?T|SHOULD ?NOT|SHOULDN.?T|IS ?NOT|ISN.?T|ARE ?NOT|AREN.?T|WAS ?NOT|WASN.?T|WERE ?NOT|WEREN.?T|DOES ?NOT|DOESN.?T|DO ?NOT|DON.?T|DID ?NOT|DIDN.?T|NEVER|NOT)[,[:space:]—-]+([^[:space:]]+[[:space:]]+){0,6}(FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|BY DESIGN|INTENDED BEHAVIOU?R|NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT)|NOT APPLICABLE)'
+
 # Post-marker BOT-comment classification (#1735 AC2/AC4). A review bot that replies
 # AFTER our addressed-marker either ACKNOWLEDGES (accepts our refutation / records a
 # custom rule — the codeant-ai "✅ Customized review instruction saved!" shape) or
@@ -333,7 +356,7 @@ _acv_intersects() {
 #                                                           fail closed, leave open)
 #   Pure — no gh/git/network.
 acv_latest_maintainer_disposition() {
-  local comments_json="${1:-}" bot_user="${2:-}"
+  local comments_json="${1:-}" bot_user="${2:-}" skip_nochange="${3:-}"
   local bot_user_stripped="${bot_user%\[bot\]}"
 
   # Nothing to scan -> no disposition. An empty/invalid array is treated as "none"
@@ -362,7 +385,22 @@ acv_latest_maintainer_disposition() {
     # our markers) is ours, never a maintainer finding.
     review_thread_is_agent_authored "$body" && continue
     # Does the marker-less human comment assert a required disposition?
-    [[ "${body^^}" =~ $_ACV_DISPOSITION_RE_UPPER ]] || continue
+    local disp_up="${body^^}"
+    [[ "$disp_up" =~ $_ACV_DISPOSITION_RE_UPPER ]] || continue
+    # Optional (#2079): "no change required" contains REQUIRED; when the caller is
+    # evaluating a no-change verdict, neutralise ONLY the REQUIRED contributed by an
+    # affirmative no-change phrase. A separate blocking assertion in the same comment
+    # ("no change required, but this MUST BE FIXED") must still count.
+    if [[ "$skip_nochange" == "skip-nochange" ]] \
+       && [[ "$disp_up" =~ $_ACV_NOCHANGE_RE_UPPER ]] \
+       && ! [[ "$disp_up" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]]; then
+      local rest="$disp_up" matched
+      while [[ "$rest" =~ $_ACV_NOCHANGE_RE_UPPER ]]; do
+        matched="${BASH_REMATCH[0]}"
+        rest="${rest//"$matched"/ }"
+      done
+      [[ "$rest" =~ $_ACV_DISPOSITION_RE_UPPER ]] || continue
+    fi
     # A disposition with no parseable timestamp cannot be ordered against the fix ->
     # fail closed.
     if [[ -z "$created" ]] || ! _acv_is_iso8601 "$created"; then
@@ -374,13 +412,119 @@ acv_latest_maintainer_disposition() {
     fi
   done <<<"$rows"
 
+  # Fail closed: any matching disposition with an unparseable timestamp wins over a
+  # valid latest one, since its true order against the others is unknown (#2079 AC3).
+  if [[ "$saw_unparseable" -eq 1 ]]; then
+    echo "unparseable"
+    return 2
+  fi
   if [[ -n "$latest" ]]; then
     echo "$latest"
     return 0
   fi
+  echo ""
+  return 1
+}
+
+# acv_latest_nochange_disposition <comments_json> [epoch_iso]
+#   The optional [epoch_iso] (production callers pass the DEV_LEAD_NOCHANGE_EPOCH cutoff) makes any
+#   comment created before it non-authorizing; omitted, no cutoff applies.
+#   Scan ALL comments in a thread (#1743, #2079) for a standing maintainer "no change
+#   needed" disposition — the mirror of acv_latest_maintainer_disposition.
+#   <comments_json> is a JSON array of
+#   {author:{login,__typename}, authorAssociation, body, createdAt}.
+#   A comment counts as a no-change disposition when it is: a User (not a Bot), from
+#   a repo maintainer (authorAssociation OWNER|MEMBER|COLLABORATOR — anything else,
+#   including missing, fails closed), MARKER-LESS per review_thread_is_agent_authored,
+#   and asserts an affirmative no-change disposition (_ACV_NOCHANGE_RE_UPPER, with
+#   negated and question forms rejected).
+#   Authorship is decided by MARKER, never by login: dev-lead posts as the same
+#   account the maintainer uses, so skipping that login would discard the
+#   maintainer's own verdict (the #1799 defect), while the marker is what makes the
+#   agent unable to dismiss a finding on its own (#1743 AC4).
+#   Returns:
+#     0 + echoes the latest such comment's ISO createdAt  (a no-change disposition applies)
+#     1 + echoes ""                                        (no no-change disposition found)
+#     2 + echoes "unparseable"                             (a no-change disposition was
+#                                                           found but a createdAt is
+#                                                           missing/unparseable ->
+#                                                           fail closed, leave open)
+#   Pure — no gh/git/network.
+acv_latest_nochange_disposition() {
+  local comments_json="${1:-}" epoch="${2:-}"
+
+  # Single jq pass serialises every comment as one row (login, typename, createdAt,
+  # association, base64(body)). Fields are joined with the ASCII Unit Separator
+  # (U+001F), NOT a tab: tab is IFS-whitespace, so `read` would collapse a run of
+  # tabs and DROP an empty middle field (an empty createdAt — the exact fail-closed
+  # case — would shift the next field into its slot). The body is base64-encoded so
+  # it can never contain the separator or a newline.
+  local rows
+  rows=$(jq -r '
+      if type == "array" then
+        .[]
+        | [ (.author.login // ""), (.author.__typename // ""), (.createdAt // ""), (.authorAssociation // ""), ((.body // "") | @base64) ]
+        | join("\u001f")
+      else empty end
+    ' <<<"$comments_json" 2>/dev/null) || return 1
+  [[ -z "$rows" ]] && return 1
+
+  # latest_nonaffirm tracks the newest eligible maintainer comment that does not affirm: an
+  # older affirmation is superseded by a later maintainer comment that does not itself
+  # affirm no-change (e.g. a hedge, a question, a negation, or unrelated follow-up).
+  local latest="" latest_nonaffirm="" saw_unparseable=0 affirms
+  local login typename created assoc body_b64 body up
+  while IFS=$'\x1f' read -r login typename created assoc body_b64; do
+    [[ -z "$login$typename$created$assoc$body_b64" ]] && continue
+    [[ "$typename" != "User" ]] && continue
+    # Only a repo maintainer may authorize resolution; a missing/unknown association
+    # fails closed (CWE-863).
+    case "$assoc" in OWNER|MEMBER|COLLABORATOR) ;; *) continue ;; esac
+    body=$(base64 --decode <<<"$body_b64" 2>/dev/null || base64 -d <<<"$body_b64" 2>/dev/null || printf '')
+    # Marker-less is the discriminator: an agent-authored comment (carrying one of
+    # our markers) is ours, never a maintainer disposition — even from the same login.
+    review_thread_is_agent_authored "$body" && continue
+    up="${body^^}"
+    # A disposition with no parseable timestamp cannot be ordered against a newer
+    # REQUIRED disposition, bot finding or maintainer comment -> fail closed.
+    if ! _acv_is_iso8601 "$created"; then
+      saw_unparseable=1
+      continue
+    fi
+    # A marker-less comment older than the stamping epoch may be one of dev-lead's own
+    # unstamped skip notes: it can never authorize, and counts as non-affirming so it
+    # also supersedes any earlier affirmation (fail closed, #2079 AC4).
+    affirms=1
+    [[ -n "$epoch" && "$created" < "$epoch" ]] && affirms=0
+    # A negated phrase ("this is not a false positive") is not an affirmative
+    # disposition -> fail closed.
+    [[ "$up" =~ $_ACV_NOCHANGE_NEGATION_RE_UPPER ]] && affirms=0
+    [[ "$affirms" -eq 1 && "$up" =~ $_ACV_NOCHANGE_RE_UPPER ]] || affirms=0
+    # A question or an expression of doubt/disagreement is not an affirmative verdict
+    # ("Could this be a false positive?", "I disagree with calling this a false
+    # positive") -> fail closed.
+    [[ "$up" == *'?'* ]] && affirms=0
+    [[ "$up" =~ (MAY|MIGHT|COULD[[:space:]]BE|DISAGREE|DECLINE|REFUSE|DOUBT|UNCLEAR|NOT[[:space:]]SURE|UNSURE|NOT[[:space:]]CONVINCED) ]] && affirms=0
+    if [[ "$affirms" -ne 1 ]]; then
+      if [[ -z "$latest_nonaffirm" || "$created" > "$latest_nonaffirm" ]]; then
+        latest_nonaffirm="$created"
+      fi
+      continue
+    fi
+    if [[ -z "$latest" || "$created" > "$latest" ]]; then
+      latest="$created"
+    fi
+  done <<<"$rows"
+
   if [[ "$saw_unparseable" -eq 1 ]]; then
     echo "unparseable"
     return 2
+  fi
+  # The newest maintainer comment must itself be the affirmation: strictly newer than
+  # every non-affirming one, so a same-timestamp tie fails closed.
+  if [[ -n "$latest" && ( -z "$latest_nonaffirm" || "$latest" > "$latest_nonaffirm" ) ]]; then
+    echo "$latest"
+    return 0
   fi
   echo ""
   return 1
