@@ -409,6 +409,21 @@ _run_post() {
   [[ "$output" == *"HTTP 502"* ]]                  # says why
 }
 
+@test "pr_read_posting_login: a token straddling the 300-char cut is redacted before truncation" {
+  stub="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$stub"
+  pad="$(printf 'x%.0s' $(seq 1 259))"
+  cat > "$stub/gh" <<STUB
+#!/usr/bin/env bash
+echo "${pad} ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" >&2
+exit 1
+STUB
+  chmod +x "$stub/gh"
+  run env PATH="$stub:$PATH" GH_TOKEN=fake bash -c 'source "'"$LIB"'"; pr_read_posting_login'
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"ghp_"* ]]
+}
+
 @test "pr_read_posting_login: exit-0 output that is not a login is UNREADABLE" {
   _login_stub 0 '{'
   run env PATH="$stub:$PATH" GH_TOKEN=fake bash -c 'source "'"$LIB"'"; pr_read_posting_login'

@@ -255,7 +255,10 @@ pr_read_posting_login() {
     return 2
   fi
   local out err errfile rc=0
-  errfile="$(mktemp)"
+  errfile="$(mktemp)" || {
+    printf 'could not create a temporary file to read the posting identity'
+    return 1
+  }
   out="$(gh api user -q .login 2>"$errfile")" || rc=$?
   err="$(cat "$errfile")"
   rm -f "$errfile"
@@ -269,7 +272,9 @@ pr_read_posting_login() {
   else
     why="gh api user returned a value that is not a GitHub login: ${out}"
   fi
-  printf '%s' "$why" | tr '\r\n' '  ' | cut -c1-300 | redact_secrets
+  # Redact BEFORE truncating: a cut through a token leaves a prefix too short
+  # for redact_secrets to match.
+  printf '%s' "$why" | tr '\r\n' '  ' | redact_secrets | cut -c1-300
   return 1
 }
 
