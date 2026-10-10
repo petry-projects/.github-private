@@ -99,6 +99,8 @@ jobs:
           LOOKBACK_DAYS: ${{ env.LOOKBACK_DAYS }}
         run: |
           set -euo pipefail
+          # generate_rate_limit_samples_report (#2140)
+          source scripts/fleet_report.sh
 
           workdir="$(mktemp -d)"
           trap 'rm -rf "$workdir"' EXIT
@@ -147,6 +149,8 @@ jobs:
               echo "## Token usage (${LOOKBACK_DAYS} day lookback)"
               echo
               echo "No token-usage artifacts found in the lookback window."
+              echo
+              generate_rate_limit_samples_report
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -178,6 +182,10 @@ jobs:
             echo "| Workflow | Calls | Input Tokens | Cache Read Tokens | Output Tokens | Total ET |"
             echo "|---|---:|---:|---:|---:|---:|"
             jq -r '.[] | "| \(.workflow) | \(.calls) | \(.input_tokens) | \(.cache_read_tokens) | \(.output_tokens) | \(.et | tostring) |"' "$aggregate"
+            echo
+            # Redacted samples of rate-limit messages the reset parser could not
+            # read (#2140), recorded on the same ledger as kind:"rate_limit_sample".
+            generate_rate_limit_samples_report "$jsonl_dir"/*.jsonl
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create issue with findings

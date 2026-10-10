@@ -2516,6 +2516,39 @@ _emit_reset_iso() {
   printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
 }
 
+# RATE_LIMIT_SAMPLE_MAX_BYTES — cap on one recorded unparsed rate-limit sample.
+RATE_LIMIT_SAMPLE_MAX_BYTES="${RATE_LIMIT_SAMPLE_MAX_BYTES:-500}"
+
+# _record_unparsed_rate_limit  (stdin: the engine output that failed to parse)
+# Called only when the reset parser found no reset time (#2140). Records one
+# sample of the rate-limit line(s) to the token ledger via
+# emit_rate_limit_sample_record so a future parser (e.g. the weekly cap, #1863)
+# is built from a real message, not a guess. Redacts the whole stream with
+# redact_secrets first (so multi-line secrets such as PEM blocks are masked before
+# any line filtering), then keeps only the first 3 lines that match
+# _rate_limit_pattern, then truncates to RATE_LIMIT_SAMPLE_MAX_BYTES (truncating first could cut a token below its
+# redaction pattern's minimum length and leak the fragment), and fingerprints the
+# shape with digits normalised so retries of the same message de-duplicate.
+# Records nothing without a ledger or without redact_secrets. Never changes what
+# the parser accepts or its sidecar; never fails the caller.
+_record_unparsed_rate_limit() {
+  if [ -z "${TOKEN_LOG_FILE:-}" ] \
+    || ! declare -F emit_rate_limit_sample_record >/dev/null 2>&1 \
+    || ! declare -F redact_secrets >/dev/null 2>&1; then
+    return 0
+  fi
+  local sample shape
+  sample=$(redact_secrets \
+    | jq -Rr '. as $l | (try fromjson catch null)
+      | if type == "object" and (.result | type) == "string" then .result else $l end' 2>/dev/null \
+    | grep -iE "$(_rate_limit_pattern)" 2>/dev/null | head -n 3 \
+    | head -c "$RATE_LIMIT_SAMPLE_MAX_BYTES" || true)
+  [ -n "$sample" ] || return 0
+  shape=$(printf '%s' "$sample" | sed -E 's/[0-9]+/N/g' | cksum)
+  shape=${shape%% *}
+  emit_rate_limit_sample_record "${REVIEW_ENGINE:-}" "$shape" "$sample" || true
+}
+
 # parse_reset_time <text>
 # Extracts the rate-limit reset time from engine output and writes an ISO-8601
 # UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
@@ -2532,6 +2565,7 @@ parse_reset_time() {
   time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
   if [ -z "$time_str" ]; then
     printf '' > /tmp/dev-lead-rate-limit-reset
+    printf '%s\n' "$text" | _record_unparsed_rate_limit || true
     return 0
   fi
   # Extract H:MM(am|pm) part
@@ -2559,6 +2593,7 @@ parse_reset_time_files() {
   time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
   if [ -z "$time_str" ]; then
     printf '' > /tmp/dev-lead-rate-limit-reset
+    cat "${files[@]}" 2>/dev/null | _record_unparsed_rate_limit || true
     return 0
   fi
   local hhmm

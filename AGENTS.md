@@ -437,6 +437,40 @@ scope of #1871 and must not be switched on until this is confirmed:
    throwaway PR routed through a test queue). Do **not** enable the queue on the assumption that it works;
    a required check missing from the queue ref wedges every merge.
 
+### The merge queue checks reviews only at enqueue — the fleet dequeues on a withdrawn approval (#2174)
+
+GitHub evaluates the `code-quality` ruleset's review requirement when a PR **joins** the merge queue
+and does **not** re-evaluate it when the queue merges. A dismissal after enqueue therefore no longer
+stops the merge: PR 2084 was approved, enqueued, had that approval dismissed, and merged while showing
+`REVIEW_REQUIRED`. So the disposition gate's withdrawn approval could be outrun by the queue.
+
+- **The fleet dequeues when it withdraws the last approval.** `mq_dequeue_if_unapproved`
+  (`scripts/lib/merge-queue-dequeue.sh`) runs after every dismissal in the run **and** after the run's
+  new verdict is posted, in `scripts/post-pr-review.sh` (approve and fix-request paths) and in
+  `scripts/invalidate-standing-approval.sh` (live mode, when it dismissed something), and in
+  `scripts/review-one-pr.sh` after its comment-gate and maintainer-thread-gate dismissals. It reads the
+  **live** PR: if the PR is open, has a `mergeQueueEntry`, and no writer's latest review is `APPROVED`
+  on the current head commit (bot **or** human), it calls the GraphQL `dequeuePullRequest` mutation and
+  posts one comment carrying `<!-- pr-review-agent dequeued sha=<head> -->` (a failed dequeue uses
+  `<!-- pr-review-agent dequeue-failed sha=<head> -->`, so a success notice never masks it). A re-review that dismisses
+  the old approval and posts a new one leaves an approval standing, so the PR stays queued.
+- **It never fails the run.** A PR that is not queued, already merged, or left the queue before the
+  call is a no-op. A failed dequeue logs a `::warning::` and posts one comment asking a maintainer to
+  remove the PR from the queue by hand. An unreadable live state logs a `::warning::` and takes no
+  action. The marker is posted at most once per head SHA.
+- **Auto-merge after a dequeue.** A dequeue consumes the PR's auto-merge request. dev-lead's idempotent
+  `try_enable_auto_merge` re-enables it on its next pass; once an approval stands again, the PR
+  rejoins the queue. This is intended.
+- **Out of scope:** `.github/workflows/dismiss-stale-bot-reviews.yml` only dismisses stale
+  `CHANGES_REQUESTED` reviews, which helps a merge, so it must not dequeue (pinned by
+  `tests/test_merge_queue_dequeue.bats`).
+- **Rollout channel.** `post-pr-review.sh` runs from the pr-review channel, not `main`
+  (`pr-review-trigger.yml` pins `pr-review.yml@pr-review/v1-next`). The change rides the next Release
+  Manager autocut to `pr-review/v1-next` and reaches `pr-review/v1-stable` through ring promotion. Until
+  `next` carries it, a queued PR whose approval is withdrawn can still merge.
+  `invalidate-standing-approval.sh` has no workflow caller; an operator runs it from a checkout, so it
+  dequeues as soon as the checkout includes this change.
+
 ### Template drift guard (`repo-template`)
 
 `petry-projects/repo-template` is a **distribution artifact** of the canonical `standards/` in the public
