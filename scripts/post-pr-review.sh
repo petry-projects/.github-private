@@ -139,14 +139,20 @@ METADATA_ONLY=$(jq -r '.metadata_only // false' "$VERDICT_JSON")
 # head-SHA v1 marker; a missing or contradictory decision still fails closed.
 if [ "$DECISION" = "approve" ]; then
   # -z treats the body as one record so a marker wrapped across lines still
-  # matches; the trailing sentinel x keeps $(...) from stripping trailing newlines.
-  NORMALIZED_BODY=$(printf '%sx' "$BODY" | sed -E -z \
-    "s/(<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]][^>]*decision=)approve([[:space:]]|-->)/\1approved\2/")
-  NORMALIZED_BODY="${NORMALIZED_BODY%x}"
-  if [ "$NORMALIZED_BODY" != "$BODY" ]; then
+  # matches. Detect changes without command substitution stripping newlines: write
+  # to temp files and compare via cmp, so a trailing-newline-only difference
+  # doesn't falsely trigger a substitution when sed made no actual change (#2169).
+  BODY_FILE="$(mktemp)"
+  NORMALIZED_FILE="$(mktemp)"
+  printf '%s' "$BODY" > "$BODY_FILE"
+  sed -E -z \
+    "s/(<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]][^>]*decision=)approve([[:space:]]|-->)/\1approved\2/" \
+    "$BODY_FILE" > "$NORMALIZED_FILE"
+  if ! cmp -s "$BODY_FILE" "$NORMALIZED_FILE"; then
     echo "  approval marker said decision=approve — normalized to decision=approved from the verdict (#2169)"
-    BODY="$NORMALIZED_BODY"
+    BODY="$(cat "$NORMALIZED_FILE")"
   fi
+  rm -f "$BODY_FILE" "$NORMALIZED_FILE"
 fi
 
 # Marker keying the single human-escalation artifact (issue #1754 AC2). An
