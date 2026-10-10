@@ -1056,15 +1056,17 @@ _gemini_chain_invoke() {
           # Remember the throttle so later calls/jobs skip this key on this model
           # until the provider's retry hint (else the configured default) elapses —
           # doubled per consecutive rejection, capped at the next daily reset, and
-          # straight to the reset at a daily cap (#2041). The rejection is itself
-          # recorded as an attempt (Google counts it) plus a redacted sample.
+          # straight to the reset at a daily cap (#2041). Record only genuine quota/rate-limit
+          # rejections as attempts (Google counts those), plus a redacted sample.
           if [ -n "${_key_idxs[$_key_i]}" ] && [ -n "$(gq_ledger_file)" ]; then
             _cd="$(gq_retry_hint_sec "$stdout_tmp" "$stderr_tmp")"; _cd_src="retry hint"
             [ -n "$_cd" ] || { _cd="$(gq_default_cooldown_sec)"; _cd_src="default"; }
             _cd_scope="$(gq_rejection_scope "$stdout_tmp" "$stderr_tmp")"
             IFS=$'\t' read -r _cd _cd_src <<< "$(gq_escalated_cooldown "${_key_idxs[$_key_i]}" "$model" \
               "$_cd" "$_cd_src" "$_cd_scope")"
-            gq_record_attempt "${_key_idxs[$_key_i]}" "$model"
+            if gq_is_quota_rejection "$stdout_tmp" "$stderr_tmp"; then
+              gq_record_attempt "${_key_idxs[$_key_i]}" "$model"
+            fi
             gq_record_rejection_sample "${_key_idxs[$_key_i]}" "$model" "$_cd_scope" "$stdout_tmp" "$stderr_tmp"
             gq_record_cooldown "${_key_idxs[$_key_i]}" "$model" "$_cd" "$_cd_src"
             echo "::notice::[gemini] model $model: key index ${_key_idxs[$_key_i]} cooling down for ${_cd}s ($_cd_src)" >&2

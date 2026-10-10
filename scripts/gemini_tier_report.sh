@@ -117,7 +117,7 @@ gtr_render() {
   printf '|---|---:|---|---:|---:|---:|---:|---|\n'
   jq -r '.[] | . as $d
       | if (.rows | length) == 0 then "| \($d.day) | - | _no Gemini activity in the ledger_ | | | | | |"
-        else .rows[] | "| \($d.day) | \(.key_index) | `\(.model | gsub("|"; "\\|"))` | \(.calls) | \(.rejected) | \(.peak_per_min) | \(.rate_limit_events) | \(if .cap_hit then "**yes**" else "no" end) |"
+        else .rows[] | "| \($d.day) | \(.key_index) | `\(.model | gsub("[|]"; "\\|"))` | \(.calls) | \(.rejected) | \(.peak_per_min) | \(.rate_limit_events) | \(if .cap_hit then "**yes**" else "no" end) |"
         end' "$hist"
   printf '\n'
 

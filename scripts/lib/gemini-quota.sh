@@ -433,6 +433,14 @@ gq_rotation_plan() {
         fi
         printf 'skip\t%s\t%s\t%s\n' "$name" "$idx" "exhausted (daily cap reached; $sut)"
         continue ;;
+      cooling)
+        if [[ "$sut" =~ ^[0-9]+$ ]]; then
+          sut="resets $(date -u -d "@$sut" +%Y-%m-%dT%H:%MZ 2>/dev/null || printf '%s' "$sut")"
+        else
+          sut="until next window"
+        fi
+        printf 'skip\t%s\t%s\t%s\n' "$name" "$idx" "cooling down (${sut})"
+        continue ;;
     esac
     pct="$(gq_key_pct "$idx" "$model")"
     if [[ "$_dep" == *", ${name}, "* ]]; then
@@ -601,6 +609,16 @@ gq_rejection_scope() {
   else
     printf 'minute'
   fi
+}
+
+# gq_is_quota_rejection <file>... — 0 (true) when the rejection is a genuine quota/rate-limit
+# from Google (429, RESOURCE_EXHAUSTED, quota_exceeded, too many requests, rate limit),
+# excluding payment (402) or request-size errors (413). Returns 1 if the error is something else.
+gq_is_quota_rejection() {
+  local files=() f
+  for f in "$@"; do [ -n "$f" ] && [ -f "$f" ] && files+=("$f"); done
+  [ "${#files[@]}" -gt 0 ] || return 1
+  grep -qiE '429|resource.?exhausted|quota_exceeded|too many requests|rate.?limit|quotaexceeded|resets [0-9]+(am|pm)' "${files[@]}" 2>/dev/null
 }
 
 # gq_record_rejection_sample <key_index> <model> <scope> <file>...
