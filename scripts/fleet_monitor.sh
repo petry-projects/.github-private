@@ -68,11 +68,12 @@ STUB_REGISTRY=(
   # Collapsed agent-ingress.yml roles (#1729 AC11): one row per job in the
   # petry-projects/markets ingress. These entries register for future drift
   # coverage once the canonical standards/workflows/agent-ingress.yml is
-  # published to petry-projects/.github (landing with the pilot collapse
-  # merge). Until then, a canonical 404 gracefully skips these rows with a
-  # warning, leaving them without coverage (#1729 AC #12 reference row). The
-  # monitor and remediation helpers handle this degradation automatically
-  # (tests/fleet_stub_registry.bats, line 177).
+  # published to petry-projects/.github (#1729 AC11). Until then, a canonical
+  # 404 gracefully skips these rows with a warning, leaving them without
+  # coverage. The monitor and remediation helpers handle this degradation
+  # automatically (see the @test "fleet_monitor: a 404 canonical
+  # agent-ingress skips every role row with a warning and stays green" in
+  # tests/fleet_stub_registry.bats).
   # legacy_canonical_path is empty for pr-review and ci-failure-analyst because
   # petry-projects/.github publishes no standards/workflows/<role>.yml for them
   # (checked 2026-10-10), so a repo that has not collapsed classifies MISSING

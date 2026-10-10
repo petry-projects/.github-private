@@ -131,10 +131,10 @@ jobs:
     concurrency:
       group: >-
         pr-review-${{
-          github.event.pull_request.number
-          || github.event.check_suite.pull_requests[0].number
+          (github.event.pull_request && github.event.pull_request.number)
+          || (github.event.check_suite && github.event.check_suite.pull_requests[0] && github.event.check_suite.pull_requests[0].number)
           || github.event.inputs.pr_url
-          || github.event.client_payload.pr_url
+          || (github.event.client_payload && github.event.client_payload.pr_url)
           || 'enumerate'
         }}
       cancel-in-progress: true
