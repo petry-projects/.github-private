@@ -1460,8 +1460,29 @@ main() {
   echo "[retry] done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
+# hold_label_exit_guard_then_cleanup <rc> — remove the private marker directory
+# after the guard has read the marker file, then apply the guard.
+hold_label_exit_guard_then_cleanup() {
+  local rc="$1"
+  if [ -n "${HOLD_LABEL_FAILED_FILE:-}" ] && [ -e "$HOLD_LABEL_FAILED_FILE" ]; then
+    export HOLD_LABEL_FAILED=1
+  fi
+  [ -z "${HOLD_LABEL_FAILED_DIR:-}" ] || rm -rf "$HOLD_LABEL_FAILED_DIR"
+  hold_label_exit_guard "$rc"
+}
+
 # Run main only when executed directly (bash dev-lead-retry.sh), not when sourced
 # by unit tests that exercise individual functions (scan_issue_for_retry, etc.).
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  # A failed hold (#2142) must fail the scan even though escalation is `|| true`.
+  # Escalations run inside command substitutions, so a failed hold is also
+  # recorded in a file that survives the subshell; the guard reads it.
+  # The marker lives in a private mktemp -d directory (mode 700): `mktemp -u`
+  # would only print a name that something else could claim first.
+  HOLD_LABEL_FAILED_DIR=$(mktemp -d)
+  HOLD_LABEL_FAILED_FILE="$HOLD_LABEL_FAILED_DIR/failed"
+  export HOLD_LABEL_FAILED_FILE
+  # shellcheck disable=SC2154  # rc is set by the trap string itself
+  trap 'rc=$?; hold_label_exit_guard_then_cleanup "$rc"' EXIT
   main "$@"
 fi

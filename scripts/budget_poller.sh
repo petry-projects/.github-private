@@ -29,8 +29,11 @@
 #   AGENT_RATE_LIMITS_CONFIG   — path to the public agent-rate-limits.json
 #                                (default: public/standards/agent-rate-limits.json)
 #   BUDGET_POLLER_LOG          — JSONL log path (default: budget-poller-log.jsonl)
-#   BUDGET_POLLER_MAX_RECORDS  — log bound (default: 720 = 30 days hourly)
+#   BUDGET_POLLER_MAX_RECORDS  — log bound (default: 720 ≈ 15 days at two slots an hour)
 #   BUDGET_POLLER_NOW          — epoch override (testability)
+#   GITHUB_EVENT_NAME          — the trigger, recorded as trigger_event (#2160)
+#   BUDGET_POLLER_CRON         — the cron that fired (github.event.schedule),
+#                                recorded with the slot it was meant for (#2160)
 #   GITHUB_STEP_SUMMARY        — job summary (written when set)
 
 set -euo pipefail
@@ -109,7 +112,8 @@ fi
 # 3. Build + append the record against the previous OK record (burn rate).
 prev_ok="$(bp_last_ok "$LOG_FILE")"
 record="$(bp_build_record "$NOW" "$http_status" "$retry_after" "$s_pct" "$w_pct" \
-  "$s_reset" "$w_reset" "$s_dec" "$g_dec" "$g_enabled" "$reason_override" "$prev_ok")"
+  "$s_reset" "$w_reset" "$s_dec" "$g_dec" "$g_enabled" "$reason_override" "$prev_ok" \
+  "${GITHUB_EVENT_NAME:-}" "${BUDGET_POLLER_CRON:-}")"
 bp_append_record "$LOG_FILE" "$record" "${BUDGET_POLLER_MAX_RECORDS:-720}"
 
 line="$(jq -r '.line' <<<"$record")"
@@ -138,7 +142,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         ["weekly glide armed in public config", .weekly_glide_config_enabled],
         ["burn session (pp/h)", .burn_session_pph],
         ["burn weekly_all (pp/h)", .burn_weekly_all_pph],
-        ["burn basis", .burn_basis] ]
+        ["burn basis", .burn_basis],
+        ["Trigger", .trigger_event], ["Cron that fired", .trigger_cron],
+        ["Scheduled for", .scheduled_for], ["Start delay (s)", .start_delay_s] ]
       | .[] | "| \(.[0]) | \(v(.[1])) |"' <<<"$record"
     printf '\nDurable log: artifact `%s` (`%s`, one JSON record per poll).\n' \
       "$BUDGET_POLLER_ARTIFACT" "$(basename "$LOG_FILE")"
