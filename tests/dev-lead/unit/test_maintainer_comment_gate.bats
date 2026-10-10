@@ -612,6 +612,18 @@ _codeant_low_risk_body() {
   [ "$status" -eq 0 ]
 }
 
+@test "#2178: 'PR Risk: Low Risky' (not exact Low Risk) is finding-bearing" {
+  source "$SCRIPT_DIR/lib/comment-disposition-verify.sh"
+  run cdv_body_has_findings $'## CodeAnt PR Risk: Low Risky\n\n- This requires attention.'
+  [ "$status" -eq 0 ]
+}
+
+@test "#2178: 'PR Risk: Low Risk ' (with trailing space) is not finding-bearing" {
+  source "$SCRIPT_DIR/lib/comment-disposition-verify.sh"
+  run cdv_body_has_findings $'## CodeAnt PR Risk: Low Risk \n\n- The PR appears safe.'
+  [ "$status" -eq 1 ]
+}
+
 @test "#2008: maintainer_gate_merge_edit_times merges lastEditedAt by comment id" {
   local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
   cat > "$bin/gh" <<'SHIM'
