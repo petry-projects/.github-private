@@ -207,6 +207,19 @@ emit_verdict() {
   fi
 }
 
+# review_one_pr_cleanup — EXIT-trap cleanup: remove fewshot directory if created,
+# then fail the run if a hold label failed (#2142).
+review_one_pr_cleanup() {
+  local rc=$?
+  [ -z "${_fewshot_dir:-}" ] || rm -rf "$_fewshot_dir"
+  hold_label_exit_guard "$rc"
+}
+
+# A failed hold (#2142) must fail the run. Set the trap early, before any work
+# that might trigger enforce_pr_budget.
+# shellcheck disable=SC2154  # rc is set by the trap string itself
+trap 'rc=$?; review_one_pr_cleanup' EXIT
+
 echo "==> $PR_URL"
 
 # ==========================================================================
@@ -1543,11 +1556,10 @@ unset _sc_diff
 # Assemble into a private per-run mktemp -d directory (0700) instead of a
 # predictable /tmp/cascade path, so a co-tenant process on a shared /tmp cannot
 # race assemble_fewshot to redirect or replace the prompt-visible few-shot file
-# (CWE-377). The directory is removed on any script exit — after the deep-review
-# consumer that reads FEWSHOT_FILE has finished.
+# (CWE-377). The directory is removed on any script exit by the review_one_pr_cleanup
+# EXIT trap (after the deep-review consumer that reads FEWSHOT_FILE has finished).
 if [ "${FEWSHOT_ENABLED:-false}" = "true" ]; then
   _fewshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/fewshot.XXXXXX")"
-  trap 'rm -rf "$_fewshot_dir"' EXIT
   assemble_fewshot "${FEWSHOT_SOURCE_FILE:-$SCRIPT_DIR/../evals/deep-review/dev/fewshot.jsonl}" "$_fewshot_dir/fewshot.txt"
 fi
 

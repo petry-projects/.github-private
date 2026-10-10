@@ -1464,6 +1464,9 @@ main() {
 # by unit tests that exercise individual functions (scan_issue_for_retry, etc.).
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   # A failed hold (#2142) must fail the scan even though escalation is `|| true`.
-  trap hold_label_exit_guard EXIT
+  # Capture the exit code at the start of the trap so hold_label_exit_guard
+  # preserves the original script exit status (#2142).
+  # shellcheck disable=SC2154  # rc is set by the trap string itself
+  trap 'rc=$?; hold_label_exit_guard "$rc"' EXIT
   main "$@"
 fi

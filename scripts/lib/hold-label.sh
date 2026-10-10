@@ -85,7 +85,7 @@ apply_hold_label() {
 # post_hold_failure_note <repo> <number>
 #   For an escalation whose flag comment already exists (deduped): post the
 #   not-held note on its own when the last apply_hold_label failed. No-op when
-#   the hold succeeded.
+#   the hold succeeded. Returns non-zero if posting fails.
 post_hold_failure_note() {
   local repo="$1" number="$2"
   [ -n "$HOLD_LABEL_NOTE" ] || return 0
@@ -95,9 +95,13 @@ post_hold_failure_note() {
        | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
     return 0
   fi
-  gh pr comment "$number" --repo "$repo" --body "${marker}
-## Dev-Lead — hold failed${HOLD_LABEL_NOTE}" \
-    || echo "::error::could not post the not-held note on PR #${number}"
+  if gh pr comment "$number" --repo "$repo" --body "${marker}
+## Dev-Lead — hold failed${HOLD_LABEL_NOTE}"; then
+    return 0
+  fi
+  echo "::error::could not post the not-held note on PR #${number}"
+  HOLD_LABEL_FAILED=1
+  return 1
 }
 
 # disable_auto_merge_for_hold <repo> <number>
