@@ -781,7 +781,9 @@ is to keep degrading from moving the outage onto an unmetered provider.
   plus the cooldowns recorded.
 
 **Dry-run budget poller (shipped, #2029: slice 2 of #1565). It is dry-run only and has no
-write path.** `.github/workflows/budget-poller.yml` runs hourly (`:17`) with read-only `permissions:` (`contents: read`, `actions: read`).
+write path.** `.github/workflows/budget-poller.yml` runs on two hourly cron slots (`:17` and `:47`) with read-only `permissions:` (`contents: read`, `actions: read`).
+It is schedule-only (no `workflow_dispatch`). The second slot exists because GitHub delivers only about 40% of
+scheduled ticks in this repo (#2160); the `budget-poller` concurrency group keeps the slots from overlapping.
 It authenticates with the existing `CLAUDE_CODE_OAUTH_TOKEN` secret. It does **not**
 set, clear, or write any Actions variable (org or repo) under any input, and there
 is no flag to make it do so. `tests/dev-lead/unit/test_budget_poller.bats` asserts
@@ -799,7 +801,7 @@ pending the pause-vs-degrade decision.
 - **Where the log lives:** each run appends one JSON line to `budget-poller-log.jsonl`
   and uploads it as the **`budget-poller-log`** artifact (14-day retention). Each run
   downloads the previous artifact first, so the newest artifact holds the rolling
-  history (bounded to 720 records ≈ 30 days). The run's **job summary** shows the same
+  history (bounded to 720 records ≈ 15 days at two slots an hour). The run's **job summary** shows the same
   record as a table.
 - **How to read it:** each record carries `ts`, `http_status`, `retry_after`,
   `session_pct`, `weekly_all_pct`, both windows' `*_resets_at`, `session_decision`,
@@ -814,12 +816,22 @@ pending the pause-vs-degrade decision.
   `http-<status>`, `malformed-body`, `public-library-unavailable`). A degraded
   poll is a `::warning::`, never a red run (fail-open), and never reads as OK.
   Example: `jq -c 'select(.poll=="ok") | [.ts,.session_pct,.weekly_all_pct,.decision_window]' budget-poller-log.jsonl`.
+- **Measured delivery (#2160):** each record also carries `trigger_event` (`GITHUB_EVENT_NAME`),
+  `trigger_cron` (the cron that fired, from `github.event.schedule`), `scheduled_for` /
+  `scheduled_epoch` (the `:17` or `:47` slot the run was meant for), and `start_delay_s`
+  (poll time `ts` minus that slot). A delay over an hour aliases onto a later slot, so it is a
+  lower bound. Records written before #2160 lack these fields and still parse. Example:
+  `jq -c '[.scheduled_for,.ts,.start_delay_s,.trigger_cron]' budget-poller-log.jsonl`.
 - **Fleet monitor:** `scripts/fleet_monitor.sh` reads the newest `budget-poller-log`
   artifact and adds a **Budget poller (dry-run)** section to its report. The section shows
   the age of the last OK record, the latest record, the dry-run decision (window and
-  percent), and the burn rate. When the last OK record is older than
-  `BUDGET_POLLER_STALE_HOURS` (default **3**), or there is none, it raises a
-  `::warning::`.
+  percent), and the burn rate. It also shows the runs received in the last 24 hours against
+  the 48 expected, with the median start delay. When the last OK record is older than
+  `BUDGET_POLLER_STALE_HOURS` (default **6**), or there is none, it raises a
+  `::warning::`. **Why 6 hours:** at about 40% tick delivery, a gap of more than 3 hours is
+  routine, so a 3-hour window would raise false alarms much of the time. The weekly window
+  moves slowly, so a 6-hour-old reading is still meaningful. A stale record still fails open:
+  a consumer that finds no fresh record proceeds as if there were no reading.
 
 ### Initiative Planner — blocking open-questions gate
 
