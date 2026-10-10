@@ -114,6 +114,27 @@ teardown() {
   printf '%s' "$output" | tr '\n' ' ' | grep -Eq "$re"
 }
 
+@test "markets §3: pr-auto-review uses a per-event slot, not a shared per-SHA slot" {
+  # The deployed markets ingress (#2171) gives each check_suite / workflow_run
+  # its own slot so a run on a shared commit never cancels another PR's review
+  # (the #1126 hazard). Pin the branch order and the absence of head_sha.
+  run yq '.jobs["pr-auto-review"].concurrency.group' "$INGRESS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == pr-auto-review-* ]]
+  [[ "$output" != *"head_sha"* ]]
+  # Tighten the assertion: verify || operators are present and in correct order.
+  # This catches regressions like missing branches, wrong order, or invalid fallbacks.
+  local normalized
+  normalized=$(printf '%s' "$output" | tr '\n' ' ')
+  # Exact pattern: pull_request.number || check_suite.id || workflow_run.id || 'none'
+  [[ "$normalized" =~ pull_request\.number[^}]*\|\|[^}]*check_suite\.id[^}]*\|\|[^}]*workflow_run\.id[^}]*\|\|[^}]*\'none\' ]]
+  # Also verify no run_id or head_sha crept in (beyond the above tests)
+  [[ "$normalized" != *"run_id"* ]]
+  run yq '.jobs["pr-auto-review"].concurrency["cancel-in-progress"]' "$INGRESS"
+  [ "$status" -eq 0 ]
+  [ "$output" = "true" ]
+}
+
 @test "markets §3: ci-failure-analyst concurrency is unchanged" {
   run yq -r '.jobs["ci-failure-analyst"].concurrency.group' "$INGRESS"
   [ "$output" = 'ci-failure-analyst-${{ github.event.check_run.head_sha }}' ]
