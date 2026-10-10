@@ -402,6 +402,26 @@ imv_persona_opt_out() {
   ' "$pf"
 }
 
+# imv_persona_serves_pr_surface <root> <role> — return 0 iff the persona's manifest
+# (personas/<role>/persona.yml) declares a `pull_request` surface with
+# `enabled: true`. The shared persona-mention router derives which personas it
+# dispatches on the pull_request EVENT from exactly these manifest surfaces (#1165,
+# #2187), so only such a persona is served pull_request by the router.
+imv_persona_serves_pr_surface() {
+  local root="${1:-}" role="${2:-}" pf
+  pf="$root/personas/$role/persona.yml"
+  [ -f "$pf" ] || return 1
+  awk '
+    /^[A-Za-z_]/ { cur="" }   # a top-level key ends the surfaces list
+    /^[[:space:]]*-[[:space:]]*surface:/ {
+      s=$0; sub(/.*surface:[[:space:]]*/,"",s); gsub(/[\047"]/,"",s); sub(/[[:space:]#].*/,"",s)
+      cur=s; next
+    }
+    cur == "pull_request" && /^[[:space:]]*enabled:[[:space:]]*true([[:space:]#]|$)/ { found=1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$pf"
+}
+
 # ── detectors (each prints tagged FAIL lines; none aborts on first finding) ───
 
 # imv_v_completeness <root> <md> — bidirectional §4 completeness (§10). Every
@@ -547,7 +567,17 @@ imv_v_contracts() {
     actual_events=""; actual_crons=""
     while IFS= read -r wf; do
       [ -n "$wf" ] || continue
-      actual_events+="$(imv_on_event_set "$root/$wf")"$'\n'
+      # The shared persona-mention router's on: block also carries the
+      # pull_request EVENT surface (#2187), but the router dispatches a persona on
+      # it only when that persona's manifest enables a pull_request surface. A
+      # mention-only persona is not served pull_request by the router, so its
+      # contract is not charged with it.
+      if [ "$wf" = ".github/workflows/persona-mention.yml" ] \
+         && ! imv_persona_serves_pr_surface "$root" "$(imv_c_role "$c")"; then
+        actual_events+="$(imv_on_event_set "$root/$wf" | grep -vx 'pull_request' || true)"$'\n'
+      else
+        actual_events+="$(imv_on_event_set "$root/$wf")"$'\n'
+      fi
       actual_crons+="$(imv_on_crons "$root/$wf")"$'\n'
     done < <(imv_c_workflows "$c")
 

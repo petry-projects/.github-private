@@ -46,9 +46,17 @@ set -euo pipefail
 #      surface beyond the shared mention router.
 #   3  hard error — bad usage / missing inputs.
 
-# The shared persona-mention router's DEPLOYED trigger events (persona-standards §4.1;
-# .github/workflows/persona-mention.yml `on:` block). Anything a persona subscribes
-# beyond this set is a NEW trigger surface introduced during promotion.
+# The shared persona-mention router's MENTION events (persona-standards §4.1) — the
+# set a mention-only persona may be served on. Anything a persona subscribes beyond
+# this set is a NEW trigger surface introduced during promotion.
+#
+# This is deliberately NOT the router's whole `on:` block. Since #2187 the router
+# (.github/workflows/persona-mention.yml) also subscribes `pull_request`, but that
+# is an EVENT surface a persona must opt into by declaring a `pull_request` surface
+# in its manifest — not a mention event. Deriving this set from `on:` would let a
+# mention-only persona widen onto pull_request unnoticed, which is exactly the fan-out
+# this guard exists to catch, so `pull_request` stays out of it.
+# (prc_router_serves_events still reads the real `on:` block for wiring.)
 PRC_ROUTER_EVENTS="issue_comment pull_request_review_comment discussion_comment"
 
 PRC_RING_ORDER="draft canary next ring0 ring1 stable retired"
