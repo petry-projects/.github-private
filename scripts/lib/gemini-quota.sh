@@ -915,7 +915,7 @@ gq_day_history() {
         | select(type == "object" and .engine == "gemini" and .key_index != null)
         | ((.ts // "") | try fromdateiso8601 catch null) as $e | select($e != null)
         | [ (.kind // "token_usage"), (.key_index | tostring), (.model // "-"), $e,
-            (if .kind == "token_usage" then (.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0) else 0 end) ] | @tsv' \
+            (if (.kind // "token_usage") == "token_usage" then (.input_tokens // 0) + (.cache_read_tokens // 0) + (.output_tokens // 0) else 0 end) ] | @tsv' \
         "$f" 2>/dev/null \
     | awk -F'\t' -v bounds="$bf" '
         BEGIN { while ((getline l < bounds) > 0) { split(l, b, "\t"); nb++; bs[nb] = b[2]; be[nb] = b[3] } }

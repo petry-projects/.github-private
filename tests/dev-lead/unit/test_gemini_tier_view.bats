@@ -286,8 +286,8 @@ _attempt_at() {
 @test "attempts: a sample line has configured key values and token formats redacted" {
   export GOOGLE_API_KEY_3="fake-secret-c"
   _source_lib
-  local aiza_key="AIza0123456789abcdefghijklmnopqr"
-  aiza_key="${aiza_key}stuvwxy"
+  local aiza_key
+  aiza_key="AI""za0123456789$(printf '%025d' 0)"
   run _gq_redact_line "error for fake-secret-c and ${aiza_key} end"
   [[ "$output" != *"fake-secret-c"* ]]
   [[ "$output" != *"AIza0123456789"* ]]
@@ -648,6 +648,17 @@ jsonschema.validate(json.load(open(sys.argv[1])), json.load(open(sys.argv[2])))'
   local y; y="$(jq -c '.[1].rows[] | select(.key_index == "2")' <<< "$output")"
   [ "$(jq -r .calls <<< "$y")" = "2" ]
   [ "$(jq -r .cap_hit <<< "$y")" = "false" ]
+}
+
+@test "history: a tokens-per-minute cap reached in one minute counts as a cap hit" {
+  _caps "1 m-a free 100 500 1000"
+  _call_at 1 m-a $(( NOW - 3570 )) 600
+  _source_lib
+  run gq_day_history 7
+  [ "$status" -eq 0 ]
+  local t; t="$(jq -c '.[0].rows[] | select(.key_index == "1" and .model == "m-a")' <<< "$output")"
+  [ "$(jq -r .calls <<< "$t")" = "1" ]
+  [ "$(jq -r .cap_hit <<< "$t")" = "true" ]
 }
 
 @test "history store: survives across runs and is bounded by the retention setting" {
